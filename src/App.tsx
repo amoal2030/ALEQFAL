@@ -13,19 +13,30 @@ import { Footer } from './components/Footer';
 import { AuthModal } from './components/AuthModal';
 import { OrganizationOnboarding } from './components/OrganizationOnboarding';
 import { Dashboard } from './components/Dashboard';
-import { CheckCircle2, Lock, ShieldCheck, Loader2 } from 'lucide-react';
+import { LegalPage } from './components/LegalPage';
+import {
+  AppPageRoute,
+  buildLegalPath,
+  resolveAppPageFromLocation,
+} from './utils/legalRoutes';
+import { CheckCircle2, Lock } from 'lucide-react';
+
+const DEFAULT_DOCUMENT_TITLE = 'الإقفال | AL EQFAL - نظام إدارة الورديات وإقفال الحسابات';
 
 const AppContent: React.FC = () => {
-  const { direction, t } = useLanguage();
-  const { currentUser, userProfile, currentOrg, loading, needsOnboarding, authNotice, clearAuthNotice } = useAuth();
+  const { direction, language } = useLanguage();
+  const { currentUser, currentOrg, loading, needsOnboarding, authNotice, clearAuthNotice } = useAuth();
 
+  const [currentPage, setCurrentPage] = useState<AppPageRoute>(() => resolveAppPageFromLocation());
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authInitialTab, setAuthInitialTab] = useState<'manager' | 'employee' | 'register'>('manager');
   const [showPhasesOverview, setShowPhasesOverview] = useState(false);
 
-  // Synchronize URL hash (#login, #register, ?login=true) for direct navigation
+  // Synchronize URL path/hash for legal pages and auth modal
   React.useEffect(() => {
-    const handleUrlAuth = () => {
+    const syncFromLocation = () => {
+      setCurrentPage(resolveAppPageFromLocation());
+
       const hash = window.location.hash;
       const search = new URLSearchParams(window.location.search);
       if (
@@ -46,10 +57,55 @@ const AppContent: React.FC = () => {
       }
     };
 
-    handleUrlAuth();
-    window.addEventListener('hashchange', handleUrlAuth);
-    return () => window.removeEventListener('hashchange', handleUrlAuth);
+    syncFromLocation();
+    window.addEventListener('popstate', syncFromLocation);
+    window.addEventListener('hashchange', syncFromLocation);
+    return () => {
+      window.removeEventListener('popstate', syncFromLocation);
+      window.removeEventListener('hashchange', syncFromLocation);
+    };
   }, []);
+
+  React.useEffect(() => {
+    if (currentPage === 'privacy') {
+      document.title =
+        language === 'en'
+          ? 'Privacy Policy | AL EQFAL'
+          : 'سياسة الخصوصية | الإقفال AL EQFAL';
+    } else if (currentPage === 'terms') {
+      document.title =
+        language === 'en'
+          ? 'Terms of Service | AL EQFAL'
+          : 'شروط الاستخدام | الإقفال AL EQFAL';
+    } else {
+      document.title = DEFAULT_DOCUMENT_TITLE;
+    }
+  }, [currentPage, language]);
+
+  const navigateToPage = (page: AppPageRoute, sectionId?: string) => {
+    const targetUrl =
+      page === 'home' && sectionId ? `${buildLegalPath('home')}#${sectionId}` : buildLegalPath(page);
+    try {
+      window.history.pushState({ page }, '', targetUrl);
+    } catch {
+      if (page === 'privacy') window.location.hash = '#/privacy';
+      else if (page === 'terms') window.location.hash = '#/terms';
+    }
+    setCurrentPage(page);
+
+    if (page === 'home' && sectionId) {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          const el = document.getElementById(sectionId);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth' });
+          }
+        }, 60);
+      });
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
 
   const handleOpenAuth = (tab: 'manager' | 'employee' | 'register') => {
     setAuthInitialTab(tab);
@@ -61,11 +117,22 @@ const AppContent: React.FC = () => {
     if (window.location.hash === '#login' || window.location.hash === '#auth' || window.location.hash === '#register') {
       try {
         window.history.replaceState(null, '', window.location.pathname + window.location.search);
-      } catch (e) {
+      } catch {
         // Safe fallback
       }
     }
   };
+
+  // Public & Authenticated Legal Pages (/ALEQFAL/privacy and /ALEQFAL/terms)
+  if (currentPage === 'privacy' || currentPage === 'terms') {
+    return (
+      <LegalPage
+        page={currentPage}
+        isAuthenticated={Boolean(currentUser && currentOrg)}
+        onNavigatePage={navigateToPage}
+      />
+    );
+  }
 
   // Global Loading State
   if (loading) {
@@ -116,7 +183,7 @@ const AppContent: React.FC = () => {
     return (
       <>
         {NoticeBanner}
-        <Dashboard />
+        <Dashboard onNavigatePage={navigateToPage} />
       </>
     );
   }
@@ -134,7 +201,7 @@ const AppContent: React.FC = () => {
       </main>
 
       {/* Footer */}
-      <Footer />
+      <Footer onNavigatePage={navigateToPage} />
 
       {/* Auth & Registration Modal */}
       <AuthModal

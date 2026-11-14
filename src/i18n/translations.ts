@@ -25,6 +25,9 @@ export const translations = {
     navRegisterOrg: 'إنشاء مؤسسة جديدة',
     navDashboard: 'لوحة التحكم',
     navLogout: 'تسجيل الخروج',
+    legalSectionTitle: 'القانونية والخصوصية',
+    privacyPolicy: 'سياسة الخصوصية',
+    termsOfService: 'شروط الاستخدام',
 
     // Theme & Language
     language: 'اللغة',
@@ -183,6 +186,9 @@ export const translations = {
     navRegisterOrg: 'Register Organization',
     navDashboard: 'Dashboard',
     navLogout: 'Sign Out',
+    legalSectionTitle: 'Legal & Privacy',
+    privacyPolicy: 'Privacy Policy',
+    termsOfService: 'Terms of Service',
 
     // Theme & Language
     language: 'Language',
@@ -341,6 +347,9 @@ export const translations = {
     navRegisterOrg: 'نیا ادارہ بنائیں',
     navDashboard: 'ڈیش بورڈ',
     navLogout: 'لاگ آؤٹ',
+    legalSectionTitle: 'قانونی اور رازداری',
+    privacyPolicy: 'رازداری کی پالیسی (Privacy Policy)',
+    termsOfService: 'استعمال کی شرائط (Terms of Service)',
 
     // Theme & Language
     language: 'زبان',

@@ -1,9 +1,22 @@
 import React from 'react';
 import { useLanguage } from '../context/LanguageContext';
-import { Lock, ShieldCheck, HardDrive, Heart } from 'lucide-react';
+import { AppPageRoute, buildLegalPath } from '../utils/legalRoutes';
+import { Lock, ShieldCheck } from 'lucide-react';
 
-export const Footer: React.FC = () => {
+interface FooterProps {
+  onNavigatePage?: (page: AppPageRoute, sectionId?: string) => void;
+}
+
+export const Footer: React.FC<FooterProps> = ({ onNavigatePage }) => {
   const { t, language, setLanguage } = useLanguage();
+
+  const handleLegalClick = (e: React.MouseEvent<HTMLAnchorElement>, page: AppPageRoute) => {
+    if (!onNavigatePage || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+      return;
+    }
+    e.preventDefault();
+    onNavigatePage(page);
+  };
 
   return (
     <footer className="bg-[#0b192c] text-slate-300 border-t border-slate-800">
@@ -28,38 +41,66 @@ export const Footer: React.FC = () => {
             </div>
           </div>
 
-          {/* Quick Links */}
-          <div className="space-y-3">
-            <h4 className="text-sm font-bold text-white uppercase tracking-wider">
-              أقسام النظام
-            </h4>
-            <ul className="space-y-2 text-xs text-slate-400">
-              <li>
-                <a href="#features" className="hover:text-amber-400 transition-colors">
-                  {t('navFeatures')}
-                </a>
-              </li>
-              <li>
-                <a href="#how-it-works" className="hover:text-amber-400 transition-colors">
-                  {t('navHowItWorks')}
-                </a>
-              </li>
-              <li>
-                <a href="#simulator" className="hover:text-amber-400 transition-colors">
-                  {t('navSimulator')}
-                </a>
-              </li>
-              <li>
-                <a href="#benefits" className="hover:text-amber-400 transition-colors">
-                  {t('navBenefits')}
-                </a>
-              </li>
-              <li>
-                <a href="#faq" className="hover:text-amber-400 transition-colors">
-                  {t('navFaq')}
-                </a>
-              </li>
-            </ul>
+          {/* Quick Links & Legal */}
+          <div className="space-y-4">
+            <div className="space-y-3">
+              <h4 className="text-sm font-bold text-white uppercase tracking-wider">
+                أقسام النظام
+              </h4>
+              <ul className="space-y-2 text-xs text-slate-400">
+                <li>
+                  <a href="#features" className="hover:text-amber-400 transition-colors">
+                    {t('navFeatures')}
+                  </a>
+                </li>
+                <li>
+                  <a href="#how-it-works" className="hover:text-amber-400 transition-colors">
+                    {t('navHowItWorks')}
+                  </a>
+                </li>
+                <li>
+                  <a href="#simulator" className="hover:text-amber-400 transition-colors">
+                    {t('navSimulator')}
+                  </a>
+                </li>
+                <li>
+                  <a href="#benefits" className="hover:text-amber-400 transition-colors">
+                    {t('navBenefits')}
+                  </a>
+                </li>
+                <li>
+                  <a href="#faq" className="hover:text-amber-400 transition-colors">
+                    {t('navFaq')}
+                  </a>
+                </li>
+              </ul>
+            </div>
+
+            <div className="space-y-2.5 pt-2 border-t border-slate-800/80">
+              <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                {t('legalSectionTitle')}
+              </h4>
+              <ul className="space-y-2 text-xs text-slate-300">
+                <li>
+                  <a
+                    href={buildLegalPath('privacy')}
+                    onClick={(e) => handleLegalClick(e, 'privacy')}
+                    className="hover:text-amber-400 underline-offset-4 hover:underline transition-colors"
+                  >
+                    {t('privacyPolicy')}
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href={buildLegalPath('terms')}
+                    onClick={(e) => handleLegalClick(e, 'terms')}
+                    className="hover:text-amber-400 underline-offset-4 hover:underline transition-colors"
+                  >
+                    {t('termsOfService')}
+                  </a>
+                </li>
+              </ul>
+            </div>
           </div>
 
           {/* Languages & Drive */}
@@ -99,6 +140,23 @@ export const Footer: React.FC = () => {
         {/* Bottom Bar */}
         <div className="pt-8 border-t border-slate-800/80 flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-400">
           <div>{t('allRightsReserved')}</div>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <a
+              href={buildLegalPath('privacy')}
+              onClick={(e) => handleLegalClick(e, 'privacy')}
+              className="text-slate-300 hover:text-amber-400 transition-colors font-medium"
+            >
+              {t('privacyPolicy')}
+            </a>
+            <span aria-hidden="true" className="text-slate-600">·</span>
+            <a
+              href={buildLegalPath('terms')}
+              onClick={(e) => handleLegalClick(e, 'terms')}
+              className="text-slate-300 hover:text-amber-400 transition-colors font-medium"
+            >
+              {t('termsOfService')}
+            </a>
+          </div>
           <div className="flex flex-wrap items-center justify-center gap-1.5 text-center">
             <span>صمم من موقع خدماتي البرمجية</span>
             <a

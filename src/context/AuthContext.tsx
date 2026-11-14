@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   auth,
   db,
@@ -53,10 +53,12 @@ import {
 } from '../utils/accounting';
 import {
   assertDriveSessionMatchesAccount,
+  assertOrgDriveAuthorizationEligibility,
   clearDriveSession,
   downloadOriginalClosingExcelFromDrive,
   evaluateOrgDriveReadiness,
   getActiveDriveSession,
+  isOAuthCancellationOrConfigError,
   OrgDriveReadinessResult,
   DRIVE_NOT_READY_MESSAGE,
   requestDriveAuthorization,
@@ -179,6 +181,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [authNotice, setAuthNotice] = useState<{ type: 'info' | 'warning' | 'error'; message: string } | null>(null);
 
+  const activeUserUidRef = useRef<string | null>(null);
+  const activeOrgIdRef = useRef<string | null>(null);
+  const prevUserUidRef = useRef<string | null>(null);
+  const prevOrgIdRef = useRef<string | null>(null);
+
+  activeUserUidRef.current = currentUser?.uid ?? null;
+  activeOrgIdRef.current = currentOrg?.id ?? null;
+
+  // Enforce strict RAM session & tenant-state isolation whenever Firebase user or organization switches
+  useEffect(() => {
+    const nextUid = currentUser?.uid ?? null;
+    if (prevUserUidRef.current && prevUserUidRef.current !== nextUid) {
+      clearDriveSession();
+    }
+    if (!nextUid) {
+      clearDriveSession();
+    }
+    prevUserUidRef.current = nextUid;
+  }, [currentUser?.uid]);
+
+  useEffect(() => {
+    const nextOrgId = currentOrg?.id ?? null;
+    if (prevOrgIdRef.current && prevOrgIdRef.current !== nextOrgId) {
+      clearDriveSession(prevOrgIdRef.current);
+      setBranches([]);
+      setCurrentBranch(null);
+      setEmployees([]);
+      setClosings([]);
+      setClosingArchives([]);
+      setAuditLogs([]);
+    }
+    prevOrgIdRef.current = nextOrgId;
+  }, [currentOrg?.id]);
+
   const clearAuthNotice = () => setAuthNotice(null);
 
   useEffect(() => {
@@ -190,6 +226,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     getRedirectResult(auth)
       .then(async (result) => {
         if (result?.user) {
+          if (activeUserUidRef.current && activeUserUidRef.current !== result.user.uid) {
+            clearDriveSession();
+          }
           setCurrentUser(result.user);
           await loadUserData(result.user);
         }
@@ -199,6 +238,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      const prevUid = activeUserUidRef.current;
+      if (!fbUser || (prevUid && prevUid !== fbUser.uid)) {
+        clearDriveSession();
+      }
       setCurrentUser(fbUser);
       if (fbUser) {
         await loadUserData(fbUser);
@@ -288,9 +331,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const data = docSnap.data() as UserProfile;
           if (data.role === 'employee' && data.isActive === false) {
             // Instantly terminate disabled session without window.alert
+            clearDriveSession();
             signOut(auth).then(() => {
               setUserProfile(null);
               setCurrentOrg(null);
+              setBranches([]);
+              setCurrentBranch(null);
+              setEmployees([]);
+              setClosings([]);
+              setClosingArchives([]);
+              setAuditLogs([]);
               setAuthNotice({
                 type: 'error',
                 message: 'تم تعطيل هذا الحساب من قبل إدارة المؤسسة. تم إنهاء الجلسة فوراً.',
@@ -404,15 +454,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         // CRITICAL SECURITY ENFORCEMENT: Block disabled employees immediately
         if (profile.role === 'employee' && profile.isActive === false) {
+          clearDriveSession();
           await signOut(auth);
           setUserProfile(null);
           setCurrentOrg(null);
+          setBranches([]);
+          setCurrentBranch(null);
+          setEmployees([]);
+          setClosings([]);
+          setClosingArchives([]);
+          setAuditLogs([]);
           setLoading(false);
           setAuthNotice({
             type: 'error',
             message: 'تم تعطيل هذا الحساب من قبل إدارة المؤسسة. يرجى مراجعة المدير العام.',
           });
           return;
+        }
+
+        if (activeOrgIdRef.current && activeOrgIdRef.current !== profile.orgId) {
+          clearDriveSession(activeOrgIdRef.current);
+          setCurrentOrg(null);
+          setBranches([]);
+          setCurrentBranch(null);
+          setEmployees([]);
+          setClosings([]);
+          setClosingArchives([]);
+          setAuditLogs([]);
         }
 
         setUserProfile(profile);
@@ -422,6 +490,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const orgSnap = await getDoc(orgDocRef);
           if (orgSnap.exists()) {
             setCurrentOrg(orgSnap.data() as Organization);
+          } else {
+            setCurrentOrg(null);
           }
 
           const branchesRef = collection(db, 'branches');
@@ -440,12 +510,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           setNeedsOnboarding(false);
         } else {
+          setCurrentOrg(null);
           setNeedsOnboarding(true);
         }
       } else {
         // Explicit distinction: User genuinely has no document yet -> Onboarding
+        clearDriveSession();
         setUserProfile(null);
         setCurrentOrg(null);
+        setBranches([]);
+        setCurrentBranch(null);
+        setEmployees([]);
+        setClosings([]);
+        setClosingArchives([]);
+        setAuditLogs([]);
         setNeedsOnboarding(true);
       }
     } catch (error: any) {
@@ -1286,6 +1364,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (
       userProfile.role !== 'manager' ||
       !userProfile.isActive ||
+      userProfile.orgId !== currentOrg.id ||
       currentUser.uid !== currentOrg.ownerId
     ) {
       throw new Error('ربط Google Drive مقتصر حصراً على مالك المؤسسة المعتمد.');
@@ -1297,8 +1376,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('لا يمكن اعتماد ربط Google Drive قبل نجاح اختبار الكتابة والقراءة الفعلية.');
     }
 
+    const targetOrgId = currentOrg.id;
+    const targetUserUid = currentUser.uid;
+    if (activeOrgIdRef.current !== targetOrgId || activeUserUidRef.current !== targetUserUid) {
+      throw new Error('تم تبديل المؤسسة أو الجلسة أثناء الربط؛ تم إيقاف الحفظ لحماية عزل المؤسسات.');
+    }
+
+    const orgBranchIds = new Set(branches.filter((b) => b.orgId === targetOrgId).map((b) => b.id));
     const nowIso = new Date().toISOString();
-    const orgRef = doc(db, 'organizations', currentOrg.id);
+    const orgRef = doc(db, 'organizations', targetOrgId);
     const batch = writeBatch(db);
 
     const orgUpdatePayload: Record<string, any> = {
@@ -1326,6 +1412,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const branchMap = new Map<string, { folderId: string; folderName: string; webViewLink: string }>();
     if (data.branchFolders && data.branchFolders.length > 0) {
       for (const bf of data.branchFolders) {
+        if (!orgBranchIds.has(bf.branchId)) {
+          throw new Error(`تعارض عزل الفروع: الفرع (${bf.branchId}) لا يتبع للمؤسسة (${targetOrgId}).`);
+        }
         branchMap.set(bf.branchId, bf);
         const branchRef = doc(db, 'branches', bf.branchId);
         batch.update(branchRef, {
@@ -1340,11 +1429,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await batch.commit();
     } catch (error) {
       console.error('Error saving Drive connection metadata:', error);
-      handleFirestoreError(error, OperationType.UPDATE, `organizations/${currentOrg.id}`);
+      handleFirestoreError(error, OperationType.UPDATE, `organizations/${targetOrgId}`);
+    }
+
+    if (activeOrgIdRef.current !== targetOrgId || activeUserUidRef.current !== targetUserUid) {
+      return;
     }
 
     setCurrentOrg((prev) =>
-      prev
+      prev && prev.id === targetOrgId
         ? {
             ...prev,
             driveConnected: true,
@@ -1368,6 +1461,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (branchMap.size > 0) {
       setBranches((prev) =>
         prev.map((b) => {
+          if (b.orgId !== targetOrgId) return b;
           const bf = branchMap.get(b.id);
           return bf
             ? {
@@ -1380,7 +1474,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         })
       );
       setCurrentBranch((prev) => {
-        if (!prev) return prev;
+        if (!prev || prev.orgId !== targetOrgId) return prev;
         const bf = branchMap.get(prev.id);
         return bf
           ? {
@@ -1403,15 +1497,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (
       userProfile.role !== 'manager' ||
       !userProfile.isActive ||
+      userProfile.orgId !== currentOrg.id ||
       currentUser.uid !== currentOrg.ownerId
     ) {
       return;
     }
     if (!currentOrg.driveConnected) return;
 
+    const targetOrgId = currentOrg.id;
+    const targetUserUid = currentUser.uid;
+    if (activeOrgIdRef.current !== targetOrgId || activeUserUidRef.current !== targetUserUid) {
+      return;
+    }
+
     const nowIso = new Date().toISOString();
     const safeError = (errorMessage || 'فشل التحقق من جاهزية Google Drive').slice(0, 500);
-    const orgRef = doc(db, 'organizations', currentOrg.id);
+    const orgRef = doc(db, 'organizations', targetOrgId);
 
     try {
       await updateDoc(orgRef, {
@@ -1421,8 +1522,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updatedAt: nowIso,
       });
 
+      if (activeOrgIdRef.current !== targetOrgId || activeUserUidRef.current !== targetUserUid) {
+        return;
+      }
+
       setCurrentOrg((prev) =>
-        prev
+        prev && prev.id === targetOrgId
           ? {
               ...prev,
               driveWriteVerified: false,
@@ -1448,15 +1553,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (
       userProfile.role !== 'manager' ||
       !userProfile.isActive ||
+      userProfile.orgId !== currentOrg.id ||
       currentUser.uid !== currentOrg.ownerId
     ) {
       throw new Error('فصل ربط Google Drive مقتصر حصراً على مالك المؤسسة المعتمد.');
     }
 
-    clearDriveSession();
+    const targetOrgId = currentOrg.id;
+    const targetUserUid = currentUser.uid;
+    clearDriveSession(targetOrgId);
 
     const nowIso = new Date().toISOString();
-    const orgRef = doc(db, 'organizations', currentOrg.id);
+    const orgRef = doc(db, 'organizations', targetOrgId);
     const batch = writeBatch(db);
 
     batch.update(orgRef, {
@@ -1477,7 +1585,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     for (const branch of branches) {
-      if (branch.driveFolderId || branch.driveFolderName || branch.driveFolderLink) {
+      if (
+        branch.orgId === targetOrgId &&
+        (branch.driveFolderId || branch.driveFolderName || branch.driveFolderLink)
+      ) {
         const branchRef = doc(db, 'branches', branch.id);
         batch.update(branchRef, {
           driveFolderId: deleteField(),
@@ -1491,11 +1602,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await batch.commit();
     } catch (error) {
       console.error('Error disconnecting Drive metadata:', error);
-      handleFirestoreError(error, OperationType.UPDATE, `organizations/${currentOrg.id}`);
+      handleFirestoreError(error, OperationType.UPDATE, `organizations/${targetOrgId}`);
+    }
+
+    if (activeOrgIdRef.current !== targetOrgId || activeUserUidRef.current !== targetUserUid) {
+      return;
     }
 
     setCurrentOrg((prev) =>
-      prev
+      prev && prev.id === targetOrgId
         ? {
             ...prev,
             driveConnected: false,
@@ -1517,16 +1632,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
 
     setBranches((prev) =>
-      prev.map((b) => ({
-        ...b,
-        driveFolderId: undefined,
-        driveFolderName: undefined,
-        driveFolderLink: undefined,
-      }))
+      prev.map((b) =>
+        b.orgId === targetOrgId
+          ? {
+              ...b,
+              driveFolderId: undefined,
+              driveFolderName: undefined,
+              driveFolderLink: undefined,
+            }
+          : b
+      )
     );
 
     setCurrentBranch((prev) =>
-      prev
+      prev && prev.orgId === targetOrgId
         ? {
             ...prev,
             driveFolderId: undefined,
@@ -1547,15 +1666,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ): Promise<ClosingArchiveRecord> => {
     const interactiveAuthIfNeeded = options?.interactiveAuthIfNeeded ?? true;
 
-    if (!currentUser || !currentOrg || !userProfile) {
-      throw new Error('يجب تسجيل الدخول بصفة مدير معتمد لأرشفة الإقفالات.');
+    if (!currentOrg || !currentUser) {
+      throw new Error('لا توجد مؤسسة أو جلسة مستخدم نشطة لإجراء الأرشفة في Google Drive.');
     }
-    if (userProfile.role !== 'manager' || !userProfile.isActive) {
-      throw new Error('أرشفة الإقفالات ورفع ملفات Excel إلى Google Drive مقتصرة حصراً على المدير.');
-    }
-    if (currentUser.uid !== currentOrg.ownerId) {
-      throw new Error('صلاحية الرفع إلى Google Drive مقتصرة على مالك المؤسسة المرتبط حسابه.');
-    }
+
+    const targetOrg = currentOrg;
+    const targetOrgId = targetOrg.id;
+    const targetUserUid = currentUser.uid;
+
+    const googleProviderData = currentUser.providerData.find((p) => p.providerId === 'google.com');
+    const eligibility = assertOrgDriveAuthorizationEligibility({
+      currentUserUid: targetUserUid,
+      userProfile,
+      org: targetOrg,
+      googleUid: googleProviderData?.uid,
+      ownerEmail: googleProviderData?.email || currentUser.email || targetOrg.ownerEmail || '',
+    });
 
     const closingDocRef = doc(db, 'closings', closingId);
     const closingSnap = await getDocFromServer(closingDocRef).catch(() => getDoc(closingDocRef));
@@ -1564,7 +1690,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const closing = closingSnap.data() as ShiftClosing;
-    if (closing.orgId !== currentOrg.id) {
+    if (closing.orgId !== targetOrgId) {
       throw new Error('لا يمكن أرشفة إقفال تابع لمؤسسة أخرى.');
     }
     if (closing.status !== 'approved') {
@@ -1573,18 +1699,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { yearMonth } = assertValidIsoCalendarDate(closing.date);
 
-    let branch = branches.find((b) => b.id === closing.branchId) || null;
+    let branch = branches.find((b) => b.id === closing.branchId && b.orgId === targetOrgId) || null;
     if (!branch) {
       const brSnap = await getDoc(doc(db, 'branches', closing.branchId));
       if (brSnap.exists()) {
         branch = brSnap.data() as Branch;
       }
     }
-    if (!branch) {
-      throw new Error('بيانات الفرع المرتبط بالإقفال غير متوفرة.');
+    if (!branch || branch.orgId !== targetOrgId) {
+      throw new Error('بيانات الفرع المرتبط بالإقفال غير متوفرة أو لا تتبع للمؤسسة الحالية.');
     }
 
-    const readiness = evaluateOrgDriveReadiness(currentOrg, branch);
+    const readiness = evaluateOrgDriveReadiness(targetOrg, branch);
     if (!readiness.isReady) {
       throw new Error(readiness.detail || readiness.message);
     }
@@ -1597,7 +1723,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         prevArchive = archSnap.data() as ClosingArchiveRecord;
       }
     } catch {
-      prevArchive = closingArchives.find((a) => a.closingId === closingId) || null;
+      prevArchive = closingArchives.find((a) => a.closingId === closingId && a.orgId === targetOrgId) || null;
     }
 
     // Already archived cleanly on current version -> safe idempotent return
@@ -1619,22 +1745,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
-    // Ensure owner Google identity & RAM-only OAuth access token
-    const googleProviderData = currentUser.providerData.find((p) => p.providerId === 'google.com');
-    const googleUid = googleProviderData?.uid;
-    const ownerEmail = googleProviderData?.email || currentUser.email || '';
-    if (!googleUid || !ownerEmail) {
-      throw new Error('حساب المالك الحالي غير مرتبط بمزود Google لتفويض Google Drive.');
-    }
-
-    let session = getActiveDriveSession();
+    let session = getActiveDriveSession(targetOrgId);
     if (session) {
       try {
         session = assertDriveSessionMatchesAccount(session, {
-          googleUid,
-          email: ownerEmail,
-          linkedSub: currentOrg.driveGoogleSub,
-          linkedEmail: currentOrg.driveAccountEmail,
+          orgId: targetOrgId,
+          googleUid: eligibility.googleUid,
+          email: eligibility.ownerEmail,
+          linkedSub: targetOrg.driveGoogleSub,
+          linkedEmail: targetOrg.driveAccountEmail,
         });
       } catch {
         session = null;
@@ -1647,17 +1766,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           'تم اعتماد الإقفال بنجاح. اضغط «أرشفة في Google Drive» لتجديد تفويض المتصفح المؤقت ورفع ملف Excel.'
         );
       }
-      session = await requestDriveAuthorization(googleUid, ownerEmail, {
-        linkedSub: currentOrg.driveGoogleSub,
-        linkedEmail: currentOrg.driveAccountEmail,
+      session = await requestDriveAuthorization({
+        orgId: targetOrgId,
+        googleUid: eligibility.googleUid,
+        email: eligibility.ownerEmail,
+        linkedAccount: eligibility.linkedAccount,
       });
+    }
+
+    if (activeOrgIdRef.current !== targetOrgId || activeUserUidRef.current !== targetUserUid) {
+      throw new Error('تم تبديل المؤسسة أو الحساب أثناء الأرشفة؛ تم إيقاف الرفع لحماية عزل المؤسسات.');
     }
 
     try {
       // 1. Generate formatted RTL Excel workbook using ONLY real fields
       const excelPayload = await generateClosingExcelWorkbook({
         closing,
-        org: currentOrg,
+        org: targetOrg,
         branch,
         revision: targetRevision,
       });
@@ -1665,7 +1790,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // 2. Upload to Drive ({org}/{branch}/{YYYY-MM}) and strictly verify metadata + binary + exceljs content
       const uploadResult = await uploadAndVerifyClosingExcelToDrive({
         token: session.accessToken,
-        org: currentOrg,
+        org: targetOrg,
         branch,
         closing,
         revision: targetRevision,
@@ -1673,14 +1798,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         forbiddenPreviousFileId,
       });
 
+      if (activeOrgIdRef.current !== targetOrgId || activeUserUidRef.current !== targetUserUid) {
+        throw new Error('تم تبديل المؤسسة أثناء الرفع؛ تم إيقاف تحديث Firestore.');
+      }
+
       const nowIso = new Date().toISOString();
 
       // 3. Cache verified month folder ref in Organization metadata if new/updated
       const monthKey = `${branch.id}_${yearMonth}`;
-      const existingMonthRef = currentOrg.driveMonthFolderIds?.[monthKey];
+      const existingMonthRef = targetOrg.driveMonthFolderIds?.[monthKey];
       if (!existingMonthRef || existingMonthRef.folderId !== uploadResult.monthFolder.folderId) {
         try {
-          await updateDoc(doc(db, 'organizations', currentOrg.id), {
+          await updateDoc(doc(db, 'organizations', targetOrgId), {
             [`driveMonthFolderIds.${monthKey}`]: uploadResult.monthFolder,
             updatedAt: nowIso,
           });
@@ -1692,7 +1821,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // 4. Write 'archived' state to Firestore closingArchives ONLY after verified Drive read-back
       const archivedFields: Record<string, any> = {
         closingId: closing.id,
-        orgId: currentOrg.id,
+        orgId: targetOrgId,
         branchId: closing.branchId,
         yearMonth,
         archiveStatus: 'archived',
@@ -1703,7 +1832,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         drivePayloadHash: uploadResult.payloadHash,
         driveRevision: targetRevision,
         archivedAt: nowIso,
-        archivedBy: currentUser.uid,
+        archivedBy: targetUserUid,
         updatedAt: nowIso,
       };
 
@@ -1726,7 +1855,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           drivePayloadHash: uploadResult.payloadHash,
           driveRevision: targetRevision,
           archivedAt: nowIso,
-          archivedBy: currentUser.uid,
+          archivedBy: targetUserUid,
           archiveError: deleteField(),
           updatedAt: nowIso,
           ...(isReArchive && prevArchive.driveExcelFileId
@@ -1738,7 +1867,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const savedRecord: ClosingArchiveRecord = {
         closingId: closing.id,
-        orgId: currentOrg.id,
+        orgId: targetOrgId,
         branchId: closing.branchId,
         yearMonth,
         archiveStatus: 'archived',
@@ -1752,41 +1881,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           isReArchive && prevArchive?.driveExcelFileId ? prevArchive.driveExcelFileId : undefined,
         sourceCorrectionAt: closing.correctedAt || undefined,
         archivedAt: nowIso,
-        archivedBy: currentUser.uid,
+        archivedBy: targetUserUid,
         updatedAt: nowIso,
       };
 
-      setClosingArchives((prev) => {
-        const filteredList = prev.filter((item) => item.closingId !== closing.id);
-        return [savedRecord, ...filteredList];
-      });
+      if (activeOrgIdRef.current === targetOrgId) {
+        setClosingArchives((prev) => {
+          const filteredList = prev.filter((item) => item.closingId !== closing.id);
+          return [savedRecord, ...filteredList];
+        });
+      }
 
       return savedRecord;
     } catch (err: any) {
-      const errTime = new Date().toISOString();
-      const rawMsg = String(err?.message || err || 'فشل أرشفة ملف Excel في Google Drive').trim();
-      const safeError = (rawMsg.length >= 5 ? rawMsg : `خطأ أرشفة: ${rawMsg}`).slice(0, 1000);
+      if (!isOAuthCancellationOrConfigError(err) && activeOrgIdRef.current === targetOrgId) {
+        const errTime = new Date().toISOString();
+        const rawMsg = String(err?.message || err || 'فشل أرشفة ملف Excel في Google Drive').trim();
+        const safeError = (rawMsg.length >= 5 ? rawMsg : `خطأ أرشفة: ${rawMsg}`).slice(0, 1000);
 
-      try {
-        if (!prevArchive) {
-          await setDoc(archiveDocRef, {
-            closingId: closing.id,
-            orgId: currentOrg.id,
-            branchId: closing.branchId,
-            yearMonth,
-            archiveStatus: 'failed',
-            archiveError: safeError,
-            updatedAt: errTime,
-          });
-        } else if (prevArchive.archiveStatus !== 'archived') {
-          await updateDoc(archiveDocRef, {
-            archiveStatus: 'failed',
-            archiveError: safeError,
-            updatedAt: errTime,
-          });
+        try {
+          if (!prevArchive) {
+            await setDoc(archiveDocRef, {
+              closingId: closing.id,
+              orgId: targetOrgId,
+              branchId: closing.branchId,
+              yearMonth,
+              archiveStatus: 'failed',
+              archiveError: safeError,
+              updatedAt: errTime,
+            });
+          } else if (prevArchive.archiveStatus !== 'archived') {
+            await updateDoc(archiveDocRef, {
+              archiveStatus: 'failed',
+              archiveError: safeError,
+              updatedAt: errTime,
+            });
+          }
+        } catch (persistErr) {
+          console.warn('Notice recording archive failure in closingArchives:', persistErr);
         }
-      } catch (persistErr) {
-        console.warn('Notice recording archive failure in closingArchives:', persistErr);
       }
 
       throw err;
@@ -1823,15 +1956,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const downloadArchivedExcelFromDrive = async (
     closingId: string
   ): Promise<{ fileName: string; revision: number }> => {
-    if (!currentUser || !currentOrg || !userProfile) {
-      throw new Error('يجب تسجيل الدخول بصفة مدير معتمد لتنزيل الملف الأصلي من Google Drive.');
-    }
-    if (userProfile.role !== 'manager' || !userProfile.isActive) {
-      throw new Error('تنزيل ملفات الإقفال الأصلية من Google Drive مقتصر حصراً على المدير.');
-    }
-    if (currentUser.uid !== currentOrg.ownerId) {
-      throw new Error('صلاحية الوصول إلى ملفات Google Drive وتنزيلها مقتصرة على مالك المؤسسة المرتبط حسابه.');
-    }
+    const targetOrg = currentOrg;
+    const targetOrgId = currentOrg?.id;
+    const targetUserUid = currentUser?.uid;
+
+    const googleProviderData = currentUser?.providerData.find((p) => p.providerId === 'google.com');
+    const eligibility = assertOrgDriveAuthorizationEligibility({
+      currentUserUid: targetUserUid,
+      userProfile,
+      org: targetOrg,
+      googleUid: googleProviderData?.uid,
+      ownerEmail: googleProviderData?.email || currentUser?.email || targetOrg?.ownerEmail || '',
+    });
 
     const closingDocRef = doc(db, 'closings', closingId);
     const closingSnap = await getDocFromServer(closingDocRef).catch(() => getDoc(closingDocRef));
@@ -1839,7 +1975,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('سجل الإقفال غير موجود.');
     }
     const closing = closingSnap.data() as ShiftClosing;
-    if (closing.orgId !== currentOrg.id) {
+    if (!targetOrg || !targetOrgId || closing.orgId !== targetOrgId) {
       throw new Error('لا يمكن تنزيل ملف أرشيف تابع لمؤسسة أخرى.');
     }
 
@@ -1853,21 +1989,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('لم يتم رفع ملف Excel لهذا الإقفال إلى Google Drive بعد.');
     }
 
-    const googleProviderData = currentUser.providerData.find((p) => p.providerId === 'google.com');
-    const googleUid = googleProviderData?.uid;
-    const ownerEmail = googleProviderData?.email || currentUser.email || '';
-    if (!googleUid || !ownerEmail) {
-      throw new Error('حساب المالك الحالي غير مرتبط بمزود Google لتفويض Google Drive.');
-    }
-
-    let session = getActiveDriveSession();
+    let session = getActiveDriveSession(targetOrgId);
     if (session) {
       try {
         session = assertDriveSessionMatchesAccount(session, {
-          googleUid,
-          email: ownerEmail,
-          linkedSub: currentOrg.driveGoogleSub,
-          linkedEmail: currentOrg.driveAccountEmail,
+          orgId: targetOrgId,
+          googleUid: eligibility.googleUid,
+          email: eligibility.ownerEmail,
+          linkedSub: targetOrg.driveGoogleSub,
+          linkedEmail: targetOrg.driveAccountEmail,
         });
       } catch {
         session = null;
@@ -1875,15 +2005,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     if (!session) {
-      session = await requestDriveAuthorization(googleUid, ownerEmail, {
-        linkedSub: currentOrg.driveGoogleSub,
-        linkedEmail: currentOrg.driveAccountEmail,
+      session = await requestDriveAuthorization({
+        orgId: targetOrgId,
+        googleUid: eligibility.googleUid,
+        email: eligibility.ownerEmail,
+        linkedAccount: eligibility.linkedAccount,
       });
+    }
+
+    if (activeOrgIdRef.current !== targetOrgId || activeUserUidRef.current !== targetUserUid) {
+      throw new Error('تم تبديل المؤسسة أو الجلسة أثناء التنزيل؛ تم إيقاف العملية لحماية العزل.');
     }
 
     const downloaded = await downloadOriginalClosingExcelFromDrive({
       token: session.accessToken,
-      org: currentOrg,
+      org: targetOrg,
       closing,
       archiveRecord,
     });

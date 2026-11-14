@@ -12,6 +12,7 @@ import { EmployeeDashboard } from './employee/EmployeeDashboard';
 import { useTheme } from '../context/ThemeContext';
 import { SupportedLanguage } from '../types';
 import { getActiveDriveSession } from '../services/driveService';
+import { AppPageRoute, buildLegalPath } from '../utils/legalRoutes';
 import {
   Building2,
   Lock,
@@ -35,7 +36,11 @@ import {
   Clock
 } from 'lucide-react';
 
-export const Dashboard: React.FC = () => {
+interface DashboardProps {
+  onNavigatePage?: (page: AppPageRoute) => void;
+}
+
+export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage }) => {
   const {
     currentUser,
     userProfile,
@@ -55,14 +60,16 @@ export const Dashboard: React.FC = () => {
   // Manager navigation tab state (including new Settings tab)
   const [managerTab, setManagerTab] = useState<'overview' | 'closings' | 'reports' | 'branches' | 'employees' | 'audit' | 'settings'>('overview');
   const [langMenuOpen, setLangMenuOpen] = useState(false);
-  const [hasActiveDriveSession, setHasActiveDriveSession] = useState<boolean>(() => Boolean(getActiveDriveSession()));
+  const [hasActiveDriveSession, setHasActiveDriveSession] = useState<boolean>(() =>
+    Boolean(getActiveDriveSession(currentOrg?.id))
+  );
 
   useEffect(() => {
-    const syncSessionFlag = () => setHasActiveDriveSession(Boolean(getActiveDriveSession()));
+    const syncSessionFlag = () => setHasActiveDriveSession(Boolean(getActiveDriveSession(currentOrg?.id)));
     syncSessionFlag();
     const interval = setInterval(syncSessionFlag, 15000);
     return () => clearInterval(interval);
-  }, [managerTab, currentOrg?.driveConnected, currentOrg?.driveWriteVerifiedAt]);
+  }, [managerTab, currentOrg?.id, currentOrg?.driveConnected, currentOrg?.driveWriteVerifiedAt]);
 
   // Count pending reviews for manager badge
   const pendingCount = closings.filter((c) => c.status === 'pending_review').length;
@@ -387,6 +394,33 @@ export const Dashboard: React.FC = () => {
       <footer className="mt-auto border-t border-slate-200 dark:border-slate-800/80 py-4 text-xs text-slate-500 dark:text-slate-400 bg-white/40 dark:bg-[#0c1829]/40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-start">
           <p>© {new Date().getFullYear()} {currentOrg?.name || 'الإقفال | AL EQFAL'}</p>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <a
+              href={buildLegalPath('privacy')}
+              onClick={(e) => {
+                if (onNavigatePage && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                  e.preventDefault();
+                  onNavigatePage('privacy');
+                }
+              }}
+              className="hover:text-amber-500 dark:hover:text-amber-400 transition-colors font-medium"
+            >
+              {t('privacyPolicy')}
+            </a>
+            <span aria-hidden="true">·</span>
+            <a
+              href={buildLegalPath('terms')}
+              onClick={(e) => {
+                if (onNavigatePage && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                  e.preventDefault();
+                  onNavigatePage('terms');
+                }
+              }}
+              className="hover:text-amber-500 dark:hover:text-amber-400 transition-colors font-medium"
+            >
+              {t('termsOfService')}
+            </a>
+          </div>
           <div className="flex flex-wrap items-center justify-center gap-1.5">
             <span>صمم من موقع خدماتي البرمجية</span>
             <a

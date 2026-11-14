@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { ShiftClosing, ClosingArchiveRecord } from '../../types';
@@ -68,6 +68,15 @@ export const ClosingsReview: React.FC = () => {
     type: 'success' | 'warning' | 'error';
     message: string;
   } | null>(null);
+
+  useEffect(() => {
+    setActiveClosing(null);
+    setRejectionReason('');
+    setIsRejecting(false);
+    setIsCorrecting(false);
+    setActionError(null);
+    setArchiveFeedback(null);
+  }, [currentOrg?.id]);
 
   const corrCalc = calculateShiftTotals(corrCash, corrCard, corrExpenses);
 

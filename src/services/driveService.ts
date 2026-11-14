@@ -22,6 +22,7 @@ import {
   DriveMonthFolderRef,
   Organization,
   ShiftClosing,
+  UserProfile,
 } from '../types';
 import {
   CLOSING_XLSX_MIME,
@@ -31,6 +32,7 @@ import {
 } from './excelReportService';
 
 export interface DriveTokenSession {
+  orgId: string;
   accessToken: string;
   expiresIn: number;
   obtainedAt: number;
@@ -64,8 +66,8 @@ export interface OrgDriveProvisionResult {
   verifiedCount: number;
 }
 
-// In-Memory token session ONLY for the active browser tab
-let activeSession: DriveTokenSession | null = null;
+// In-Memory token sessions ONLY for the active browser tab, strictly keyed by orgId
+const activeSessionsByOrg = new Map<string, DriveTokenSession>();
 
 const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -105,7 +107,10 @@ export const getDriveOAuthClientConfig = (): {
   clientId: string;
   source: 'vite_env' | 'missing';
 } => {
-  const envClientId = (import.meta as any).env?.VITE_GOOGLE_DRIVE_CLIENT_ID?.trim();
+  const viteEnvClientId = (import.meta as any).env?.VITE_GOOGLE_DRIVE_CLIENT_ID?.trim();
+  const nodeEnvClientId =
+    typeof process !== 'undefined' ? process.env?.VITE_GOOGLE_DRIVE_CLIENT_ID?.trim() : '';
+  const envClientId = viteEnvClientId || nodeEnvClientId;
   if (envClientId) {
     return { clientId: envClientId, source: 'vite_env' };
   }
@@ -120,64 +125,182 @@ export const loadGoogleIdentityScript = (): Promise<void> => {
     if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
       return resolve();
     }
-    const existingScript = document.getElementById('google-gis-script');
+    const existingScript = document.getElementById('google-gis-script') as HTMLScriptElement | null;
     if (existingScript) {
-      existingScript.addEventListener('load', () => resolve());
-      existingScript.addEventListener('error', () =>
-        reject(new Error('فشل تحميل مكتبة Google Identity Services. يرجى التحقق من الاتصال.'))
-      );
-      return;
+      if (existingScript.dataset.gisStatus === 'loaded') {
+        if ((window as any).google?.accounts?.oauth2) {
+          return resolve();
+        }
+        return reject(new Error('تم تحميل مكتبة Google Identity Services ولكن واجهة OAuth غير متاحة.'));
+      }
+      if (existingScript.dataset.gisStatus === 'error') {
+        existingScript.remove();
+      } else {
+        existingScript.addEventListener('load', () => resolve(), { once: true });
+        existingScript.addEventListener(
+          'error',
+          () => reject(new Error('فشل تحميل مكتبة Google Identity Services. يرجى التحقق من الاتصال.')),
+          { once: true }
+        );
+        return;
+      }
     }
     const script = document.createElement('script');
     script.id = 'google-gis-script';
     script.src = 'https://accounts.google.com/gsi/client';
     script.async = true;
     script.defer = true;
-    script.onload = () => resolve();
-    script.onerror = () =>
+    script.onload = () => {
+      script.dataset.gisStatus = 'loaded';
+      resolve();
+    };
+    script.onerror = () => {
+      script.dataset.gisStatus = 'error';
       reject(new Error('فشل تحميل مكتبة مصادقة Google Identity Services. يرجى التحقق من اتصال الإنترنت.'));
+    };
     document.head.appendChild(script);
   });
 };
 
 /**
- * Verifies that an active Drive session strictly matches the organization owner's
- * Firebase Google Provider AND (when already linked) the organization's linked Google account.
+ * Validates that the signed-in user is strictly authorized to link/operate Google Drive
+ * for the target organization (active owner manager with matching org & Google identity).
+ */
+export const assertOrgDriveAuthorizationEligibility = (params: {
+  currentUserUid?: string | null;
+  userProfile?: UserProfile | null;
+  org?: Organization | null;
+  googleUid?: string | null;
+  ownerEmail?: string | null;
+}): {
+  orgId: string;
+  googleUid: string;
+  ownerEmail: string;
+  linkedAccount?: { linkedSub?: string; linkedEmail?: string };
+} => {
+  const { currentUserUid, userProfile, org, googleUid, ownerEmail } = params;
+
+  if (!currentUserUid || !org || !userProfile) {
+    throw new Error('يجب تسجيل الدخول بحساب مالك المؤسسة لتفويض وربط Google Drive.');
+  }
+  if (!userProfile.isActive) {
+    throw new Error('حساب المستخدم معطل ولا يملك صلاحية ربط أو استخدام Google Drive.');
+  }
+  if (userProfile.role !== 'manager') {
+    throw new Error('لا يُسمح للموظفين بربط أو تعديل إعدادات Google Drive؛ الصلاحية محصورة بمالك المؤسسة.');
+  }
+  if (userProfile.orgId !== org.id) {
+    throw new Error('لا يمكن تفويض أو ربط Google Drive لمؤسسة أخرى غير المؤسسة الحالية.');
+  }
+  if (currentUserUid !== org.ownerId) {
+    throw new Error('ربط Google Drive وتفويضه مقتصر حصراً على مالك المؤسسة المعتمد.');
+  }
+  if (!googleUid || !ownerEmail || !ownerEmail.trim()) {
+    throw new Error('حساب المالك الحالي غير مرتبط بمزود Google لتفويض Google Drive.');
+  }
+
+  const normalizedOwnerEmail = ownerEmail.trim();
+  if (org.driveConnected) {
+    if (org.driveGoogleSub && org.driveGoogleSub !== googleUid) {
+      throw new Error(
+        `حساب Google المسجل دخولاً به (${normalizedOwnerEmail}) لا يطابق حساب Google المرتبط بالمؤسسة (${
+          org.driveAccountEmail || org.driveGoogleSub
+        }). يرجى تسجيل الدخول بالحساب المرتبط أو فصل الربط أولاً.`
+      );
+    }
+    if (
+      org.driveAccountEmail &&
+      org.driveAccountEmail.toLowerCase().trim() !== normalizedOwnerEmail.toLowerCase()
+    ) {
+      throw new Error(
+        `البريد الإلكتروني الحالي (${normalizedOwnerEmail}) لا يطابق بريد Google المرتبط بالمؤسسة (${org.driveAccountEmail}). تم إيقاف العملية لحماية مجلدات المؤسسة.`
+      );
+    }
+  }
+
+  return {
+    orgId: org.id,
+    googleUid,
+    ownerEmail: normalizedOwnerEmail,
+    linkedAccount: org.driveConnected
+      ? {
+          linkedSub: org.driveGoogleSub,
+          linkedEmail: org.driveAccountEmail,
+        }
+      : undefined,
+  };
+};
+
+/**
+ * Distinguishes transient OAuth popup cancellations, browser blockers, account-picker misclicks,
+ * or missing build config from actual Drive API / folder / write-read failures so a cancelled
+ * popup never marks an already-verified organization as failed or blocks shift closings.
+ */
+export const isOAuthCancellationOrConfigError = (err: unknown): boolean => {
+  const msg = typeof err === 'string' ? err : (err as any)?.message || '';
+  if (!msg) return false;
+  return (
+    msg.includes('تم إلغاء التفويض') ||
+    msg.includes('تم إغلاق نافذة تفويض Google') ||
+    msg.includes('حظر المتصفح فتح نافذة تفويض Google') ||
+    msg.includes('VITE_GOOGLE_DRIVE_CLIENT_ID') ||
+    msg.includes('واجهة Google Identity Services غير جاهزة') ||
+    msg.includes('فشل تحميل مكتبة') ||
+    msg.includes('فشل تهيئة عميل Google OAuth') ||
+    msg.includes('الحساب المختار') ||
+    msg.includes('البريد الإلكتروني للحساب المختار') ||
+    msg.includes('بريد حساب Google غير موثق')
+  );
+};
+
+/**
+ * Verifies that an active Drive session strictly matches the target organization AND
+ * the organization owner's Firebase Google Provider AND (when already linked) the linked account.
  */
 export const assertDriveSessionMatchesAccount = (
   session: DriveTokenSession | null,
   expected: {
+    orgId: string;
     googleUid: string;
     email: string;
     linkedSub?: string;
     linkedEmail?: string;
   }
 ): DriveTokenSession => {
+  if (!expected.orgId || !expected.orgId.trim()) {
+    throw new Error('معرّف المؤسسة المستهدفة مفقود للتحقق من جلسة Google Drive.');
+  }
   if (!session || !session.accessToken || !session.verified) {
-    clearDriveSession();
+    clearDriveSession(expected.orgId);
     throw new Error('لا توجد جلسة تفويض Google Drive نشطة وموثقة في الذاكرة.');
   }
+  if (session.orgId !== expected.orgId) {
+    clearDriveSession(expected.orgId);
+    throw new Error(
+      'جلسة تفويض Google Drive النشطة تابعة لمؤسسة أخرى ولا تخص المؤسسة الحالية. تم إيقاف العملية وعزل الجلسة.'
+    );
+  }
   if (Date.now() >= session.expiresAt) {
-    clearDriveSession();
+    clearDriveSession(expected.orgId);
     throw new Error('انتهت صلاحية جلسة تفويض Google Drive المؤقتة (401). يرجى إعادة التفويض.');
   }
   if (!expected.googleUid || !expected.email) {
     throw new Error('بيانات مزود Google لحساب مالك المؤسسة غير مكتملة.');
   }
   if (session.sub !== expected.googleUid) {
-    clearDriveSession();
+    clearDriveSession(expected.orgId);
     throw new Error(
       `حساب Google النشط (${session.email}) لا يطابق هوية Google المسجلة للمالك في Firebase. تم إيقاف المزامنة وإسقاط الجلسة.`
     );
   }
   if (session.email.toLowerCase().trim() !== expected.email.toLowerCase().trim()) {
-    clearDriveSession();
+    clearDriveSession(expected.orgId);
     throw new Error(
       `البريد الإلكتروني للجلسة النشطة (${session.email}) لا يطابق بريد مالك المؤسسة (${expected.email}). تم إيقاف المزامنة.`
     );
   }
   if (expected.linkedSub && session.sub !== expected.linkedSub) {
-    clearDriveSession();
+    clearDriveSession(expected.orgId);
     throw new Error(
       `الحساب المفوض حالياً (${session.email}) يختلف عن حساب Google المرتبط مسبقاً بالمؤسسة (${expected.linkedEmail || expected.linkedSub}). تم إيقاف العملية دون تعديل المجلدات.`
     );
@@ -186,7 +309,7 @@ export const assertDriveSessionMatchesAccount = (
     expected.linkedEmail &&
     session.email.toLowerCase().trim() !== expected.linkedEmail.toLowerCase().trim()
   ) {
-    clearDriveSession();
+    clearDriveSession(expected.orgId);
     throw new Error(
       `بريد جلسة Google Drive الحالية (${session.email}) يختلف عن البريد المرتبط بالمؤسسة (${expected.linkedEmail}). تم إيقاف العملية لحماية المجلدات.`
     );
@@ -195,21 +318,35 @@ export const assertDriveSessionMatchesAccount = (
 };
 
 /**
- * Requests OAuth access token via GIS and strictly validates Google identity
- * against the organization owner's Firebase Google Provider (and optional linked org account).
+ * Requests OAuth access token via GIS, binds it strictly to `orgId` in RAM only,
+ * and validates Google identity against the organization owner's Firebase Google Provider.
  */
-export const requestDriveAuthorization = async (
-  expectedGoogleUid: string,
-  expectedEmail: string,
-  linkedAccount?: { linkedSub?: string; linkedEmail?: string }
-): Promise<DriveTokenSession> => {
-  if (!expectedGoogleUid || !expectedEmail) {
+export const requestDriveAuthorization = async (params: {
+  orgId: string;
+  googleUid: string;
+  email: string;
+  linkedAccount?: { linkedSub?: string; linkedEmail?: string };
+}): Promise<DriveTokenSession> => {
+  const { orgId, googleUid: expectedGoogleUid, email: expectedEmail, linkedAccount } = params;
+
+  if (!orgId || !orgId.trim()) {
+    throw new Error('معرّف المؤسسة مطلوب لبدء تفويض Google Drive.');
+  }
+  if (!expectedGoogleUid || !expectedEmail || !expectedEmail.trim()) {
     throw new Error('بيانات مزود Google لحساب المالك غير مكتملة في الجلسة الحالية.');
   }
 
   if (linkedAccount?.linkedSub && linkedAccount.linkedSub !== expectedGoogleUid) {
     throw new Error(
       `حساب Google المسجل دخولاً به (${expectedEmail}) لا يطابق الحساب المرتبط بالمؤسسة (${linkedAccount.linkedEmail || linkedAccount.linkedSub}). يرجى الدخول بحساب المالك المرتبط أو فصل الربط أولاً.`
+    );
+  }
+  if (
+    linkedAccount?.linkedEmail &&
+    linkedAccount.linkedEmail.toLowerCase().trim() !== expectedEmail.toLowerCase().trim()
+  ) {
+    throw new Error(
+      `البريد الإلكتروني المسجل دخولاً به (${expectedEmail}) لا يطابق البريد المرتبط بالمؤسسة (${linkedAccount.linkedEmail}). يرجى الدخول بحساب المالك المرتبط أو فصل الربط أولاً.`
     );
   }
 
@@ -235,7 +372,7 @@ export const requestDriveAuthorization = async (
         login_hint: linkedAccount?.linkedEmail || expectedEmail,
         callback: async (tokenResponse: any) => {
           if (tokenResponse?.error) {
-            activeSession = null;
+            activeSessionsByOrg.delete(orgId);
             const desc = tokenResponse.error_description || tokenResponse.error;
             if (tokenResponse.error === 'access_denied') {
               return reject(new Error('تم إلغاء التفويض أو رفض منح الصلاحية من نافذة Google.'));
@@ -244,13 +381,13 @@ export const requestDriveAuthorization = async (
           }
 
           if (!tokenResponse?.access_token) {
-            activeSession = null;
+            activeSessionsByOrg.delete(orgId);
             return reject(new Error('لم يُرجع خادم Google رمز وصول (Access Token) صالحاً.'));
           }
 
           const rawExpiresIn = Number(tokenResponse.expires_in);
           if (isNaN(rawExpiresIn) || rawExpiresIn <= 0) {
-            activeSession = null;
+            activeSessionsByOrg.delete(orgId);
             return reject(new Error('لم ترجع استجابة Google مدة صلاحية صالحة (expires_in).'));
           }
 
@@ -265,7 +402,7 @@ export const requestDriveAuthorization = async (
             });
 
             if (!userInfoRes.ok) {
-              activeSession = null;
+              activeSessionsByOrg.delete(orgId);
               return reject(
                 new Error(
                   `تعذر التحقق من هوية حساب Google عبر نقطة UserInfo (رمز: ${userInfoRes.status}). تم إسقاط الرمز من الذاكرة.`
@@ -276,12 +413,12 @@ export const requestDriveAuthorization = async (
             const userInfo = await userInfoRes.json();
 
             if (userInfo.email_verified !== true) {
-              activeSession = null;
+              activeSessionsByOrg.delete(orgId);
               return reject(new Error('بريد حساب Google غير موثق (email_verified !== true). تم رفض الربط.'));
             }
 
             if (!userInfo.sub || userInfo.sub !== expectedGoogleUid) {
-              activeSession = null;
+              activeSessionsByOrg.delete(orgId);
               return reject(
                 new Error(
                   `الحساب المختار (${userInfo.email || 'غير معروف'}) لا يطابق هوية Google المسجلة لمالك المؤسسة. تم رفض الربط والتخلص من رمز الوصول من الذاكرة دون استدعاء revoke.`
@@ -293,7 +430,7 @@ export const requestDriveAuthorization = async (
               !userInfo.email ||
               userInfo.email.toLowerCase().trim() !== expectedEmail.toLowerCase().trim()
             ) {
-              activeSession = null;
+              activeSessionsByOrg.delete(orgId);
               return reject(
                 new Error(
                   `البريد الإلكتروني للحساب المختار (${userInfo.email || 'غير معروف'}) لا يطابق بريد مالك المؤسسة المعتمد (${expectedEmail}). تم رفض الربط.`
@@ -302,7 +439,7 @@ export const requestDriveAuthorization = async (
             }
 
             if (linkedAccount?.linkedSub && userInfo.sub !== linkedAccount.linkedSub) {
-              activeSession = null;
+              activeSessionsByOrg.delete(orgId);
               return reject(
                 new Error(
                   `الحساب المختار (${userInfo.email}) لا يطابق حساب Google المرتبط بالمؤسسة (${linkedAccount.linkedEmail || linkedAccount.linkedSub}). تم رفض العملية.`
@@ -311,6 +448,7 @@ export const requestDriveAuthorization = async (
             }
 
             const session: DriveTokenSession = {
+              orgId,
               accessToken: token,
               expiresIn: rawExpiresIn,
               obtainedAt,
@@ -321,15 +459,15 @@ export const requestDriveAuthorization = async (
               verified: true,
             };
 
-            activeSession = session;
+            activeSessionsByOrg.set(orgId, session);
             resolve(session);
           } catch (verifyErr: any) {
-            activeSession = null;
+            activeSessionsByOrg.delete(orgId);
             reject(new Error(`فشل التحقق من هوية Google: ${verifyErr?.message || verifyErr}`));
           }
         },
         error_callback: (err: any) => {
-          activeSession = null;
+          activeSessionsByOrg.delete(orgId);
           const errType = err?.type || 'oauth_error';
           if (errType === 'popup_closed') {
             reject(new Error('تم إغلاق نافذة تفويض Google قبل إتمام العملية.'));
@@ -345,29 +483,40 @@ export const requestDriveAuthorization = async (
 
       client.requestAccessToken({ prompt: 'select_account' });
     } catch (err: any) {
-      activeSession = null;
+      activeSessionsByOrg.delete(orgId);
       reject(new Error(`فشل تهيئة عميل Google OAuth: ${err?.message || err}`));
     }
   });
 };
 
 /**
- * Returns active session if valid and unexpired; otherwise clears memory
+ * Returns active in-memory session ONLY for the specified `orgId` if valid and unexpired.
+ * Never returns a session from another organization or when `orgId` is omitted.
  */
-export const getActiveDriveSession = (): DriveTokenSession | null => {
-  if (!activeSession) return null;
-  if (Date.now() >= activeSession.expiresAt) {
-    activeSession = null;
+export const getActiveDriveSession = (orgId?: string | null): DriveTokenSession | null => {
+  if (!orgId || !orgId.trim()) return null;
+  const session = activeSessionsByOrg.get(orgId);
+  if (!session) return null;
+  if (session.orgId !== orgId || !session.accessToken || !session.verified) {
+    activeSessionsByOrg.delete(orgId);
     return null;
   }
-  return activeSession;
+  if (Date.now() >= session.expiresAt) {
+    activeSessionsByOrg.delete(orgId);
+    return null;
+  }
+  return session;
 };
 
 /**
- * Clears in-memory Drive session completely
+ * Clears in-memory Drive session for a specific organization, or all organizations when omitted.
  */
-export const clearDriveSession = (): void => {
-  activeSession = null;
+export const clearDriveSession = (orgId?: string | null): void => {
+  if (orgId && orgId.trim()) {
+    activeSessionsByOrg.delete(orgId);
+  } else {
+    activeSessionsByOrg.clear();
+  }
 };
 
 /**
@@ -388,8 +537,9 @@ function formatDriveHttpError(params: {
   operation: 'search' | 'get' | 'create';
   folderId?: string;
   parentId?: string;
+  orgId?: string;
 }): Error {
-  const { status, apiMessage, folderRoleLabel, folderName, operation, folderId, parentId } = params;
+  const { status, apiMessage, folderRoleLabel, folderName, operation, folderId, parentId, orgId } = params;
   const opLabel =
     operation === 'search'
       ? 'البحث عن'
@@ -401,7 +551,7 @@ function formatDriveHttpError(params: {
   const detailSuffix = apiMessage ? ` — تفاصيل Google API: ${apiMessage}` : '';
 
   if (status === 401) {
-    clearDriveSession();
+    clearDriveSession(orgId);
     return new Error(
       `[401] انتهت صلاحية رمز تفويض Google Drive أو رُفض أثناء ${opLabel} ${targetDesc}. يرجى إعادة التفويض.${detailSuffix}`
     );
@@ -511,6 +661,7 @@ async function verifyFolderViaGet(params: {
         operation: 'get',
         folderId,
         parentId: expectedParentId,
+        orgId: expectedAppProperties.orgId,
       });
     }
 
@@ -524,6 +675,7 @@ async function verifyFolderViaGet(params: {
         operation: 'get',
         folderId,
         parentId: expectedParentId,
+        orgId: expectedAppProperties.orgId,
       });
     }
 
@@ -589,6 +741,7 @@ async function verifyFolderViaGet(params: {
     operation: 'get',
     folderId,
     parentId: expectedParentId,
+    orgId: expectedAppProperties.orgId,
   });
 }
 
@@ -666,6 +819,7 @@ async function listMatchingDriveFolders(params: {
         folderName,
         operation: 'search',
         parentId,
+        orgId: expectedAppProperties.orgId,
       });
     }
 
@@ -824,6 +978,7 @@ export async function ensureDriveFolder(params: {
       folderName,
       operation: 'create',
       parentId,
+      orgId: appProperties.orgId,
     });
   }
 
@@ -891,6 +1046,16 @@ export async function provisionOrganizationDriveHierarchy(params: {
   const { token, org, branches } = params;
   const targetYearMonth = params.yearMonth || new Date().toISOString().slice(0, 7);
 
+  if (!org?.id) {
+    throw new Error('بيانات المؤسسة غير مكتملة لتهيئة مجلدات Google Drive.');
+  }
+  for (const b of branches) {
+    if (b.orgId !== org.id) {
+      throw new Error(
+        `رفض عزل المؤسسات: الفرع "${b.name}" (${b.id}) يتبع لمؤسسة أخرى (${b.orgId}) ولا يتبع للمؤسسة (${org.id}).`
+      );
+    }
+  }
   if (!/^\d{4}-\d{2}$/.test(targetYearMonth)) {
     throw new Error('صيغة الشهر غير صحيحة. يجب أن تكون بصيغة YYYY-MM (مثل 2026-11).');
   }
@@ -1007,6 +1172,14 @@ export async function ensureBranchMonthDriveFolder(params: {
   monthFolder: DriveMonthFolderRef;
 }> {
   const { token, org, branch, yearMonth } = params;
+  if (!org?.id || !branch?.id) {
+    throw new Error('بيانات المؤسسة أو الفرع غير مكتملة للوصول إلى مجلد Google Drive.');
+  }
+  if (branch.orgId !== org.id) {
+    throw new Error(
+      `رفض عزل المؤسسات: الفرع (${branch.id}) يتبع للمؤسسة (${branch.orgId}) وليس للمؤسسة (${org.id}).`
+    );
+  }
   if (!/^\d{4}-\d{2}$/.test(yearMonth)) {
     throw new Error('صيغة الشهر غير صحيحة. يجب أن تكون بصيغة YYYY-MM (مثل 2026-11).');
   }
@@ -1269,6 +1442,7 @@ export async function verifyDriveWriteReadCapability(params: {
         folderName: testFileName,
         operation: 'create',
         parentId: orgFolderId,
+        orgId: org.id,
       });
     }
 
@@ -1333,6 +1507,7 @@ export async function verifyDriveWriteReadCapability(params: {
           operation: 'get',
           folderId: fileId,
           parentId: orgFolderId,
+          orgId: org.id,
         });
       }
 
@@ -1346,6 +1521,7 @@ export async function verifyDriveWriteReadCapability(params: {
           operation: 'get',
           folderId: fileId,
           parentId: orgFolderId,
+          orgId: org.id,
         });
       }
 
@@ -1377,6 +1553,7 @@ export async function verifyDriveWriteReadCapability(params: {
         operation: 'get',
         folderId: fileId,
         parentId: orgFolderId,
+        orgId: org.id,
       });
     }
 
@@ -1407,6 +1584,7 @@ export async function verifyDriveWriteReadCapability(params: {
         operation: 'get',
         folderId: fileId,
         parentId: orgFolderId,
+        orgId: org.id,
       });
     }
 
@@ -1528,6 +1706,7 @@ async function listMatchingClosingExcelFiles(params: {
         folderName: fileNameForErrors,
         operation: 'search',
         parentId: monthFolderId,
+        orgId: expectedAppProperties.orgId,
       });
     }
 
@@ -1577,6 +1756,17 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
 
   if (!token || !token.trim()) {
     throw new Error('رمز تفويض Google Drive غير متاح لرفع ملف الإقفال.');
+  }
+  if (!org?.id || !branch?.id || !closing?.id) {
+    throw new Error('بيانات المؤسسة أو الفرع أو الإقفال غير مكتملة للرفع إلى Google Drive.');
+  }
+  if (branch.orgId !== org.id || closing.orgId !== org.id) {
+    throw new Error(
+      `رفض عزل المؤسسات: لا يمكن رفع إقفال (${closing.orgId}) أو فرع (${branch.orgId}) ضمن مجلد المؤسسة (${org.id}).`
+    );
+  }
+  if (closing.branchId !== branch.id) {
+    throw new Error('تعارض بيانات الفرع: الإقفال المحدد لا يتبع للفرع الممرر.');
   }
   if (!Number.isInteger(revision) || revision < 1) {
     throw new Error('رقم إصدار الأرشفة غير صالح.');
@@ -1691,6 +1881,7 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
       operation: 'create',
       folderId: targetFileIdToPatch,
       parentId: monthFolder.folderId,
+      orgId: org.id,
     });
   }
 
@@ -1746,6 +1937,7 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
         operation: 'get',
         folderId: fileId,
         parentId: monthFolder.folderId,
+        orgId: org.id,
       });
     }
 
@@ -1759,6 +1951,7 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
         operation: 'get',
         folderId: fileId,
         parentId: monthFolder.folderId,
+        orgId: org.id,
       });
     }
 
@@ -1775,6 +1968,7 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
       operation: 'get',
       folderId: fileId,
       parentId: monthFolder.folderId,
+      orgId: org.id,
     });
   }
 
@@ -1833,6 +2027,7 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
       operation: 'get',
       folderId: fileId,
       parentId: monthFolder.folderId,
+      orgId: org.id,
     });
   }
 
@@ -1895,7 +2090,7 @@ export async function downloadOriginalClosingExcelFromDrive(params: {
   if (!archiveRecord?.driveExcelFileId) {
     throw new Error('لا يوجد معرّف ملف Google Drive مؤرشف لهذا الإقفال حتى الآن.');
   }
-  if (archiveRecord.orgId !== org.id || archiveRecord.closingId !== closing.id) {
+  if (closing.orgId !== org.id || archiveRecord.orgId !== org.id || archiveRecord.closingId !== closing.id) {
     throw new Error('بيانات سجل الأرشفة لا تطابق المؤسسة أو الإقفال المحدد.');
   }
 
@@ -1929,6 +2124,7 @@ export async function downloadOriginalClosingExcelFromDrive(params: {
       operation: 'get',
       folderId: fileId,
       parentId: archiveRecord.driveMonthFolderId,
+      orgId: org.id,
     });
   }
 
@@ -1994,6 +2190,7 @@ export async function downloadOriginalClosingExcelFromDrive(params: {
       operation: 'get',
       folderId: fileId,
       parentId: archiveRecord.driveMonthFolderId,
+      orgId: org.id,
     });
   }
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -32,6 +32,8 @@ import {
   provisionOrganizationDriveHierarchy,
   verifyDriveWriteReadCapability,
   assertDriveSessionMatchesAccount,
+  assertOrgDriveAuthorizationEligibility,
+  isOAuthCancellationOrConfigError,
   buildGoogleDriveFolderUrl,
   DriveTokenSession,
   OrgDriveProvisionResult,
@@ -55,8 +57,10 @@ export const SettingsView: React.FC = () => {
 
   const [savedNotice, setSavedNotice] = useState(false);
 
-  // Google Drive Phase 1 States (Access Token remains strictly in RAM)
-  const [driveSession, setDriveSession] = useState<DriveTokenSession | null>(() => getActiveDriveSession());
+  // Google Drive Phase 1 States (Access Token remains strictly in RAM, scoped to currentOrg.id)
+  const [driveSession, setDriveSession] = useState<DriveTokenSession | null>(() =>
+    getActiveDriveSession(currentOrg?.id)
+  );
   const [driveLoading, setDriveLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
   const [healthCheckLoading, setHealthCheckLoading] = useState(false);
@@ -65,6 +69,9 @@ export const SettingsView: React.FC = () => {
   const [driveError, setDriveError] = useState<string | null>(null);
   const [driveSuccess, setDriveSuccess] = useState<string | null>(null);
   const [remainingMinutes, setRemainingMinutes] = useState<number>(0);
+
+  const activeOrgIdRef = useRef<string | null>(currentOrg?.id ?? null);
+  activeOrgIdRef.current = currentOrg?.id ?? null;
 
   const oauthConfig = getDriveOAuthClientConfig();
   const isOAuthConfigured = oauthConfig.source === 'vite_env' && Boolean(oauthConfig.clientId);
@@ -115,10 +122,30 @@ export const SettingsView: React.FC = () => {
     }
   };
 
-  // Dynamic in-memory token lifetime countdown
+  // Reset transient UI state immediately when switching organizations so prior org messages never leak
   useEffect(() => {
+    setDriveError(null);
+    setDriveSuccess(null);
+    setConfirmDisconnect(false);
+    setDriveLoading(false);
+    setSyncLoading(false);
+    setHealthCheckLoading(false);
+    setDisconnectLoading(false);
+    const scopedSession = getActiveDriveSession(currentOrg?.id);
+    setDriveSession(scopedSession);
+    if (scopedSession) {
+      const diffMs = scopedSession.expiresAt - Date.now();
+      setRemainingMinutes(Math.max(0, Math.floor(diffMs / 60000)));
+    } else {
+      setRemainingMinutes(0);
+    }
+  }, [currentOrg?.id]);
+
+  // Dynamic in-memory token lifetime countdown (strictly scoped to currentOrg?.id)
+  useEffect(() => {
+    const targetOrgId = currentOrg?.id;
     const updateRemaining = () => {
-      const session = getActiveDriveSession();
+      const session = getActiveDriveSession(targetOrgId);
       setDriveSession(session);
       if (session) {
         const diffMs = session.expiresAt - Date.now();
@@ -131,7 +158,7 @@ export const SettingsView: React.FC = () => {
     updateRemaining();
     const interval = setInterval(updateRemaining, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [currentOrg?.id]);
 
   const handleConnectDrive = async () => {
     setDriveError(null);
@@ -157,47 +184,68 @@ export const SettingsView: React.FC = () => {
       return;
     }
 
-    const ownerEmail = googleProvider.email || currentOrg.ownerEmail || '';
-    const linkedConstraint = currentOrg.driveConnected
-      ? {
-          linkedSub: currentOrg.driveGoogleSub,
-          linkedEmail: currentOrg.driveAccountEmail,
-        }
-      : undefined;
+    const targetOrg = currentOrg;
+    const targetOrgId = currentOrg.id;
+    const ownerEmail = googleProvider.email || currentUser?.email || targetOrg.ownerEmail || '';
+    const orgBranches = branches.filter((b) => b.orgId === targetOrgId);
+
+    let eligibility;
+    try {
+      eligibility = assertOrgDriveAuthorizationEligibility({
+        currentUserUid: currentUser?.uid,
+        userProfile,
+        org: targetOrg,
+        googleUid: googleProvider.uid,
+        ownerEmail,
+      });
+    } catch (eligErr: any) {
+      setDriveError(eligErr?.message || 'غير مصرح بربط Google Drive لهذه المؤسسة.');
+      return;
+    }
 
     setDriveLoading(true);
     try {
-      const session = await requestDriveAuthorization(
-        googleProvider.uid,
-        ownerEmail,
-        linkedConstraint
-      );
+      const session = await requestDriveAuthorization({
+        orgId: targetOrgId,
+        googleUid: eligibility.googleUid,
+        email: eligibility.ownerEmail,
+        linkedAccount: eligibility.linkedAccount,
+      });
 
       assertDriveSessionMatchesAccount(session, {
-        googleUid: googleProvider.uid,
-        email: ownerEmail,
-        linkedSub: linkedConstraint?.linkedSub,
-        linkedEmail: linkedConstraint?.linkedEmail,
+        orgId: targetOrgId,
+        googleUid: eligibility.googleUid,
+        email: eligibility.ownerEmail,
+        linkedSub: eligibility.linkedAccount?.linkedSub,
+        linkedEmail: eligibility.linkedAccount?.linkedEmail,
       });
+
+      if (activeOrgIdRef.current !== targetOrgId) {
+        return;
+      }
 
       setDriveSession(session);
       setRemainingMinutes(Math.max(0, Math.floor((session.expiresAt - Date.now()) / 60000)));
 
       const provisionResult = await provisionOrganizationDriveHierarchy({
         token: session.accessToken,
-        org: currentOrg,
-        branches,
+        org: targetOrg,
+        branches: orgBranches,
         yearMonth: currentYearMonth,
       });
 
-      assertCompleteProvisionResult(provisionResult, branches.length);
+      assertCompleteProvisionResult(provisionResult, orgBranches.length);
 
       // Mandatory actual write + read-back verification before marking Drive ready
       const writeReadResult = await verifyDriveWriteReadCapability({
         token: session.accessToken,
-        org: currentOrg,
+        org: targetOrg,
         orgFolderId: provisionResult.orgFolder.folderId,
       });
+
+      if (activeOrgIdRef.current !== targetOrgId) {
+        return;
+      }
 
       await saveDriveConnection({
         driveAccountEmail: session.email,
@@ -217,18 +265,23 @@ export const SettingsView: React.FC = () => {
         monthFolderMap: provisionResult.monthFolderMap,
       });
 
-      setDriveSuccess(
-        `تم التحقق الفعلي من حساب (${session.email}) ومجلد المؤسسة "${provisionResult.orgFolder.folderName}" وتهيئة (${provisionResult.branchResults.length}) فرع لشهر ${currentYearMonth}، واجتياز اختبار الكتابة والقراءة بنجاح (${writeReadResult.cleanupMessage}).`
-      );
+      if (activeOrgIdRef.current === targetOrgId) {
+        setDriveSuccess(
+          `تم التحقق الفعلي من حساب (${session.email}) ومجلد المؤسسة "${provisionResult.orgFolder.folderName}" وتهيئة (${provisionResult.branchResults.length}) فرع لشهر ${currentYearMonth}، واجتياز اختبار الكتابة والقراءة بنجاح (${writeReadResult.cleanupMessage}).`
+        );
+      }
     } catch (err: any) {
+      if (activeOrgIdRef.current !== targetOrgId) return;
       const errMsg = err?.message || 'تعذر إتمام ربط Google Drive أو فشل اختبار الكتابة والقراءة.';
-      if (currentOrg?.driveConnected) {
+      if (targetOrg.driveConnected && !isOAuthCancellationOrConfigError(err)) {
         await recordDriveHealthFailure(errMsg);
       }
       setDriveError(errMsg);
-      setDriveSession(getActiveDriveSession());
+      setDriveSession(getActiveDriveSession(targetOrgId));
     } finally {
-      setDriveLoading(false);
+      if (activeOrgIdRef.current === targetOrgId) {
+        setDriveLoading(false);
+      }
     }
   };
 
@@ -246,72 +299,76 @@ export const SettingsView: React.FC = () => {
       return;
     }
 
-    const ownerEmail = googleProvider.email || currentOrg.ownerEmail || '';
+    const targetOrg = currentOrg;
+    const targetOrgId = currentOrg.id;
+    const ownerEmail = googleProvider.email || currentUser?.email || targetOrg.ownerEmail || '';
+    const orgBranches = branches.filter((b) => b.orgId === targetOrgId);
 
-    // Strict check: signed-in owner Google account must match the organization's linked Drive account
-    if (currentOrg.driveGoogleSub && currentOrg.driveGoogleSub !== googleProvider.uid) {
-      setDriveError(
-        `حساب Google المسجل دخولاً به (${ownerEmail}) لا يطابق حساب Google المرتبط بالمؤسسة (${
-          currentOrg.driveAccountEmail || currentOrg.driveGoogleSub
-        }). يرجى تسجيل الدخول بالحساب المرتبط أو فصل الربط أولاً.`
-      );
-      return;
-    }
-    if (
-      currentOrg.driveAccountEmail &&
-      ownerEmail &&
-      currentOrg.driveAccountEmail.toLowerCase().trim() !== ownerEmail.toLowerCase().trim()
-    ) {
-      setDriveError(
-        `البريد الإلكتروني الحالي (${ownerEmail}) لا يطابق بريد Google المرتبط بالمؤسسة (${currentOrg.driveAccountEmail}). تم إيقاف المزامنة.`
-      );
+    let eligibility;
+    try {
+      eligibility = assertOrgDriveAuthorizationEligibility({
+        currentUserUid: currentUser?.uid,
+        userProfile,
+        org: targetOrg,
+        googleUid: googleProvider.uid,
+        ownerEmail,
+      });
+    } catch (eligErr: any) {
+      setDriveError(eligErr?.message || 'تعذر التحقق من صلاحية مزامنة Google Drive.');
       return;
     }
 
     setSyncLoading(true);
     try {
-      let session = getActiveDriveSession();
+      let session = getActiveDriveSession(targetOrgId);
       if (session) {
         assertDriveSessionMatchesAccount(session, {
-          googleUid: googleProvider.uid,
-          email: ownerEmail,
-          linkedSub: currentOrg.driveGoogleSub,
-          linkedEmail: currentOrg.driveAccountEmail,
+          orgId: targetOrgId,
+          googleUid: eligibility.googleUid,
+          email: eligibility.ownerEmail,
+          linkedSub: eligibility.linkedAccount?.linkedSub,
+          linkedEmail: eligibility.linkedAccount?.linkedEmail,
         });
       } else {
         if (!isOAuthConfigured) {
           throw new Error('متغير البيئة VITE_GOOGLE_DRIVE_CLIENT_ID غير مضبوط في نسخة البناء الحالية.');
         }
-        session = await requestDriveAuthorization(googleProvider.uid, ownerEmail, {
-          linkedSub: currentOrg.driveGoogleSub,
-          linkedEmail: currentOrg.driveAccountEmail,
+        session = await requestDriveAuthorization({
+          orgId: targetOrgId,
+          googleUid: eligibility.googleUid,
+          email: eligibility.ownerEmail,
+          linkedAccount: eligibility.linkedAccount,
         });
         assertDriveSessionMatchesAccount(session, {
-          googleUid: googleProvider.uid,
-          email: ownerEmail,
-          linkedSub: currentOrg.driveGoogleSub,
-          linkedEmail: currentOrg.driveAccountEmail,
+          orgId: targetOrgId,
+          googleUid: eligibility.googleUid,
+          email: eligibility.ownerEmail,
+          linkedSub: eligibility.linkedAccount?.linkedSub,
+          linkedEmail: eligibility.linkedAccount?.linkedEmail,
         });
+        if (activeOrgIdRef.current !== targetOrgId) return;
         setDriveSession(session);
         setRemainingMinutes(Math.max(0, Math.floor((session.expiresAt - Date.now()) / 60000)));
       }
 
       const provisionResult = await provisionOrganizationDriveHierarchy({
         token: session.accessToken,
-        org: currentOrg,
-        branches,
+        org: targetOrg,
+        branches: orgBranches,
         yearMonth: currentYearMonth,
       });
 
       // Never treat Firestore write alone as proof; ensure every folder passed Drive verification first
-      assertCompleteProvisionResult(provisionResult, branches.length);
+      assertCompleteProvisionResult(provisionResult, orgBranches.length);
 
       // Re-verify actual write & read-back capability using drive.file
       const writeReadResult = await verifyDriveWriteReadCapability({
         token: session.accessToken,
-        org: currentOrg,
+        org: targetOrg,
         orgFolderId: provisionResult.orgFolder.folderId,
       });
+
+      if (activeOrgIdRef.current !== targetOrgId) return;
 
       await saveDriveConnection({
         driveAccountEmail: session.email,
@@ -331,16 +388,23 @@ export const SettingsView: React.FC = () => {
         monthFolderMap: provisionResult.monthFolderMap,
       });
 
-      setDriveSuccess(
-        `تم التحقق الفعلي من مجلد المؤسسة وتحديث مجلدات (${provisionResult.branchResults.length}) فرع لشهر ${currentYearMonth}، واجتياز اختبار الكتابة والقراءة في حساب (${session.email}) بنجاح (${writeReadResult.cleanupMessage}).`
-      );
+      if (activeOrgIdRef.current === targetOrgId) {
+        setDriveSuccess(
+          `تم التحقق الفعلي من مجلد المؤسسة وتحديث مجلدات (${provisionResult.branchResults.length}) فرع لشهر ${currentYearMonth}، واجتياز اختبار الكتابة والقراءة في حساب (${session.email}) بنجاح (${writeReadResult.cleanupMessage}).`
+        );
+      }
     } catch (err: any) {
+      if (activeOrgIdRef.current !== targetOrgId) return;
       const errMsg = err?.message || 'حدث خطأ أثناء مزامنة مجلدات Google Drive أو فحص الكتابة والقراءة.';
-      await recordDriveHealthFailure(errMsg);
+      if (!isOAuthCancellationOrConfigError(err)) {
+        await recordDriveHealthFailure(errMsg);
+      }
       setDriveError(errMsg);
-      setDriveSession(getActiveDriveSession());
+      setDriveSession(getActiveDriveSession(targetOrgId));
     } finally {
-      setSyncLoading(false);
+      if (activeOrgIdRef.current === targetOrgId) {
+        setSyncLoading(false);
+      }
     }
   };
 
@@ -361,49 +425,74 @@ export const SettingsView: React.FC = () => {
       return;
     }
 
-    const ownerEmail = googleProvider.email || currentOrg.ownerEmail || '';
+    const targetOrg = currentOrg;
+    const targetOrgId = currentOrg.id;
+    const ownerEmail = googleProvider.email || currentUser?.email || targetOrg.ownerEmail || '';
+    const orgBranches = branches.filter((b) => b.orgId === targetOrgId);
+
+    let eligibility;
+    try {
+      eligibility = assertOrgDriveAuthorizationEligibility({
+        currentUserUid: currentUser?.uid,
+        userProfile,
+        org: targetOrg,
+        googleUid: googleProvider.uid,
+        ownerEmail,
+      });
+    } catch (eligErr: any) {
+      setDriveError(eligErr?.message || 'تعذر التحقق من صلاحية فحص Google Drive.');
+      return;
+    }
+
     setHealthCheckLoading(true);
     try {
-      let session = getActiveDriveSession();
+      let session = getActiveDriveSession(targetOrgId);
       if (session) {
         assertDriveSessionMatchesAccount(session, {
-          googleUid: googleProvider.uid,
-          email: ownerEmail,
-          linkedSub: currentOrg.driveGoogleSub,
-          linkedEmail: currentOrg.driveAccountEmail,
+          orgId: targetOrgId,
+          googleUid: eligibility.googleUid,
+          email: eligibility.ownerEmail,
+          linkedSub: eligibility.linkedAccount?.linkedSub,
+          linkedEmail: eligibility.linkedAccount?.linkedEmail,
         });
       } else {
         if (!isOAuthConfigured) {
           throw new Error('متغير البيئة VITE_GOOGLE_DRIVE_CLIENT_ID غير مضبوط في نسخة البناء الحالية.');
         }
-        session = await requestDriveAuthorization(googleProvider.uid, ownerEmail, {
-          linkedSub: currentOrg.driveGoogleSub,
-          linkedEmail: currentOrg.driveAccountEmail,
+        session = await requestDriveAuthorization({
+          orgId: targetOrgId,
+          googleUid: eligibility.googleUid,
+          email: eligibility.ownerEmail,
+          linkedAccount: eligibility.linkedAccount,
         });
         assertDriveSessionMatchesAccount(session, {
-          googleUid: googleProvider.uid,
-          email: ownerEmail,
-          linkedSub: currentOrg.driveGoogleSub,
-          linkedEmail: currentOrg.driveAccountEmail,
+          orgId: targetOrgId,
+          googleUid: eligibility.googleUid,
+          email: eligibility.ownerEmail,
+          linkedSub: eligibility.linkedAccount?.linkedSub,
+          linkedEmail: eligibility.linkedAccount?.linkedEmail,
         });
+        if (activeOrgIdRef.current !== targetOrgId) return;
         setDriveSession(session);
         setRemainingMinutes(Math.max(0, Math.floor((session.expiresAt - Date.now()) / 60000)));
       }
 
       const provisionResult = await provisionOrganizationDriveHierarchy({
         token: session.accessToken,
-        org: currentOrg,
-        branches,
+        org: targetOrg,
+        branches: orgBranches,
         yearMonth: currentYearMonth,
       });
 
-      assertCompleteProvisionResult(provisionResult, branches.length);
+      assertCompleteProvisionResult(provisionResult, orgBranches.length);
 
       const writeReadResult = await verifyDriveWriteReadCapability({
         token: session.accessToken,
-        org: currentOrg,
+        org: targetOrg,
         orgFolderId: provisionResult.orgFolder.folderId,
       });
+
+      if (activeOrgIdRef.current !== targetOrgId) return;
 
       await saveDriveConnection({
         driveAccountEmail: session.email,
@@ -423,16 +512,23 @@ export const SettingsView: React.FC = () => {
         monthFolderMap: provisionResult.monthFolderMap,
       });
 
-      setDriveSuccess(
-        `نجح فحص جاهزية Google Drive (كتابة وقراءة فعلية ومطابقة المحتوى) لحساب (${session.email}). ${writeReadResult.cleanupMessage}`
-      );
+      if (activeOrgIdRef.current === targetOrgId) {
+        setDriveSuccess(
+          `نجح فحص جاهزية Google Drive (كتابة وقراءة فعلية ومطابقة المحتوى) لحساب (${session.email}). ${writeReadResult.cleanupMessage}`
+        );
+      }
     } catch (err: any) {
+      if (activeOrgIdRef.current !== targetOrgId) return;
       const errMsg = err?.message || 'فشل فحص جاهزية الكتابة والقراءة في Google Drive.';
-      await recordDriveHealthFailure(errMsg);
+      if (!isOAuthCancellationOrConfigError(err)) {
+        await recordDriveHealthFailure(errMsg);
+      }
       setDriveError(errMsg);
-      setDriveSession(getActiveDriveSession());
+      setDriveSession(getActiveDriveSession(targetOrgId));
     } finally {
-      setHealthCheckLoading(false);
+      if (activeOrgIdRef.current === targetOrgId) {
+        setHealthCheckLoading(false);
+      }
     }
   };
 
@@ -440,23 +536,30 @@ export const SettingsView: React.FC = () => {
     setDriveError(null);
     setDriveSuccess(null);
 
-    if (!isOrgOwner) {
+    if (!currentOrg || !isOrgOwner) {
       setDriveError('فصل ربط Google Drive مقتصر حصراً على مالك المؤسسة المعتمد.');
       return;
     }
 
+    const targetOrgId = currentOrg.id;
     setDisconnectLoading(true);
     try {
       await disconnectDriveConnection();
-      clearDriveSession();
-      setDriveSession(null);
-      setRemainingMinutes(0);
-      setConfirmDisconnect(false);
-      setDriveSuccess('تم فصل ربط Google Drive من إعدادات المؤسسة مع الإبقاء على جميع الملفات والسجلات دون حذف.');
+      clearDriveSession(targetOrgId);
+      if (activeOrgIdRef.current === targetOrgId) {
+        setDriveSession(null);
+        setRemainingMinutes(0);
+        setConfirmDisconnect(false);
+        setDriveSuccess('تم فصل ربط Google Drive من إعدادات المؤسسة مع الإبقاء على جميع الملفات والسجلات دون حذف.');
+      }
     } catch (err: any) {
-      setDriveError(err?.message || 'تعذر فصل ربط Google Drive.');
+      if (activeOrgIdRef.current === targetOrgId) {
+        setDriveError(err?.message || 'تعذر فصل ربط Google Drive.');
+      }
     } finally {
-      setDisconnectLoading(false);
+      if (activeOrgIdRef.current === targetOrgId) {
+        setDisconnectLoading(false);
+      }
     }
   };
 
