@@ -64,6 +64,9 @@ jobs:
       - name: Run All 7 Excel & Halala Verification Tests
         run: npx tsx src/tests/excelReportService.test.ts
 
+      - name: Run All 7 Drive v3 E2E Integration & Security Guard Tests
+        run: npx tsx src/tests/driveIntegrationFlow.test.ts
+
       - name: Run All 23 closingArchives Firestore Rules Tests in Isolated Emulator
         env:
           GCLOUD_PROJECT: aleqfal-closing-archives-tests

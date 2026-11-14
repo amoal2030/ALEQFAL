@@ -50,8 +50,8 @@ service cloud.firestore {
 
     function isValidCurrencyAmount(val) {
       return val is number &&
-        !math.isNaN(val) &&
-        !math.isInfinite(val) &&
+        val >= -1000000000000 &&
+        val <= 1000000000000 &&
         math.abs(val * 100 - math.round(val * 100)) < 0.001;
     }
 
@@ -93,16 +93,18 @@ service cloud.firestore {
     }
 
     function hasNoDriveProofFields(data) {
-      return !('driveExcelFileId' in data) &&
-        !('driveExcelFileName' in data) &&
-        !('driveExcelWebViewLink' in data) &&
-        !('driveMonthFolderId' in data) &&
-        !('drivePayloadHash' in data) &&
-        !('driveRevision' in data) &&
-        !('previousDriveExcelFileId' in data) &&
-        !('sourceCorrectionAt' in data) &&
-        !('archivedAt' in data) &&
-        !('archivedBy' in data);
+      return !data.keys().hasAny([
+        'driveExcelFileId',
+        'driveExcelFileName',
+        'driveExcelWebViewLink',
+        'driveMonthFolderId',
+        'drivePayloadHash',
+        'driveRevision',
+        'previousDriveExcelFileId',
+        'sourceCorrectionAt',
+        'archivedAt',
+        'archivedBy'
+      ]);
     }
 
     function isValidNonApprovedEmployeeClosingData(c, targetOrgId, targetBranchId, ym) {
@@ -123,18 +125,8 @@ service cloud.firestore {
       return isValidNonApprovedEmployeeClosingData(cAfter, targetOrgId, targetBranchId, ym);
     }
 
-    function hasValidOptionalArchiveFields(data) {
-      return (!('driveExcelFileId' in data) || isValidDriveId(data.driveExcelFileId)) &&
-        (!('driveExcelFileName' in data) || (data.driveExcelFileName is string && data.driveExcelFileName.trim().size() >= 5 && data.driveExcelFileName.size() <= 256 && data.driveExcelFileName.matches('^[^/\\\\]+\\.[xX][lL][sS][xX]$'))) &&
-        (!('driveMonthFolderId' in data) || isValidDriveId(data.driveMonthFolderId)) &&
-        (!('driveExcelWebViewLink' in data) || (data.driveExcelWebViewLink is string && data.driveExcelWebViewLink.size() >= 12 && data.driveExcelWebViewLink.size() <= 512 && data.driveExcelWebViewLink.matches('^https://[a-zA-Z0-9.\\-]+/.*$'))) &&
-        (!('drivePayloadHash' in data) || (data.drivePayloadHash is string && data.drivePayloadHash.size() == 64 && data.drivePayloadHash.matches('^[a-fA-F0-9]{64}$'))) &&
-        (!('driveRevision' in data) || (data.driveRevision is int && data.driveRevision >= 1 && data.driveRevision <= 100000)) &&
-        (!('previousDriveExcelFileId' in data) || isValidDriveId(data.previousDriveExcelFileId)) &&
-        (!('sourceCorrectionAt' in data) || isValidIsoTimestamp(data.sourceCorrectionAt)) &&
-        (!('archivedAt' in data) || isValidIsoTimestamp(data.archivedAt)) &&
-        (!('archivedBy' in data) || isValidId(data.archivedBy)) &&
-        (!('archiveError' in data) || (data.archiveError is string && data.archiveError.trim().size() >= 5 && data.archiveError.size() <= 1000));
+    function isValidArchiveError(val) {
+      return val is string && val.trim().size() >= 5 && val.size() <= 1000;
     }
 
     function hasValidArchivedDriveProof(data, cAfter) {
@@ -166,7 +158,7 @@ service cloud.firestore {
         (!('previousDriveExcelFileId' in data) || isValidDriveId(data.previousDriveExcelFileId)) &&
         (
           (!('correctedAt' in cAfter) && !('sourceCorrectionAt' in data)) ||
-          ('correctedAt' in cAfter && 'sourceCorrectionAt' in data && data.sourceCorrectionAt == cAfter.correctedAt)
+          ('correctedAt' in cAfter && 'sourceCorrectionAt' in data && isValidIsoTimestamp(data.sourceCorrectionAt) && data.sourceCorrectionAt == cAfter.correctedAt)
         ) &&
         !('archiveError' in data);
     }
@@ -252,8 +244,7 @@ service cloud.firestore {
           cAfter.status == 'approved' &&
           hasNoDriveProofFields(data) &&
           'archiveError' in data &&
-          data.archiveError is string &&
-          data.archiveError.trim().size() >= 5
+          isValidArchiveError(data.archiveError)
         ) ||
         (
           data.archiveStatus == 'archived' &&
@@ -281,7 +272,8 @@ service cloud.firestore {
           cAfter.status == 'approved' &&
           hasNoDriveProofFields(prevData) &&
           hasNoDriveProofFields(nextData) &&
-          'archiveError' in nextData
+          'archiveError' in nextData &&
+          isValidArchiveError(nextData.archiveError)
         ) ||
         // 3. pending_drive_sync -> archived
         (
@@ -307,6 +299,7 @@ service cloud.firestore {
           nextData.archiveStatus == 'failed' &&
           cAfter.status == 'approved' &&
           'archiveError' in nextData &&
+          isValidArchiveError(nextData.archiveError) &&
           (
             (hasNoDriveProofFields(prevData) && hasNoDriveProofFields(nextData)) ||
             (
@@ -344,6 +337,7 @@ service cloud.firestore {
           nextData.archiveStatus == 'failed' &&
           cAfter.status == 'approved' &&
           'archiveError' in nextData &&
+          isValidArchiveError(nextData.archiveError) &&
           preservesPreviousArchiveProof(nextData, prevData) &&
           preservesCurrentCorrectionRef(nextData, prevData, cAfter)
         ) ||
@@ -402,7 +396,6 @@ service cloud.firestore {
               'archivedAt', 'archivedBy', 'archiveError', 'updatedAt'
             ]) &&
             data.archiveStatus in ['pending_drive_sync', 'archived', 'failed'] &&
-            hasValidOptionalArchiveFields(data) &&
             existsAfter(/databases/$(database)/documents/closings/$(closingId)) &&
             managerArchiveCreateMatchesClosing(closingId, data)
           ) ||
@@ -439,7 +432,6 @@ service cloud.firestore {
               'archivedAt', 'archivedBy', 'archiveError', 'updatedAt'
             ]) &&
             nextData.archiveStatus in ['pending_drive_sync', 'archived', 'failed', 'stale'] &&
-            hasValidOptionalArchiveFields(nextData) &&
             existsAfter(/databases/$(database)/documents/closings/$(closingId)) &&
             managerArchiveUpdateMatchesClosing(closingId, nextData, prevData)
           ) ||
