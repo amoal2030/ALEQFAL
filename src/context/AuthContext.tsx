@@ -29,6 +29,7 @@ import {
   query,
   where,
   getDocs,
+  getDocsFromServer,
   onSnapshot,
   orderBy,
   serverTimestamp,
@@ -46,7 +47,9 @@ import {
   ClosingArchiveRecord,
   DriveMonthFolderRef,
   DriveHealthStatus,
+  SuperAdminOverviewData,
 } from '../types';
+import { isVerifiedSuperAdmin } from '../utils/superAdmin';
 import {
   calculateShiftTotals,
   generateDeterministicClosingId,
@@ -163,6 +166,11 @@ interface AuthContextType {
   setCurrentBranch: (branch: Branch) => void;
   authNotice: { type: 'info' | 'warning' | 'error'; message: string } | null;
   clearAuthNotice: () => void;
+  isSuperAdmin: boolean;
+  superAdminOverview: SuperAdminOverviewData | null;
+  superAdminLoading: boolean;
+  superAdminError: string | null;
+  loadSuperAdminOverview: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -180,6 +188,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [authNotice, setAuthNotice] = useState<{ type: 'info' | 'warning' | 'error'; message: string } | null>(null);
+  const [superAdminOverview, setSuperAdminOverview] = useState<SuperAdminOverviewData | null>(null);
+  const [superAdminLoading, setSuperAdminLoading] = useState(false);
+  const [superAdminError, setSuperAdminError] = useState<string | null>(null);
 
   const activeUserUidRef = useRef<string | null>(null);
   const activeOrgIdRef = useRef<string | null>(null);
@@ -243,6 +254,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         clearDriveSession();
       }
       setCurrentUser(fbUser);
+      if (!isVerifiedSuperAdmin(fbUser)) {
+        setSuperAdminOverview(null);
+        setSuperAdminError(null);
+      }
       if (fbUser) {
         await loadUserData(fbUser);
       } else {
@@ -254,6 +269,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setClosings([]);
         setClosingArchives([]);
         setAuditLogs([]);
+        setSuperAdminOverview(null);
+        setSuperAdminError(null);
         setNeedsOnboarding(false);
         setLoading(false);
       }
@@ -2031,6 +2048,66 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   };
 
+  const isSuperAdmin = isVerifiedSuperAdmin(currentUser);
+
+  const loadSuperAdminOverview = async () => {
+    const activeAuthUser = auth.currentUser;
+    if (!isVerifiedSuperAdmin(activeAuthUser)) {
+      setSuperAdminOverview(null);
+      const errMsg = 'غير مصرح بالوصول إلى لوحة المدير الرئيسي.';
+      setSuperAdminError(errMsg);
+      throw new Error(errMsg);
+    }
+
+    setSuperAdminLoading(true);
+    setSuperAdminError(null);
+    try {
+      const fetchCollection = async <T,>(colName: string): Promise<T[]> => {
+        const colRef = collection(db, colName);
+        const snap = await getDocsFromServer(colRef).catch((err: any) => {
+          if (err?.code === 'permission-denied') {
+            throw err;
+          }
+          return getDocs(colRef);
+        });
+        const items: T[] = [];
+        snap.forEach((docSnap) => {
+          items.push(docSnap.data() as T);
+        });
+        return items;
+      };
+
+      const [orgs, allBranches, allUsers] = await Promise.all([
+        fetchCollection<Organization>('organizations'),
+        fetchCollection<Branch>('branches'),
+        fetchCollection<UserProfile>('users'),
+      ]);
+
+      orgs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      if (!isVerifiedSuperAdmin(auth.currentUser)) {
+        setSuperAdminOverview(null);
+        return;
+      }
+
+      setSuperAdminOverview({
+        organizations: orgs,
+        branches: allBranches,
+        users: allUsers,
+        fetchedAt: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      const msg =
+        error?.code === 'permission-denied' ||
+        String(error?.message || '').includes('insufficient permissions')
+          ? 'تم رفض قراءة بيانات المراقبة من قواعد Firestore (Permission Denied).'
+          : error?.message || 'تعذر تحميل بيانات المراقبة من قاعدة البيانات.';
+      setSuperAdminError(msg);
+    } finally {
+      setSuperAdminLoading(false);
+    }
+  };
+
   const logout = async () => {
     setLoading(true);
     try {
@@ -2044,6 +2121,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setClosings([]);
       setClosingArchives([]);
       setAuditLogs([]);
+      setSuperAdminOverview(null);
+      setSuperAdminError(null);
       setNeedsOnboarding(false);
     } catch (error) {
       console.error('Logout error:', error);
@@ -2097,6 +2176,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentBranch,
         authNotice,
         clearAuthNotice,
+        isSuperAdmin,
+        superAdminOverview,
+        superAdminLoading,
+        superAdminError,
+        loadSuperAdminOverview,
       }}
     >
       {children}

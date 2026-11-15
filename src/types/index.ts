@@ -68,8 +68,16 @@ export interface Organization {
   driveWriteVerifiedAt?: string;
   driveLastHealthStatus?: DriveHealthStatus;
   driveHealthError?: string;
+  isActive?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SuperAdminOverviewData {
+  organizations: Organization[];
+  branches: Branch[];
+  users: UserProfile[];
+  fetchedAt: string;
 }
 
 export interface Branch {

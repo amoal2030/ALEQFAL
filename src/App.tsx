@@ -13,6 +13,7 @@ import { Footer } from './components/Footer';
 import { AuthModal } from './components/AuthModal';
 import { OrganizationOnboarding } from './components/OrganizationOnboarding';
 import { Dashboard } from './components/Dashboard';
+import { SuperAdminDashboard } from './components/superadmin/SuperAdminDashboard';
 import { LegalPage } from './components/LegalPage';
 import {
   AppPageRoute,
@@ -25,12 +26,21 @@ const DEFAULT_DOCUMENT_TITLE = 'الإقفال | AL EQFAL - نظام إدارة 
 
 const AppContent: React.FC = () => {
   const { direction, language } = useLanguage();
-  const { currentUser, currentOrg, loading, needsOnboarding, authNotice, clearAuthNotice } = useAuth();
+  const { currentUser, currentOrg, loading, needsOnboarding, authNotice, clearAuthNotice, isSuperAdmin } = useAuth();
 
   const [currentPage, setCurrentPage] = useState<AppPageRoute>(() => resolveAppPageFromLocation());
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authInitialTab, setAuthInitialTab] = useState<'manager' | 'employee' | 'register'>('manager');
   const [showPhasesOverview, setShowPhasesOverview] = useState(false);
+  const [superAdminPortalActive, setSuperAdminPortalActive] = useState(true);
+
+  React.useEffect(() => {
+    if (isSuperAdmin) {
+      setSuperAdminPortalActive(true);
+    } else {
+      setSuperAdminPortalActive(false);
+    }
+  }, [isSuperAdmin, currentUser?.uid]);
 
   // Synchronize URL path/hash for legal pages and auth modal
   React.useEffect(() => {
@@ -128,7 +138,7 @@ const AppContent: React.FC = () => {
     return (
       <LegalPage
         page={currentPage}
-        isAuthenticated={Boolean(currentUser && currentOrg)}
+        isAuthenticated={Boolean(currentUser && (currentOrg || isSuperAdmin))}
         onNavigatePage={navigateToPage}
       />
     );
@@ -168,6 +178,20 @@ const AppContent: React.FC = () => {
     </div>
   ) : null;
 
+  // Verified Super Admin Read-Only Monitoring Portal (amoal2030@gmail.com only)
+  if (currentUser && isSuperAdmin && superAdminPortalActive) {
+    return (
+      <>
+        {NoticeBanner}
+        <SuperAdminDashboard
+          onSwitchToTenantDashboard={currentOrg ? () => setSuperAdminPortalActive(false) : undefined}
+          onSwitchToOnboarding={!currentOrg && needsOnboarding ? () => setSuperAdminPortalActive(false) : undefined}
+          onNavigatePage={navigateToPage}
+        />
+      </>
+    );
+  }
+
   // First-time Manager Setup Screen
   if (currentUser && needsOnboarding) {
     return (
@@ -183,7 +207,10 @@ const AppContent: React.FC = () => {
     return (
       <>
         {NoticeBanner}
-        <Dashboard onNavigatePage={navigateToPage} />
+        <Dashboard
+          onNavigatePage={navigateToPage}
+          onOpenSuperAdmin={isSuperAdmin ? () => setSuperAdminPortalActive(true) : undefined}
+        />
       </>
     );
   }

@@ -13,6 +13,14 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Sole authorized Super Admin verified via Firebase Auth token email + email_verified
+    function isSuperAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email is string &&
+        request.auth.token.email.lower() == 'amoal2030@gmail.com' &&
+        request.auth.token.email_verified == true;
+    }
+
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -453,11 +461,15 @@ service cloud.firestore {
     // Organizations Collection
     match /organizations/{orgId} {
       allow get: if isSignedIn() && isValidId(orgId) && (
+        isSuperAdmin() ||
         isOrgMember(orgId) ||
         resource.data.ownerId == request.auth.uid
       );
 
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow list: if isSignedIn() && (
+        isSuperAdmin() ||
+        resource.data.ownerId == request.auth.uid
+      );
 
       allow create: if isSignedIn() && isValidId(orgId) &&
         incoming().ownerId == request.auth.uid &&
@@ -475,13 +487,19 @@ service cloud.firestore {
     // Users Collection
     match /users/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && (
+        isSuperAdmin() ||
         request.auth.uid == userId ||
         (hasValidUserDoc() && isOrgManager(existing().orgId))
       );
 
-      allow list: if isSignedIn() && hasValidUserDoc() && (
-        isOrgManager(resource.data.orgId) ||
-        resource.data.uid == request.auth.uid
+      allow list: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          hasValidUserDoc() && (
+            isOrgManager(resource.data.orgId) ||
+            resource.data.uid == request.auth.uid
+          )
+        )
       );
 
       // Self registration during initial onboarding (as manager of their new org) OR active manager provisioning an employee
@@ -496,8 +514,9 @@ service cloud.firestore {
         (hasValidUserDoc() && isOrgManager(incoming().orgId) && incoming().role == 'employee')
       );
 
-      // Prevent role, orgId, branchId, and isActive tampering
-      allow update: if isSignedIn() && isValidId(userId) && (
+      // Prevent role, orgId, branchId, and isActive tampering (and forbid promotion to super_admin)
+      allow update: if isSignedIn() && isValidId(userId) &&
+        incoming().role in ['manager', 'employee'] && (
         // Case 1: Employee self-updating display name or phone only (CANNOT change role, orgId, branchId, or isActive)
         (
           request.auth.uid == userId &&
@@ -510,7 +529,8 @@ service cloud.firestore {
         (
           hasValidUserDoc() &&
           isOrgManager(existing().orgId) &&
-          incoming().orgId == existing().orgId
+          incoming().orgId == existing().orgId &&
+          incoming().role == existing().role
         )
       );
 
@@ -519,8 +539,14 @@ service cloud.firestore {
 
     // Branches Collection
     match /branches/{branchId} {
-      allow get: if isSignedIn() && isValidId(branchId) && isOrgMember(resource.data.orgId);
-      allow list: if isSignedIn() && hasValidUserDoc() && resource.data.orgId == getUserData().orgId;
+      allow get: if isSignedIn() && isValidId(branchId) && (
+        isSuperAdmin() ||
+        isOrgMember(resource.data.orgId)
+      );
+      allow list: if isSignedIn() && (
+        isSuperAdmin() ||
+        (hasValidUserDoc() && resource.data.orgId == getUserData().orgId)
+      );
 
       allow create: if isSignedIn() && isValidId(branchId) && (
         (hasValidUserDoc() && isOrgManager(incoming().orgId)) ||

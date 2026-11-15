@@ -51,6 +51,10 @@
           "type": "boolean",
           "description": "Whether manager has linked their Google Drive account"
         },
+        "isActive": {
+          "type": "boolean",
+          "description": "Optional organization active status"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",

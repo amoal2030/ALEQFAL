@@ -38,9 +38,10 @@ import {
 
 interface DashboardProps {
   onNavigatePage?: (page: AppPageRoute) => void;
+  onOpenSuperAdmin?: () => void;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSuperAdmin }) => {
   const {
     currentUser,
     userProfile,
@@ -51,6 +52,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage }) => {
     driveReadiness,
     logout,
     refreshTenantData,
+    isSuperAdmin,
   } = useAuth();
   const { t, language, setLanguage, direction } = useLanguage();
   const { theme, toggleTheme } = useTheme();
@@ -188,6 +190,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage }) => {
                   {currentUser?.email}
                 </span>
               </div>
+
+              {isSuperAdmin && onOpenSuperAdmin && (
+                <button
+                  type="button"
+                  onClick={onOpenSuperAdmin}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span className="hidden sm:inline">لوحة المدير الرئيسي</span>
+                </button>
+              )}
 
               {/* Logout Button */}
               <button
