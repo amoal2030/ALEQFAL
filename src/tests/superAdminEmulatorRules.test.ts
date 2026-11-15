@@ -218,21 +218,32 @@ async function runSuperAdminPhase1Tests() {
   });
 
   try {
-    // 1. Verified amoal2030@gmail.com reads ALL organizations, branches, and users (both with & without a users doc)
+    // 1. Verified amoal2030@gmail.com reads ALL organizations, branches, and users (matching loadSuperAdminOverview server reads)
     const saNoDocDb = testEnv
       .authenticatedContext('uid_sa_no_doc', {
         email: 'amoal2030@gmail.com',
         email_verified: true,
       })
       .firestore();
-    const orgsSnap = await assertSucceeds(saNoDocDb.collection('organizations').get());
+    const orgsSnap = await assertSucceeds(saNoDocDb.collection('organizations').get({ source: 'server' }));
     assert.equal(orgsSnap.size, 3);
-    const branchesSnap = await assertSucceeds(saNoDocDb.collection('branches').get());
+    const branchesSnap = await assertSucceeds(saNoDocDb.collection('branches').get({ source: 'server' }));
     assert.equal(branchesSnap.size, 3);
-    const usersSnap = await assertSucceeds(saNoDocDb.collection('users').get());
+    const usersSnap = await assertSucceeds(saNoDocDb.collection('users').get({ source: 'server' }));
     assert.equal(usersSnap.size, 4);
-    const alphaDoc = await assertSucceeds(saNoDocDb.doc('organizations/org_alpha').get());
+    const alphaDoc = await assertSucceeds(saNoDocDb.doc('organizations/org_alpha').get({ source: 'server' }));
     assert.equal(alphaDoc.data()?.driveAccountEmail, 'drive.alpha@example.com');
+
+    // Mixed-case token email with email_verified=true also succeeds
+    const saUpperEmailDb = testEnv
+      .authenticatedContext('uid_sa_upper', {
+        email: 'AMOAL2030@GMAIL.COM',
+        email_verified: true,
+      })
+      .firestore();
+    assert.equal((await assertSucceeds(saUpperEmailDb.collection('organizations').get({ source: 'server' }))).size, 3);
+    assert.equal((await assertSucceeds(saUpperEmailDb.collection('branches').get({ source: 'server' }))).size, 3);
+    assert.equal((await assertSucceeds(saUpperEmailDb.collection('users').get({ source: 'server' }))).size, 4);
 
     const saWithOrgDb = testEnv
       .authenticatedContext('uid_sa_with_org', {
@@ -240,10 +251,10 @@ async function runSuperAdminPhase1Tests() {
         email_verified: true,
       })
       .firestore();
-    await assertSucceeds(saWithOrgDb.collection('organizations').get());
-    await assertSucceeds(saWithOrgDb.collection('branches').get());
-    await assertSucceeds(saWithOrgDb.collection('users').get());
-    console.log('✔ Test 1 PASSED: Verified amoal2030@gmail.com reads all organizations, branches, users, and Drive metadata.');
+    await assertSucceeds(saWithOrgDb.collection('organizations').get({ source: 'server' }));
+    await assertSucceeds(saWithOrgDb.collection('branches').get({ source: 'server' }));
+    await assertSucceeds(saWithOrgDb.collection('users').get({ source: 'server' }));
+    console.log('✔ Test 1 PASSED: Verified amoal2030@gmail.com reads all organizations, branches, users, and Drive metadata (server-source).');
 
     // 2. onlak2030@gmail.com CANNOT read other organizations, branches, or users
     const onlakDb = testEnv
@@ -253,14 +264,14 @@ async function runSuperAdminPhase1Tests() {
       })
       .firestore();
     await assertFails(onlakDb.doc('organizations/org_alpha').get());
-    await assertFails(onlakDb.collection('organizations').get());
+    await assertFails(onlakDb.collection('organizations').get({ source: 'server' }));
     await assertFails(onlakDb.doc('branches/br_alpha_01').get());
-    await assertFails(onlakDb.collection('branches').get());
+    await assertFails(onlakDb.collection('branches').get({ source: 'server' }));
     await assertFails(onlakDb.doc('users/emp_alpha').get());
-    await assertFails(onlakDb.collection('users').get());
+    await assertFails(onlakDb.collection('users').get({ source: 'server' }));
     console.log('✔ Test 2 PASSED: onlak2030@gmail.com is strictly blocked from accessing other organizations.');
 
-    // 3. Spoofed amoal2030@gmail.com with email_verified=false CANNOT get Super Admin privileges
+    // 3. Spoofed amoal2030@gmail.com with email_verified=false AND tokens missing email claim CANNOT get Super Admin privileges
     const unverifiedSaDb = testEnv
       .authenticatedContext('uid_spoof_sa', {
         email: 'amoal2030@gmail.com',
@@ -268,12 +279,17 @@ async function runSuperAdminPhase1Tests() {
       })
       .firestore();
     await assertFails(unverifiedSaDb.doc('organizations/org_alpha').get());
-    await assertFails(unverifiedSaDb.collection('organizations').get());
+    await assertFails(unverifiedSaDb.collection('organizations').get({ source: 'server' }));
     await assertFails(unverifiedSaDb.doc('branches/br_alpha_01').get());
-    await assertFails(unverifiedSaDb.collection('branches').get());
+    await assertFails(unverifiedSaDb.collection('branches').get({ source: 'server' }));
     await assertFails(unverifiedSaDb.doc('users/emp_alpha').get());
-    await assertFails(unverifiedSaDb.collection('users').get());
-    console.log('✔ Test 3 PASSED: Unverified amoal2030@gmail.com (email_verified=false) is denied Super Admin access.');
+    await assertFails(unverifiedSaDb.collection('users').get({ source: 'server' }));
+
+    const noEmailClaimDb = testEnv.authenticatedContext('uid_no_email_claim', {}).firestore();
+    await assertFails(noEmailClaimDb.collection('organizations').get({ source: 'server' }));
+    await assertFails(noEmailClaimDb.collection('branches').get({ source: 'server' }));
+    await assertFails(noEmailClaimDb.collection('users').get({ source: 'server' }));
+    console.log('✔ Test 3 PASSED: Unverified amoal2030@gmail.com and tokens missing email claims are denied Super Admin access.');
 
     // 4. Regular manager CANNOT view other organizations, branches, or users
     const mgrAlphaDb = testEnv

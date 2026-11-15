@@ -2087,7 +2087,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loadSuperAdminOverview = async () => {
     const activeAuthUser = auth.currentUser;
-    if (!isVerifiedSuperAdmin(activeAuthUser)) {
+    if (!isVerifiedSuperAdmin(activeAuthUser) || !activeAuthUser) {
       setSuperAdminOverview(null);
       const errMsg = 'غير مصرح بالوصول إلى لوحة المدير الرئيسي.';
       setSuperAdminError(errMsg);
@@ -2097,10 +2097,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSuperAdminLoading(true);
     setSuperAdminError(null);
     try {
+      // Ensure Firebase Auth ID token claims (email & email_verified) are attached before querying Firestore
+      await activeAuthUser.getIdToken();
+
       const fetchCollection = async <T,>(colName: string): Promise<T[]> => {
         const colRef = collection(db, colName);
         const snap = await getDocsFromServer(colRef).catch((err: any) => {
-          if (err?.code === 'permission-denied') {
+          const errMessage = String(err?.message || '').toLowerCase();
+          if (
+            err?.code === 'permission-denied' ||
+            errMessage.includes('insufficient permissions') ||
+            errMessage.includes('permission_denied')
+          ) {
             throw err;
           }
           return getDocs(colRef);
@@ -2118,7 +2126,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         fetchCollection<UserProfile>('users'),
       ]);
 
-      orgs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      const toSortableTime = (value: unknown): number => {
+        if (typeof value === 'string' || typeof value === 'number') {
+          const ts = new Date(value).getTime();
+          return Number.isNaN(ts) ? 0 : ts;
+        }
+        if (value && typeof value === 'object' && 'toDate' in value && typeof (value as any).toDate === 'function') {
+          const ts = (value as any).toDate().getTime();
+          return Number.isNaN(ts) ? 0 : ts;
+        }
+        return 0;
+      };
+
+      orgs.sort((a, b) => toSortableTime(b.createdAt) - toSortableTime(a.createdAt));
 
       if (!isVerifiedSuperAdmin(auth.currentUser)) {
         setSuperAdminOverview(null);
@@ -2132,9 +2152,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         fetchedAt: new Date().toISOString(),
       });
     } catch (error: any) {
+      const errMessage = String(error?.message || '').toLowerCase();
       const msg =
         error?.code === 'permission-denied' ||
-        String(error?.message || '').includes('insufficient permissions')
+        errMessage.includes('insufficient permissions') ||
+        errMessage.includes('permission_denied')
           ? 'تم رفض قراءة بيانات المراقبة من قواعد Firestore (Permission Denied).'
           : error?.message || 'تعذر تحميل بيانات المراقبة من قاعدة البيانات.';
       setSuperAdminError(msg);
