@@ -56,6 +56,13 @@ service cloud.firestore {
         getUserData().role == 'manager';
     }
 
+    // Verifies a branch document exists and belongs to the target organization
+    function isBranchInOrg(branchId, targetOrgId) {
+      return isValidId(branchId) &&
+        exists(/databases/$(database)/documents/branches/$(branchId)) &&
+        get(/databases/$(database)/documents/branches/$(branchId)).data.orgId == targetOrgId;
+    }
+
     function isValidCurrencyAmount(val) {
       return val is number &&
         val >= -1000000000000 &&
@@ -511,26 +518,47 @@ service cloud.firestore {
           existsAfter(/databases/$(database)/documents/organizations/$(incoming().orgId)) &&
           getAfter(/databases/$(database)/documents/organizations/$(incoming().orgId)).data.ownerId == request.auth.uid
         ) ||
-        (hasValidUserDoc() && isOrgManager(incoming().orgId) && incoming().role == 'employee')
+        (
+          hasValidUserDoc() &&
+          isOrgManager(incoming().orgId) &&
+          incoming().role == 'employee' &&
+          incoming().uid == userId &&
+          incoming().isActive is bool &&
+          isBranchInOrg(incoming().branchId, incoming().orgId)
+        )
       );
 
-      // Prevent role, orgId, branchId, and isActive tampering (and forbid promotion to super_admin)
+      // Harden user updates: strict self-update allowlist + same-org branch check + block promotion to super_admin
       allow update: if isSignedIn() && isValidId(userId) &&
         incoming().role in ['manager', 'employee'] && (
-        // Case 1: Employee self-updating display name or phone only (CANNOT change role, orgId, branchId, or isActive)
+        // Case 1: Active user self-updating displayName or phone ONLY (blocks disabled users and permissions/email tampering)
         (
           request.auth.uid == userId &&
+          existing().isActive == true &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone']) &&
           incoming().role == existing().role &&
           incoming().orgId == existing().orgId &&
-          incoming().branchId == existing().branchId &&
-          incoming().isActive == existing().isActive
+          incoming().isActive == existing().isActive &&
+          incoming().displayName is string &&
+          incoming().displayName.size() >= 1 &&
+          incoming().displayName.size() <= 100 &&
+          (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25))
         ) ||
-        // Case 2: Manager updating employee's branch, permissions, or isActive status
+        // Case 2: Active manager updating employee's branch, permissions, status, or profile within their org
         (
           hasValidUserDoc() &&
           isOrgManager(existing().orgId) &&
           incoming().orgId == existing().orgId &&
-          incoming().role == existing().role
+          incoming().role == existing().role &&
+          incoming().uid == existing().uid &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'branchId', 'branchName', 'permissions', 'isActive', 'displayName', 'phone'
+          ]) &&
+          incoming().isActive is bool &&
+          (
+            !incoming().diff(existing()).affectedKeys().hasAny(['branchId']) ||
+            isBranchInOrg(incoming().branchId, existing().orgId)
+          )
         )
       );
 
@@ -545,7 +573,7 @@ service cloud.firestore {
       );
       allow list: if isSignedIn() && (
         isSuperAdmin() ||
-        (hasValidUserDoc() && resource.data.orgId == getUserData().orgId)
+        (hasValidUserDoc() && getUserData().isActive == true && resource.data.orgId == getUserData().orgId)
       );
 
       allow create: if isSignedIn() && isValidId(branchId) && (
@@ -566,7 +594,7 @@ service cloud.firestore {
     // Shift Closings Collection
     match /closings/{closingId} {
       allow get: if isSignedIn() && isValidId(closingId) && isOrgMember(resource.data.orgId);
-      allow list: if isSignedIn() && hasValidUserDoc() && resource.data.orgId == getUserData().orgId;
+      allow list: if isSignedIn() && hasValidUserDoc() && getUserData().isActive == true && resource.data.orgId == getUserData().orgId;
 
       allow create: if isSignedIn() && isValidId(closingId) &&
         isOrgMember(incoming().orgId) &&
@@ -778,6 +806,18 @@ service cloud.firestore {
                     getAfter(/databases/$(database)/documents/closings/$(incoming().targetId)).data.orgId == getUserData().orgId &&
                     incoming().previousValues is map &&
                     incoming().newValues is map
+                  ) ||
+                  // 8. Employee Branch Change: target employee MUST belong to org and transition branchId to a branch in the same org
+                  (
+                    incoming().action == 'EMPLOYEE_BRANCH_CHANGED' &&
+                    incoming().targetType == 'employee' &&
+                    exists(/databases/$(database)/documents/users/$(incoming().targetId)) &&
+                    get(/databases/$(database)/documents/users/$(incoming().targetId)).data.orgId == getUserData().orgId &&
+                    get(/databases/$(database)/documents/users/$(incoming().targetId)).data.role == 'employee' &&
+                    getAfter(/databases/$(database)/documents/users/$(incoming().targetId)).data.orgId == getUserData().orgId &&
+                    getAfter(/databases/$(database)/documents/users/$(incoming().targetId)).data.role == 'employee' &&
+                    getAfter(/databases/$(database)/documents/users/$(incoming().targetId)).data.branchId != get(/databases/$(database)/documents/users/$(incoming().targetId)).data.get('branchId', '') &&
+                    isBranchInOrg(getAfter(/databases/$(database)/documents/users/$(incoming().targetId)).data.branchId, getUserData().orgId)
                   )
                 )
               )

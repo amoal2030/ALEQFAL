@@ -781,6 +781,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('Only managers can provision employee accounts');
     }
 
+    const targetBranch = branches.find((b) => b.id === data.branchId && b.orgId === currentOrg.id);
+    if (!targetBranch) {
+      throw new Error('الفرع المحدد غير موجود أو لا يتبع للمؤسسة الحالية.');
+    }
+
+    const safeActorName =
+      userProfile.displayName && userProfile.displayName.trim().length >= 2
+        ? userProfile.displayName.trim().slice(0, 100)
+        : currentUser?.email || 'المدير العام';
+
     const secondaryAuth = getSecondaryAuth();
     try {
       const userCredential = await createUserWithEmailAndPassword(
@@ -798,8 +808,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email: data.email.trim(),
         displayName: data.displayName.trim(),
         role: 'employee',
-        branchId: data.branchId,
-        branchName: data.branchName,
+        branchId: targetBranch.id,
+        branchName: targetBranch.name || data.branchName,
         phone: data.phone?.trim() || '',
         isActive: true,
         permissions: {
@@ -822,12 +832,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         id: logId,
         orgId: currentOrg.id,
         actorId: userProfile.uid,
-        actorName: userProfile.displayName,
+        actorName: safeActorName,
         actorRole: 'manager',
         action: 'EMPLOYEE_PROVISIONED',
         targetType: 'employee',
         targetId: newUid,
-        details: `تم إنشاء حساب موظف جديد: ${newProfile.displayName} (${newProfile.email}) على فرع ${data.branchName}`,
+        details: `تم إنشاء حساب موظف جديد: ${newProfile.displayName} (${newProfile.email}) على فرع ${newProfile.branchName}`,
         timestamp: nowIso,
       });
 
@@ -849,6 +859,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!currentOrg || userProfile?.role !== 'manager') {
       throw new Error('Only managers can toggle employee status');
     }
+    const safeActorName =
+      userProfile.displayName && userProfile.displayName.trim().length >= 2
+        ? userProfile.displayName.trim().slice(0, 100)
+        : currentUser?.email || 'المدير العام';
+
     const userRef = doc(db, 'users', employeeUid);
     const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const logRef = doc(db, 'auditLogs', logId);
@@ -859,7 +874,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       id: logId,
       orgId: currentOrg.id,
       actorId: userProfile.uid,
-      actorName: userProfile.displayName,
+      actorName: safeActorName,
       actorRole: 'manager',
       action: isActive ? 'EMPLOYEE_ACTIVATED' : 'EMPLOYEE_DISABLED',
       targetType: 'employee',
@@ -875,22 +890,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!currentOrg || userProfile?.role !== 'manager') {
       throw new Error('Only managers can update employee branch');
     }
+
+    const targetBranch = branches.find((b) => b.id === branchId && b.orgId === currentOrg.id);
+    if (!targetBranch) {
+      throw new Error('الفرع المحدد غير موجود أو لا يتبع للمؤسسة الحالية.');
+    }
+
+    const targetEmployee = employees.find((e) => e.uid === employeeUid);
+    if (targetEmployee && targetEmployee.orgId !== currentOrg.id) {
+      throw new Error('لا يمكن تعديل موظف يتبع لمؤسسة أخرى.');
+    }
+    if (targetEmployee && targetEmployee.branchId === targetBranch.id) {
+      return;
+    }
+
+    const safeActorName =
+      userProfile.displayName && userProfile.displayName.trim().length >= 2
+        ? userProfile.displayName.trim().slice(0, 100)
+        : currentUser?.email || 'المدير العام';
+
+    const resolvedBranchName = targetBranch.name || branchName;
     const userRef = doc(db, 'users', employeeUid);
     const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const logRef = doc(db, 'auditLogs', logId);
 
     const batch = writeBatch(db);
-    batch.update(userRef, { branchId, branchName });
+    batch.update(userRef, { branchId: targetBranch.id, branchName: resolvedBranchName });
     batch.set(logRef, {
       id: logId,
       orgId: currentOrg.id,
       actorId: userProfile.uid,
-      actorName: userProfile.displayName,
+      actorName: safeActorName,
       actorRole: 'manager',
       action: 'EMPLOYEE_BRANCH_CHANGED',
       targetType: 'employee',
       targetId: employeeUid,
-      details: `تغيير فرع الموظف ${employeeUid} إلى ${branchName}`,
+      details: `تغيير فرع الموظف ${employeeUid} إلى ${resolvedBranchName}`,
       timestamp: new Date().toISOString(),
     });
 
