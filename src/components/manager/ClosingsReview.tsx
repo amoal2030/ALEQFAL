@@ -3,6 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { ShiftClosing, ClosingArchiveRecord } from '../../types';
 import { formatCurrency, formatDate, calculateShiftTotals } from '../../utils/accounting';
+import { resolveEffectivePermissions } from '../../utils/permissions';
 import {
   FileSpreadsheet,
   CheckCircle2,
@@ -28,6 +29,7 @@ import {
 export const ClosingsReview: React.FC = () => {
   const {
     currentUser,
+    userProfile,
     closings,
     closingArchives,
     branches,
@@ -39,6 +41,9 @@ export const ClosingsReview: React.FC = () => {
     downloadArchivedExcelFromDrive,
   } = useAuth();
   const { language, t } = useLanguage();
+  const effectivePerms = resolveEffectivePermissions(userProfile);
+  const isManager = userProfile?.role === 'manager';
+  const canApproveClosings = isManager || effectivePerms.canApproveClosings;
 
   // Filters
   const [selectedBranchId, setSelectedBranchId] = useState<string>('all');
@@ -319,8 +324,8 @@ export const ClosingsReview: React.FC = () => {
         )}
       </div>
 
-      {/* Pending Drive Archival Banner */}
-      {pendingSyncClosings.length > 0 && (
+      {/* Pending Drive Archival Banner (Manager only) */}
+      {isManager && pendingSyncClosings.length > 0 && (
         <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-wrap items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-2.5 text-amber-700 dark:text-amber-300">
             <CloudUpload className="w-5 h-5 text-amber-500 shrink-0" />
@@ -740,18 +745,20 @@ export const ClosingsReview: React.FC = () => {
                     <Lock className="w-4 h-4 text-amber-500 shrink-0" />
                     <span>هذا الإقفال معتمد رسمياً ومقفل ضد التعديلات العادية.</span>
                   </div>
-                  <button
-                    onClick={() => setIsCorrecting(true)}
-                    className="px-3 py-1.5 rounded-lg font-bold text-xs bg-amber-500 text-slate-950 hover:bg-amber-400 flex items-center gap-1.5 shrink-0"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span>طلب تصحيح إداري مبرر</span>
-                  </button>
+                  {isManager && (
+                    <button
+                      onClick={() => setIsCorrecting(true)}
+                      className="px-3 py-1.5 rounded-lg font-bold text-xs bg-amber-500 text-slate-950 hover:bg-amber-400 flex items-center gap-1.5 shrink-0"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>طلب تصحيح إداري مبرر</span>
+                    </button>
+                  )}
                 </div>
               )}
 
-              {/* Google Drive Excel Archival Details & Controls (Approved Closings Only) */}
-              {activeClosing.status === 'approved' && (() => {
+              {/* Google Drive Excel Archival Details & Controls (Approved Closings Only, Manager Only) */}
+              {isManager && activeClosing.status === 'approved' && (() => {
                 const arch = archiveMap.get(activeClosing.id);
                 const isArchived = arch?.archiveStatus === 'archived';
                 const hasDriveFile = Boolean(arch?.driveExcelFileId);
@@ -890,8 +897,8 @@ export const ClosingsReview: React.FC = () => {
                 </div>
               )}
 
-              {/* Administrative Correction Form */}
-              {isCorrecting ? (
+              {/* Administrative Correction Form (Manager only) */}
+              {isManager && isCorrecting ? (
                 <form onSubmit={handleAdminCorrection} className="p-5 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-4">
                   <div className="flex items-center justify-between pb-2 border-b border-amber-500/20">
                     <span className="text-xs font-bold text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
@@ -1100,8 +1107,8 @@ export const ClosingsReview: React.FC = () => {
                 </div>
               )}
 
-              {/* Action Buttons ONLY for Pending Review Closings (Matches firestore.rules auditLogs requirement) */}
-              {activeClosing.status === 'pending_review' && !isRejecting && !isCorrecting && (
+              {/* Action Buttons ONLY for Pending Review Closings with Approval Permission */}
+              {canApproveClosings && activeClosing.status === 'pending_review' && !isRejecting && !isCorrecting && (
                 <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
                   <button
                     onClick={() => setIsRejecting(true)}

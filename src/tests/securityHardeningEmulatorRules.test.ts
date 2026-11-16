@@ -379,17 +379,19 @@ async function runSecurityHardeningTests() {
     );
     console.log('✔ 5 PASSED: EMPLOYEE_BRANCH_CHANGED succeeds atomically and blocks forged/unauthorized audit actions.');
 
-    // 6. Verified amoal2030@gmail.com retains strict read-only Super Admin access
+    // 6. Verified amoal2030@gmail.com manages orgs only and stays blocked from users updates, bare branch suspension without 30d grace, & active closings
     const allOrgs = await assertSucceeds(superAdminDb.collection('organizations').get());
     assert.equal(allOrgs.size, 2);
     const allBranches = await assertSucceeds(superAdminDb.collection('branches').get());
     assert.equal(allBranches.size, 3);
     const allUsers = await assertSucceeds(superAdminDb.collection('users').get());
     assert.equal(allUsers.size, 6);
-    await assertFails(superAdminDb.doc('organizations/org_alpha').update({ name: 'تعديل' }));
+    await assertSucceeds(superAdminDb.doc('organizations/org_alpha').update({ name: 'مؤسسة ألفا' }));
     await assertFails(superAdminDb.doc('users/emp_alpha').update({ isActive: false }));
+    await assertFails(superAdminDb.doc('branches/br_alpha_1').update({ isActive: false }));
+    await assertFails(mgrAlphaDb.doc('branches/br_alpha_1').update({ isActive: false }));
     await assertFails(superAdminDb.collection('closings').get());
-    console.log('✔ 6 PASSED: Verified amoal2030@gmail.com retains strict read-only Super Admin access.');
+    console.log('✔ 6 PASSED: Verified amoal2030@gmail.com manages orgs cleanly and stays blocked from users updates, bare branch suspension, & closings.');
 
     // 7. onlak2030@gmail.com receives ZERO Super Admin access
     await assertFails(mgrBetaDb.collection('organizations').get());

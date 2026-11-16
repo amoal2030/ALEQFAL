@@ -36,6 +36,7 @@ import {
   writeBatch,
   runTransaction,
   deleteField,
+  Timestamp,
 } from 'firebase/firestore';
 import {
   Organization,
@@ -48,8 +49,64 @@ import {
   DriveMonthFolderRef,
   DriveHealthStatus,
   SuperAdminOverviewData,
+  ManagerInvite,
+  PlatformAuditAction,
+  PlatformAuditLog,
+  FeePaymentStatus,
+  BranchPaymentStatus,
+  SubscriptionPlan,
+  SubscriptionStatus,
+  DeactivationReason,
+  TenantAccessStatus,
+  SubscriptionBlockReason,
+  InviteBlockReason,
+  AccessErrorReason,
+  Purchase,
+  AttachmentItem,
+  UserRole,
 } from '../types';
 import { isVerifiedSuperAdmin } from '../utils/superAdmin';
+import {
+  fetchSuperAdminOverviewWithDiagnostics,
+  isPermissionDeniedError,
+  TARGET_FIRESTORE_DATABASE_ID,
+} from '../utils/superAdminMonitoring';
+import {
+  calculateSubscriptionEndDate,
+  evaluateOrganizationSubscription,
+  OrganizationSubscriptionEvaluation,
+  toValidDate,
+} from '../utils/subscription';
+import {
+  ACCOUNT_SETUP_FEE_SAR,
+  BRANCH_MONTHLY_FEE_SAR,
+  BRANCH_PRICING_MODEL,
+  BRANCH_SUSPENSION_GRACE_DAYS,
+  BranchDriveBackupVerificationResult,
+  isBranchCountedAsPaid,
+  NEW_ORG_INCLUDED_BRANCHES_COUNT,
+  NO_PAID_BRANCH_GRACE_DAYS,
+  ORG_REACTIVATION_FEE_SAR,
+  verifyBranchDriveBackupCompleteness,
+} from '../utils/branchPricing';
+import {
+  buildAtomicInviteClaimPayloads,
+  evaluateFirestoreErrorCategory,
+  getSubscriptionBlockReason,
+  isGoogleProviderUser,
+  isValidNormalizedEmailDocId,
+  normalizeEmail,
+  resolveProfiledUserAccess,
+  resolveUnprofiledUserAccess,
+} from '../utils/tenantAccess';
+import {
+  buildDefaultPermissionsForRole,
+  canUserAccessBranch,
+  resolveEffectivePermissions,
+  resolvePrimaryAssignedBranchId,
+  SupervisorOptionalPermissionKey,
+  validateRoleAssignmentInput,
+} from '../utils/permissions';
 import {
   calculateShiftTotals,
   generateDeterministicClosingId,
@@ -85,6 +142,11 @@ interface AuthContextType {
   auditLogs: AuditLog[];
   loading: boolean;
   needsOnboarding: boolean;
+  tenantStatus: TenantAccessStatus;
+  subscriptionEvaluation: OrganizationSubscriptionEvaluation | null;
+  subscriptionBlockReason: SubscriptionBlockReason | null;
+  inviteBlockInfo: { reason: InviteBlockReason; email?: string; orgName?: string } | null;
+  accessErrorInfo: { reason: AccessErrorReason; detail?: string } | null;
   loginWithGoogle: () => Promise<void>;
   loginWithEmailPassword: (email: string, pass: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
@@ -101,10 +163,23 @@ interface AuthContextType {
     email: string;
     password: string;
     displayName: string;
-    branchId: string;
-    branchName: string;
+    role?: 'employee' | 'branch_manager' | 'supervisor';
+    branchId?: string;
+    branchName?: string;
     phone?: string;
+    supervisorPermissions?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
   }) => Promise<UserProfile>;
+  updateEmployeeAccount: (data: {
+    employeeUid: string;
+    displayName: string;
+    email: string;
+    phone?: string;
+    role: 'employee' | 'branch_manager' | 'supervisor';
+    branchId?: string;
+    supervisorPermissions?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+  }) => Promise<void>;
+  archiveEmployeeAccount: (employeeUid: string, reason?: string) => Promise<void>;
+  sendEmployeePasswordReset: (employeeUid: string) => Promise<string>;
   toggleEmployeeStatus: (employeeUid: string, isActive: boolean) => Promise<void>;
   updateEmployeeBranch: (employeeUid: string, branchId: string, branchName: string) => Promise<void>;
   submitShiftClosing: (data: {
@@ -171,6 +246,98 @@ interface AuthContextType {
   superAdminLoading: boolean;
   superAdminError: string | null;
   loadSuperAdminOverview: () => Promise<void>;
+  createSuperAdminOrganizationWithInvite: (input: {
+    name: string;
+    taxNumber?: string;
+    commercialRegistration?: string;
+    activityType: string;
+    currency: string;
+    ownerName: string;
+    ownerEmail: string;
+    subscriptionPlan: SubscriptionPlan;
+    startDateIso: string;
+    endDateIso?: string;
+    subscriptionNote?: string;
+    setupFeeStatus: FeePaymentStatus;
+    setupFeePaidDateIso?: string;
+    firstBranchName: string;
+    firstBranchCode?: string;
+    firstBranchPaymentStatus: BranchPaymentStatus;
+    firstBranchDueDateIso?: string;
+  }) => Promise<{ orgId: string; branchId: string; inviteEmail: string }>;
+  updateSuperAdminOrganizationProfileAndBilling: (input: {
+    orgId: string;
+    name: string;
+    taxNumber?: string;
+    commercialRegistration?: string;
+    activityType: string;
+    currency: string;
+    ownerName: string;
+    ownerEmail: string;
+    setupFeeStatus?: FeePaymentStatus;
+    setupFeePaidDateIso?: string;
+    subscriptionPlan?: SubscriptionPlan;
+    subscriptionStatus?: SubscriptionStatus;
+    startDateIso?: string;
+    endDateIso?: string;
+    subscriptionNote?: string;
+    convertLegacyToPaid?: boolean;
+  }) => Promise<void>;
+  updateSuperAdminOrgStatus: (input: {
+    orgId: string;
+    action: 'suspend' | 'start_no_paid_branch_grace' | 'deactivate_no_paid_branches' | 'reactivate';
+    reason?: DeactivationReason;
+    reactivationFeeStatus?: FeePaymentStatus;
+    reactivationFeePaidDateIso?: string;
+    note?: string;
+  }) => Promise<void>;
+  upsertSuperAdminManagerInvite: (input: {
+    email: string;
+    orgId: string;
+    managerName?: string;
+  }) => Promise<void>;
+  cancelSuperAdminManagerInvite: (email: string) => Promise<void>;
+  createSuperAdminBranch: (input: {
+    orgId: string;
+    name: string;
+    code?: string;
+    address?: string;
+    phone?: string;
+    paymentStatus: BranchPaymentStatus;
+    subscriptionStartIso?: string;
+    feeDueDateIso?: string;
+    paymentNote?: string;
+  }) => Promise<Branch>;
+  recordSuperAdminBranchPayment: (input: {
+    branchId: string;
+    paymentStatus: BranchPaymentStatus;
+    paidDateIso?: string;
+    feeDueDateIso?: string;
+    monthlyFeeSar?: number;
+    paymentNote?: string;
+  }) => Promise<void>;
+  suspendSuperAdminBranch: (input: {
+    branchId: string;
+    reason?: string;
+  }) => Promise<void>;
+  reactivateSuperAdminBranch: (input: {
+    branchId: string;
+    paymentStatus: BranchPaymentStatus;
+    feeDueDateIso?: string;
+    paymentNote?: string;
+  }) => Promise<void>;
+  inspectBranchDriveBackupForPurge: (branchId: string) => Promise<
+    BranchDriveBackupVerificationResult & {
+      purchasesCount: number;
+      attachmentsCount: number;
+    }
+  >;
+  purgeSuspendedBranchFromDb: (branchId: string) => Promise<{
+    deletedClosings: number;
+    deletedPurchases: number;
+    deletedAttachments: number;
+    deletedClosingArchives: number;
+  }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -187,6 +354,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [tenantStatus, setTenantStatus] = useState<TenantAccessStatus>('loading');
+  const [subscriptionEvaluation, setSubscriptionEvaluation] =
+    useState<OrganizationSubscriptionEvaluation | null>(null);
+  const [subscriptionBlockReason, setSubscriptionBlockReason] =
+    useState<SubscriptionBlockReason | null>(null);
+  const [inviteBlockInfo, setInviteBlockInfo] = useState<{
+    reason: InviteBlockReason;
+    email?: string;
+    orgName?: string;
+  } | null>(null);
+  const [accessErrorInfo, setAccessErrorInfo] = useState<{
+    reason: AccessErrorReason;
+    detail?: string;
+  } | null>(null);
   const [authNotice, setAuthNotice] = useState<{ type: 'info' | 'warning' | 'error'; message: string } | null>(null);
   const [superAdminOverview, setSuperAdminOverview] = useState<SuperAdminOverviewData | null>(null);
   const [superAdminLoading, setSuperAdminLoading] = useState(false);
@@ -196,9 +377,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const activeOrgIdRef = useRef<string | null>(null);
   const prevUserUidRef = useRef<string | null>(null);
   const prevOrgIdRef = useRef<string | null>(null);
+  const loadInFlightRef = useRef<{ uid: string; promise: Promise<void> } | null>(null);
+  const inviteClaimLockRef = useRef<string | null>(null);
 
   activeUserUidRef.current = currentUser?.uid ?? null;
   activeOrgIdRef.current = currentOrg?.id ?? null;
+
+  const clearOperationalState = () => {
+    setBranches([]);
+    setCurrentBranch(null);
+    setEmployees([]);
+    setClosings([]);
+    setClosingArchives([]);
+    setAuditLogs([]);
+  };
 
   // Enforce strict RAM session & tenant-state isolation whenever Firebase user or organization switches
   useEffect(() => {
@@ -216,12 +408,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const nextOrgId = currentOrg?.id ?? null;
     if (prevOrgIdRef.current && prevOrgIdRef.current !== nextOrgId) {
       clearDriveSession(prevOrgIdRef.current);
-      setBranches([]);
-      setCurrentBranch(null);
-      setEmployees([]);
-      setClosings([]);
-      setClosingArchives([]);
-      setAuditLogs([]);
+      clearOperationalState();
     }
     prevOrgIdRef.current = nextOrgId;
   }, [currentOrg?.id]);
@@ -233,15 +420,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   useEffect(() => {
-    // Process redirect sign-in result if returning from a mobile redirect flow
+    // Process redirect sign-in result if returning from a mobile redirect flow;
+    // onAuthStateChanged drives loadUserData once cleanly.
     getRedirectResult(auth)
-      .then(async (result) => {
+      .then((result) => {
         if (result?.user) {
           if (activeUserUidRef.current && activeUserUidRef.current !== result.user.uid) {
             clearDriveSession();
           }
           setCurrentUser(result.user);
-          await loadUserData(result.user);
         }
       })
       .catch((error) => {
@@ -253,25 +440,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!fbUser || (prevUid && prevUid !== fbUser.uid)) {
         clearDriveSession();
       }
+      activeUserUidRef.current = fbUser?.uid ?? null;
       setCurrentUser(fbUser);
       if (!isVerifiedSuperAdmin(fbUser)) {
         setSuperAdminOverview(null);
         setSuperAdminError(null);
       }
       if (fbUser) {
+        setLoading(true);
+        setTenantStatus('loading');
         await loadUserData(fbUser);
       } else {
         setUserProfile(null);
         setCurrentOrg(null);
-        setBranches([]);
-        setCurrentBranch(null);
-        setEmployees([]);
-        setClosings([]);
-        setClosingArchives([]);
-        setAuditLogs([]);
+        setSubscriptionEvaluation(null);
+        setSubscriptionBlockReason(null);
+        setInviteBlockInfo(null);
+        setAccessErrorInfo(null);
+        clearOperationalState();
         setSuperAdminOverview(null);
         setSuperAdminError(null);
         setNeedsOnboarding(false);
+        setTenantStatus('unauthenticated');
         setLoading(false);
       }
     });
@@ -279,24 +469,152 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
-  // Listen to organization closings and employees ONLY when user profile is verified and active
+  // Passive listeners for organization subscription status & self active-status enforcement
+  // Active even when subscription_blocked so live Super Admin renewal unlocks Dashboard automatically
   useEffect(() => {
-    if (!currentOrg?.id || !currentUser?.uid || !userProfile || !userProfile.isActive) return;
-    if (userProfile.orgId !== currentOrg.id) return;
+    if (!currentUser?.uid || !currentOrg?.id) return;
+    if (tenantStatus !== 'active_tenant' && tenantStatus !== 'subscription_blocked') return;
 
-    // 0. Real-time Organization & Branches listeners so Drive readiness & folder state sync immediately
     const orgDocRef = doc(db, 'organizations', currentOrg.id);
     const unsubOrg = onSnapshot(
       orgDocRef,
       (docSnap) => {
-        if (docSnap.exists()) {
-          setCurrentOrg(docSnap.data() as Organization);
+        if (!docSnap.exists()) return;
+        const updatedOrg = docSnap.data() as Organization;
+        setCurrentOrg(updatedOrg);
+        const nextEval = evaluateOrganizationSubscription(updatedOrg);
+        setSubscriptionEvaluation(nextEval);
+
+        if (!nextEval.isAllowed) {
+          setSubscriptionBlockReason(getSubscriptionBlockReason(nextEval));
+          if (tenantStatus === 'active_tenant') {
+            setTenantStatus('subscription_blocked');
+            clearOperationalState();
+          }
+        } else if (tenantStatus === 'subscription_blocked') {
+          setSubscriptionBlockReason(null);
+          if (userProfile && userProfile.isActive && userProfile.orgId === updatedOrg.id) {
+            setTenantStatus('active_tenant');
+          } else if (auth.currentUser) {
+            void loadUserData(auth.currentUser);
+          }
         }
       },
       (error) => {
-        console.warn('Organization listener notice:', error?.message);
+        console.warn('Passive organization listener notice:', error?.message);
       }
     );
+
+    let unsubSelf = () => {};
+    if (userProfile && userProfile.isActive) {
+      const userDocRef = doc(db, 'users', currentUser.uid);
+      unsubSelf = onSnapshot(
+        userDocRef,
+        (docSnap) => {
+          if (!docSnap.exists()) return;
+          const data = docSnap.data() as UserProfile;
+          if (data.isActive === false) {
+            // Instantly terminate disabled session for BOTH manager & employee
+            clearDriveSession();
+            clearOperationalState();
+            signOut(auth).then(() => {
+              setUserProfile(null);
+              setCurrentOrg(null);
+              setSubscriptionEvaluation(null);
+              setSubscriptionBlockReason(null);
+              setAuthNotice({
+                type: 'error',
+                message: 'تم تعطيل هذا الحساب من قبل إدارة النظام أو المؤسسة. تم إنهاء الجلسة فوراً.',
+              });
+            });
+          } else {
+            setUserProfile(data);
+          }
+        },
+        (error) => {
+          console.warn('User status listener notice:', error?.message);
+        }
+      );
+    }
+
+    return () => {
+      unsubOrg();
+      unsubSelf();
+    };
+  }, [currentOrg?.id, currentUser?.uid, tenantStatus, userProfile?.uid, userProfile?.isActive, userProfile?.orgId]);
+
+  // Real-time boundary timer so an open active tab locks immediately at exact subscriptionEndAt
+  useEffect(() => {
+    if (!currentOrg) return;
+
+    const nextDeadlineMs = [
+      subscriptionEvaluation?.endDate?.getTime(),
+      subscriptionEvaluation?.deactivationDueAt?.getTime(),
+    ]
+      .filter((ts): ts is number => typeof ts === 'number' && Number.isFinite(ts))
+      .sort((a, b) => a - b)[0];
+
+    if (
+      tenantStatus === 'active_tenant' &&
+      typeof nextDeadlineMs === 'number' &&
+      !subscriptionEvaluation?.isLegacy
+    ) {
+      const msUntilExpiry = nextDeadlineMs - Date.now();
+      if (msUntilExpiry <= 2147483647) {
+        const timer = setTimeout(() => {
+          const nextEval = evaluateOrganizationSubscription(currentOrg);
+          setSubscriptionEvaluation(nextEval);
+          if (!nextEval.isAllowed) {
+            setSubscriptionBlockReason(getSubscriptionBlockReason(nextEval));
+            setTenantStatus('subscription_blocked');
+            clearOperationalState();
+          }
+        }, Math.max(0, msUntilExpiry + 100));
+        return () => clearTimeout(timer);
+      }
+    }
+
+    if (
+      tenantStatus === 'subscription_blocked' &&
+      subscriptionEvaluation?.notStarted &&
+      subscriptionEvaluation.startDate
+    ) {
+      const msUntilStart = subscriptionEvaluation.startDate.getTime() - Date.now();
+      if (msUntilStart <= 2147483647) {
+        const timer = setTimeout(() => {
+          if (auth.currentUser) {
+            void loadUserData(auth.currentUser);
+          }
+        }, Math.max(0, msUntilStart + 250));
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [
+    currentOrg,
+    tenantStatus,
+    subscriptionEvaluation?.endDate?.getTime(),
+    subscriptionEvaluation?.deactivationDueAt?.getTime(),
+    subscriptionEvaluation?.startDate?.getTime(),
+    subscriptionEvaluation?.isLegacy,
+    subscriptionEvaluation?.notStarted,
+  ]);
+
+  // Operational Firestore listeners ONLY when subscription is active/legacy and user profile is verified
+  useEffect(() => {
+    if (
+      tenantStatus !== 'active_tenant' ||
+      !currentOrg?.id ||
+      !currentUser?.uid ||
+      !userProfile ||
+      !userProfile.isActive ||
+      userProfile.orgId !== currentOrg.id ||
+      !subscriptionEvaluation?.isAllowed
+    ) {
+      return;
+    }
+
+    const assignedBranchId = resolvePrimaryAssignedBranchId(userProfile);
+    const effectivePerms = resolveEffectivePermissions(userProfile);
 
     const branchesRef = collection(db, 'branches');
     const branchesQuery = query(branchesRef, where('orgId', '==', currentOrg.id));
@@ -307,8 +625,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         snapshot.forEach((b) => loaded.push(b.data() as Branch));
         setBranches(loaded);
         setCurrentBranch((prev) => {
-          if (userProfile.role === 'employee' && userProfile.branchId) {
-            return loaded.find((b) => b.id === userProfile.branchId) || loaded[0] || null;
+          if (
+            (userProfile.role === 'employee' || userProfile.role === 'branch_manager') &&
+            assignedBranchId
+          ) {
+            return loaded.find((b) => b.id === assignedBranchId) || loaded[0] || null;
           }
           if (prev) {
             return loaded.find((b) => b.id === prev.id) || loaded[0] || null;
@@ -321,57 +642,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     );
 
-    // 1. Closings snapshot listener (scoped to orgId)
     const closingsRef = collection(db, 'closings');
-    const closingsQuery = query(closingsRef, where('orgId', '==', currentOrg.id));
-    const unsubClosings = onSnapshot(
-      closingsQuery,
-      (snapshot) => {
-        const loaded: ShiftClosing[] = [];
-        snapshot.forEach((doc) => {
-          loaded.push(doc.data() as ShiftClosing);
-        });
-        loaded.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        setClosings(loaded);
-      },
-      (error) => {
-        console.warn('Real-time closings notice:', error?.message);
-      }
-    );
+    let closingsQuery: ReturnType<typeof query> | null = null;
+    if (userProfile.role === 'manager') {
+      closingsQuery = query(closingsRef, where('orgId', '==', currentOrg.id));
+    } else if (userProfile.role === 'supervisor') {
+      closingsQuery =
+        effectivePerms.canViewAllClosings ||
+        effectivePerms.canApproveClosings ||
+        effectivePerms.canViewFinancialReports ||
+        effectivePerms.canExportReports
+          ? query(closingsRef, where('orgId', '==', currentOrg.id))
+          : query(
+              closingsRef,
+              where('orgId', '==', currentOrg.id),
+              where('employeeId', '==', currentUser.uid)
+            );
+    } else if (
+      (userProfile.role === 'employee' || userProfile.role === 'branch_manager') &&
+      assignedBranchId
+    ) {
+      closingsQuery = query(
+        closingsRef,
+        where('orgId', '==', currentOrg.id),
+        where('branchId', '==', assignedBranchId)
+      );
+    }
 
-    // 2. Real-time active status enforcement for the current user
-    const userDocRef = doc(db, 'users', currentUser.uid);
-    const unsubSelf = onSnapshot(
-      userDocRef,
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data() as UserProfile;
-          if (data.role === 'employee' && data.isActive === false) {
-            // Instantly terminate disabled session without window.alert
-            clearDriveSession();
-            signOut(auth).then(() => {
-              setUserProfile(null);
-              setCurrentOrg(null);
-              setBranches([]);
-              setCurrentBranch(null);
-              setEmployees([]);
-              setClosings([]);
-              setClosingArchives([]);
-              setAuditLogs([]);
-              setAuthNotice({
-                type: 'error',
-                message: 'تم تعطيل هذا الحساب من قبل إدارة المؤسسة. تم إنهاء الجلسة فوراً.',
-              });
-            });
-          }
+    let unsubClosings = () => {};
+    if (closingsQuery) {
+      unsubClosings = onSnapshot(
+        closingsQuery,
+        (snapshot) => {
+          const loaded: ShiftClosing[] = [];
+          snapshot.forEach((d) => {
+            loaded.push(d.data() as ShiftClosing);
+          });
+          loaded.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          setClosings(loaded);
+        },
+        (error) => {
+          console.warn('Real-time closings notice:', error?.message);
         }
-      },
-      (error) => {
-        console.warn('User status listener notice:', error?.message);
-      }
-    );
+      );
+    } else {
+      setClosings([]);
+    }
 
-    // 3. Employees snapshot listener (for verified Manager only)
     let unsubUsers = () => {};
     if (userProfile.role === 'manager') {
       const usersRef = collection(db, 'users');
@@ -380,8 +697,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         usersQuery,
         (snapshot) => {
           const loaded: UserProfile[] = [];
-          snapshot.forEach((doc) => {
-            loaded.push(doc.data() as UserProfile);
+          snapshot.forEach((d) => {
+            loaded.push(d.data() as UserProfile);
           });
           setEmployees(loaded);
         },
@@ -391,7 +708,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
-    // 4. Audit logs snapshot listener (for verified Manager only)
     let unsubLogs = () => {};
     if (userProfile.role === 'manager') {
       const logsRef = collection(db, 'auditLogs');
@@ -400,8 +716,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         logsQuery,
         (snapshot) => {
           const loaded: AuditLog[] = [];
-          snapshot.forEach((doc) => {
-            loaded.push(doc.data() as AuditLog);
+          snapshot.forEach((d) => {
+            loaded.push(d.data() as AuditLog);
           });
           loaded.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
           setAuditLogs(loaded);
@@ -412,9 +728,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
-    // 5. Closing Archives snapshot listener (scoped cleanly by role & branch for Employee)
     let unsubArchives = () => {};
-    if (userProfile.role === 'manager') {
+    if (
+      userProfile.role === 'manager' ||
+      (userProfile.role === 'supervisor' &&
+        (effectivePerms.canViewAllClosings || effectivePerms.canApproveClosings))
+    ) {
       const archivesQuery = query(
         collection(db, 'closingArchives'),
         where('orgId', '==', currentOrg.id)
@@ -430,11 +749,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.warn('Closing archives listener notice:', error?.message);
         }
       );
-    } else if (userProfile.role === 'employee' && userProfile.branchId) {
+    } else if (
+      (userProfile.role === 'employee' || userProfile.role === 'branch_manager') &&
+      assignedBranchId
+    ) {
       const empArchivesQuery = query(
         collection(db, 'closingArchives'),
         where('orgId', '==', currentOrg.id),
-        where('branchId', '==', userProfile.branchId)
+        where('branchId', '==', assignedBranchId)
       );
       unsubArchives = onSnapshot(
         empArchivesQuery,
@@ -447,114 +769,318 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.warn('Employee closing archives listener notice:', error?.message);
         }
       );
+    } else {
+      setClosingArchives([]);
     }
 
     return () => {
-      unsubOrg();
       unsubBranches();
       unsubClosings();
-      unsubSelf();
       unsubUsers();
       unsubLogs();
       unsubArchives();
     };
-  }, [currentOrg?.id, currentUser?.uid, userProfile?.role, userProfile?.isActive, userProfile?.orgId, userProfile?.branchId]);
+  }, [
+    tenantStatus,
+    currentOrg?.id,
+    currentUser?.uid,
+    userProfile?.role,
+    userProfile?.isActive,
+    userProfile?.orgId,
+    userProfile?.branchId,
+    userProfile?.branchIds?.join(','),
+    JSON.stringify(userProfile?.permissions || {}),
+    subscriptionEvaluation?.isAllowed,
+  ]);
 
-  const loadUserData = async (fbUser: FirebaseUser) => {
+  const loadBranchesForOrg = async (orgId: string, profile: UserProfile) => {
+    const branchesRef = collection(db, 'branches');
+    const q = query(branchesRef, where('orgId', '==', orgId));
+    const branchesSnap = await getDocs(q);
+    const loadedBranches: Branch[] = [];
+    branchesSnap.forEach((b) => loadedBranches.push(b.data() as Branch));
+    setBranches(loadedBranches);
+
+    const assignedBranchId = resolvePrimaryAssignedBranchId(profile);
+    if ((profile.role === 'employee' || profile.role === 'branch_manager') && assignedBranchId) {
+      const assigned = loadedBranches.find((b) => b.id === assignedBranchId);
+      setCurrentBranch(assigned || loadedBranches[0] || null);
+    } else {
+      setCurrentBranch(loadedBranches[0] || null);
+    }
+  };
+
+  const performLoadUserData = async (fbUser: FirebaseUser) => {
     setLoading(true);
+    setNeedsOnboarding(false);
     try {
       const userDocRef = doc(db, 'users', fbUser.uid);
       const userDocSnap = await getDoc(userDocRef);
 
+      if (activeUserUidRef.current !== fbUser.uid) return;
+
       if (userDocSnap.exists()) {
         const profile = userDocSnap.data() as UserProfile;
 
-        // CRITICAL SECURITY ENFORCEMENT: Block disabled employees immediately
-        if (profile.role === 'employee' && profile.isActive === false) {
+        // Disabled user enforcement (both Manager and Employee)
+        if (profile.isActive === false) {
           clearDriveSession();
-          await signOut(auth);
+          clearOperationalState();
           setUserProfile(null);
           setCurrentOrg(null);
-          setBranches([]);
-          setCurrentBranch(null);
-          setEmployees([]);
-          setClosings([]);
-          setClosingArchives([]);
-          setAuditLogs([]);
+          setSubscriptionEvaluation(null);
+          setSubscriptionBlockReason(null);
+          setInviteBlockInfo(null);
+          setAccessErrorInfo({ reason: 'account_disabled' });
+          setTenantStatus('access_error');
           setLoading(false);
           setAuthNotice({
             type: 'error',
-            message: 'تم تعطيل هذا الحساب من قبل إدارة المؤسسة. يرجى مراجعة المدير العام.',
+            message: 'تم تعطيل هذا الحساب من قبل إدارة النظام أو المؤسسة. يرجى مراجعة الإدارة.',
           });
+          await signOut(auth);
           return;
         }
 
         if (activeOrgIdRef.current && activeOrgIdRef.current !== profile.orgId) {
           clearDriveSession(activeOrgIdRef.current);
-          setCurrentOrg(null);
-          setBranches([]);
-          setCurrentBranch(null);
-          setEmployees([]);
-          setClosings([]);
-          setClosingArchives([]);
-          setAuditLogs([]);
+          clearOperationalState();
         }
 
-        setUserProfile(profile);
-
+        let orgData: Organization | null = null;
         if (profile.orgId) {
           const orgDocRef = doc(db, 'organizations', profile.orgId);
           const orgSnap = await getDoc(orgDocRef);
+          if (activeUserUidRef.current !== fbUser.uid) return;
           if (orgSnap.exists()) {
-            setCurrentOrg(orgSnap.data() as Organization);
-          } else {
-            setCurrentOrg(null);
+            orgData = orgSnap.data() as Organization;
           }
-
-          const branchesRef = collection(db, 'branches');
-          const q = query(branchesRef, where('orgId', '==', profile.orgId));
-          const branchesSnap = await getDocs(q);
-          const loadedBranches: Branch[] = [];
-          branchesSnap.forEach((b) => loadedBranches.push(b.data() as Branch));
-          setBranches(loadedBranches);
-
-          if (profile.role === 'employee' && profile.branchId) {
-            const assigned = loadedBranches.find((b) => b.id === profile.branchId);
-            setCurrentBranch(assigned || loadedBranches[0] || null);
-          } else {
-            setCurrentBranch(loadedBranches[0] || null);
-          }
-
-          setNeedsOnboarding(false);
-        } else {
-          setCurrentOrg(null);
-          setNeedsOnboarding(true);
         }
-      } else {
-        // Explicit distinction: User genuinely has no document yet -> Onboarding
-        clearDriveSession();
-        setUserProfile(null);
-        setCurrentOrg(null);
-        setBranches([]);
-        setCurrentBranch(null);
-        setEmployees([]);
-        setClosings([]);
-        setClosingArchives([]);
-        setAuditLogs([]);
-        setNeedsOnboarding(true);
+
+        const resolved = resolveProfiledUserAccess({ profile, org: orgData });
+
+        if (resolved.status === 'access_error') {
+          clearDriveSession();
+          clearOperationalState();
+          setUserProfile(null);
+          setCurrentOrg(null);
+          setSubscriptionEvaluation(null);
+          setSubscriptionBlockReason(null);
+          setInviteBlockInfo(null);
+          setAccessErrorInfo({ reason: resolved.errorReason });
+          setTenantStatus('access_error');
+          return;
+        }
+
+        if (resolved.status === 'subscription_blocked') {
+          clearOperationalState();
+          setUserProfile(resolved.profile);
+          setCurrentOrg(resolved.org);
+          setSubscriptionEvaluation(resolved.subscriptionEvaluation);
+          setSubscriptionBlockReason(resolved.blockReason);
+          setInviteBlockInfo(null);
+          setAccessErrorInfo(null);
+          setTenantStatus('subscription_blocked');
+          return;
+        }
+
+        // Active tenant (active subscription or legacy_unrestricted): safe to load branches
+        setUserProfile(resolved.profile);
+        setCurrentOrg(resolved.org);
+        setSubscriptionEvaluation(resolved.subscriptionEvaluation);
+        setSubscriptionBlockReason(null);
+        setInviteBlockInfo(null);
+        setAccessErrorInfo(null);
+
+        await loadBranchesForOrg(resolved.org.id, resolved.profile);
+        if (activeUserUidRef.current !== fbUser.uid) return;
+
+        setTenantStatus('active_tenant');
+        return;
+      }
+
+      // User has NO document in users/{uid} yet
+      clearDriveSession();
+      clearOperationalState();
+      setUserProfile(null);
+      setCurrentOrg(null);
+      setSubscriptionEvaluation(null);
+      setSubscriptionBlockReason(null);
+
+      const emailLower = normalizeEmail(fbUser.email);
+      const isGoogle = isGoogleProviderUser(fbUser);
+      const isVerified = fbUser.emailVerified === true;
+
+      // Guard before querying managerInvites (non-Google or unverified users never query managerInvites)
+      if (!isGoogle || !isVerified || !isValidNormalizedEmailDocId(emailLower)) {
+        const preCheck = resolveUnprofiledUserAccess({
+          uid: fbUser.uid,
+          isGoogleUser: isGoogle,
+          isVerifiedEmail: isVerified,
+          emailLower,
+          invite: null,
+          inviteOrg: null,
+        });
+        setInviteBlockInfo(null);
+        setAccessErrorInfo({
+          reason: preCheck.status === 'access_error' ? preCheck.errorReason : 'email_not_verified',
+        });
+        setTenantStatus('access_error');
+        return;
+      }
+
+      let inviteSnap;
+      try {
+        inviteSnap = await getDoc(doc(db, 'managerInvites', emailLower));
+      } catch (inviteErr: any) {
+        if (isVerifiedSuperAdmin(fbUser) && isPermissionDeniedError(inviteErr)) {
+          if (activeUserUidRef.current !== fbUser.uid) return;
+          setInviteBlockInfo(null);
+          setAccessErrorInfo(null);
+          setTenantStatus('subscription_request_required');
+          return;
+        }
+        throw inviteErr;
+      }
+      if (activeUserUidRef.current !== fbUser.uid) return;
+
+      if (!inviteSnap.exists()) {
+        setInviteBlockInfo(null);
+        setAccessErrorInfo(null);
+        setTenantStatus('subscription_request_required');
+        return;
+      }
+
+      const inviteData = inviteSnap.data() as ManagerInvite;
+      let inviteOrg: Organization | null = null;
+
+      if (
+        inviteData.status === 'pending' &&
+        inviteData.role === 'manager' &&
+        normalizeEmail(inviteData.emailNormalized) === emailLower &&
+        inviteData.orgId
+      ) {
+        try {
+          const orgSnap = await getDoc(doc(db, 'organizations', inviteData.orgId));
+          if (activeUserUidRef.current !== fbUser.uid) return;
+          if (orgSnap.exists()) {
+            inviteOrg = orgSnap.data() as Organization;
+          }
+        } catch (orgErr: any) {
+          if (evaluateFirestoreErrorCategory(orgErr) === 'network_error') {
+            throw orgErr;
+          }
+          // permission-denied on org read means ownerEmail/org binding does not match
+          inviteOrg = null;
+        }
+      }
+
+      const unprofiled = resolveUnprofiledUserAccess({
+        uid: fbUser.uid,
+        isGoogleUser: isGoogle,
+        isVerifiedEmail: isVerified,
+        emailLower,
+        invite: inviteData,
+        inviteOrg,
+      });
+
+      if (unprofiled.status === 'invite_blocked') {
+        setAccessErrorInfo(null);
+        setInviteBlockInfo({
+          reason: unprofiled.inviteBlockReason,
+          email: inviteData.email,
+          orgName: inviteData.orgName,
+        });
+        setTenantStatus('invite_blocked');
+        return;
+      }
+
+      if (unprofiled.status === 'subscription_blocked') {
+        setInviteBlockInfo(null);
+        setAccessErrorInfo(null);
+        setCurrentOrg(unprofiled.org);
+        setSubscriptionEvaluation(unprofiled.subscriptionEvaluation);
+        setSubscriptionBlockReason(unprofiled.blockReason);
+        setTenantStatus('subscription_blocked');
+        return;
+      }
+
+      if (unprofiled.status === 'access_error') {
+        setInviteBlockInfo(null);
+        setAccessErrorInfo({ reason: unprofiled.errorReason });
+        setTenantStatus('access_error');
+        return;
+      }
+
+      if (unprofiled.status === 'ready_to_claim_invite') {
+        if (inviteClaimLockRef.current === fbUser.uid) {
+          return;
+        }
+        inviteClaimLockRef.current = fbUser.uid;
+        try {
+          const payloads = buildAtomicInviteClaimPayloads({
+            uid: fbUser.uid,
+            email: fbUser.email || emailLower,
+            googleDisplayName: fbUser.displayName,
+            org: unprofiled.org,
+            invite: unprofiled.invite,
+            serverTimestampValue: serverTimestamp(),
+          });
+
+          const batch = writeBatch(db);
+          batch.update(doc(db, 'managerInvites', payloads.inviteDocId), payloads.inviteUpdate);
+          batch.update(doc(db, 'organizations', payloads.orgId), payloads.orgUpdate);
+          batch.set(doc(db, 'users', payloads.userDocId), payloads.userDoc);
+          batch.set(doc(db, 'auditLogs', payloads.auditLogId), payloads.auditLog);
+
+          await batch.commit();
+
+          if (activeUserUidRef.current !== fbUser.uid) return;
+
+          const claimedOrg: Organization = {
+            ...unprofiled.org,
+            ownerId: payloads.orgUpdate.ownerId,
+            ownerName: payloads.orgUpdate.ownerName,
+            updatedAt: payloads.orgUpdate.updatedAt,
+          };
+
+          setUserProfile(payloads.userDoc);
+          setCurrentOrg(claimedOrg);
+          setSubscriptionEvaluation(unprofiled.subscriptionEvaluation);
+          setSubscriptionBlockReason(null);
+          setInviteBlockInfo(null);
+          setAccessErrorInfo(null);
+
+          await loadBranchesForOrg(claimedOrg.id, payloads.userDoc);
+          if (activeUserUidRef.current !== fbUser.uid) return;
+
+          setTenantStatus('active_tenant');
+        } finally {
+          if (inviteClaimLockRef.current === fbUser.uid) {
+            inviteClaimLockRef.current = null;
+          }
+        }
       }
     } catch (error: any) {
       console.warn('Notice loading user tenant data:', error?.message || error);
-      const isPermissionDenied =
-        error?.code === 'permission-denied' ||
-        String(error?.message).includes('insufficient permissions');
+      const errCategory = evaluateFirestoreErrorCategory(error);
+      clearOperationalState();
+      setUserProfile(null);
+      setCurrentOrg(null);
+      setSubscriptionEvaluation(null);
+      setSubscriptionBlockReason(null);
+      setInviteBlockInfo(null);
+      setNeedsOnboarding(false);
+      setAccessErrorInfo({
+        reason: errCategory,
+        detail: error?.message,
+      });
+      setTenantStatus('access_error');
 
-      if (isPermissionDenied) {
-        // Do NOT treat permission-denied as a new user!
-        setNeedsOnboarding(false);
+      if (errCategory === 'permission_denied') {
         setAuthNotice({
           type: 'error',
-          message: 'تم رفض الوصول الأمني للبيانات (Permission Denied). يرجى مراجعة مسؤول المؤسسة.',
+          message: 'تم رفض الوصول الأمني للبيانات (Permission Denied). يرجى مراجعة إدارة النظام.',
         });
       } else {
         setAuthNotice({
@@ -567,16 +1093,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const loginWithGoogle = async () => {
-    setLoading(true);
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      if (result.user) {
-        await loadUserData(result.user);
+  const loadUserData = async (fbUser: FirebaseUser) => {
+    if (loadInFlightRef.current && loadInFlightRef.current.uid === fbUser.uid) {
+      return loadInFlightRef.current.promise;
+    }
+    const promise = performLoadUserData(fbUser).finally(() => {
+      if (loadInFlightRef.current?.promise === promise) {
+        loadInFlightRef.current = null;
       }
+    });
+    loadInFlightRef.current = { uid: fbUser.uid, promise };
+    return promise;
+  };
+
+  const loginWithGoogle = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
     } catch (error: any) {
       console.warn('Google sign-in attempt warning:', error?.code, error?.message);
-      // Fallback for mobile devices where popup blocker is active
       if (error?.code === 'auth/popup-blocked') {
         console.info('Popup was blocked by mobile browser. Falling back to signInWithRedirect...');
         try {
@@ -588,23 +1122,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
       throw error;
-    } finally {
-      setLoading(false);
     }
   };
 
   const loginWithEmailPassword = async (email: string, pass: string) => {
-    setLoading(true);
     try {
-      const result = await signInWithEmailAndPassword(auth, email.trim(), pass);
-      if (result.user) {
-        await loadUserData(result.user);
-      }
+      await signInWithEmailAndPassword(auth, email.trim(), pass);
     } catch (error: any) {
       console.error('Email sign-in error:', error);
       throw error;
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -617,172 +1143,64 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const completeOrganizationSetup = async (data: {
-    orgName: string;
-    activityType: string;
-    currency: string;
-    commercialRegistration?: string;
-    firstBranchName: string;
-    firstBranchAddress?: string;
-  }) => {
-    if (!auth.currentUser) throw new Error('No authenticated user');
-
-    setLoading(true);
-    const uid = auth.currentUser.uid;
-    const email = auth.currentUser.email || '';
-    const name = auth.currentUser.displayName || data.orgName;
-
-    const orgId = `org_${uid.slice(0, 8)}_${Date.now().toString(36)}`;
-    const branchId = `br_${Date.now().toString(36)}`;
-    const nowIso = new Date().toISOString();
-
-    const newOrg: Organization = {
-      id: orgId,
-      name: data.orgName.trim(),
-      commercialRegistration: data.commercialRegistration?.trim() || '',
-      activityType: data.activityType,
-      currency: data.currency,
-      ownerId: uid,
-      ownerEmail: email,
-      ownerName: name,
-      driveConnected: false,
-      driveWriteVerified: false,
-      driveLastHealthStatus: 'untested',
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    };
-
-    const newBranch: Branch = {
-      id: branchId,
-      orgId: orgId,
-      name: data.firstBranchName.trim(),
-      code: 'B-01',
-      address: data.firstBranchAddress?.trim() || '',
-      isActive: true,
-      createdAt: nowIso,
-    };
-
-    const newProfile: UserProfile = {
-      uid,
-      orgId,
-      email,
-      displayName: name,
-      role: 'manager',
-      isActive: true,
-      permissions: {
-        canCreateClosing: true,
-        canViewAllClosings: true,
-        canApproveClosings: true,
-        canManageBranches: true,
-        canManageEmployees: true,
-        canExportReports: true,
-      },
-      createdAt: nowIso,
-    };
-
-    const auditEntry: AuditLog = {
-      id: `log_${Date.now()}`,
-      orgId,
-      actorId: uid,
-      actorName: name,
-      actorRole: 'manager',
-      action: 'ORGANIZATION_ESTABLISHED',
-      targetType: 'organization',
-      targetId: orgId,
-      details: `تم تأسيس المؤسسة بنجاح مع الفرع الرئيسي: ${newBranch.name}`,
-      timestamp: nowIso,
-    };
-
-    try {
-      const batch = writeBatch(db);
-      batch.set(doc(db, 'organizations', orgId), newOrg);
-      batch.set(doc(db, 'branches', branchId), newBranch);
-      batch.set(doc(db, 'users', uid), newProfile);
-      batch.set(doc(db, 'auditLogs', auditEntry.id), auditEntry);
-
-      await batch.commit();
-
-      setCurrentOrg(newOrg);
-      setBranches([newBranch]);
-      setCurrentBranch(newBranch);
-      setUserProfile(newProfile);
-      setNeedsOnboarding(false);
-    } catch (error) {
-      console.error('Failed to complete organization setup:', error);
-      handleFirestoreError(error, OperationType.WRITE, `organizations/${orgId}`);
-    } finally {
-      setLoading(false);
-    }
+  const completeOrganizationSetup = async () => {
+    throw new Error(
+      'تم إيقاف التأسيس الذاتي للمؤسسات؛ يتطلب التأسيس دعوة مدير معتمدة واشتراكاً نشطاً من إدارة النظام.'
+    );
   };
 
-  const addBranch = async (data: {
+  const addBranch = async (_data: {
     name: string;
     address?: string;
     phone?: string;
     code?: string;
   }): Promise<Branch> => {
-    if (!currentOrg || !userProfile || userProfile.role !== 'manager') {
-      throw new Error('Only managers can create branches');
-    }
-
-    const branchId = `br_${Date.now().toString(36)}`;
-    const nowIso = new Date().toISOString();
-    const branchCode = data.code || `B-0${branches.length + 1}`;
-
-    const newBranch: Branch = {
-      id: branchId,
-      orgId: currentOrg.id,
-      name: data.name.trim(),
-      code: branchCode,
-      address: data.address?.trim() || '',
-      phone: data.phone?.trim() || '',
-      isActive: true,
-      createdAt: nowIso,
-    };
-
-    try {
-      const batch = writeBatch(db);
-      batch.set(doc(db, 'branches', branchId), newBranch);
-
-      const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const logRef = doc(db, 'auditLogs', logId);
-      batch.set(logRef, {
-        id: logId,
-        orgId: currentOrg.id,
-        actorId: userProfile.uid,
-        actorName: userProfile.displayName,
-        actorRole: 'manager',
-        action: 'BRANCH_CREATED',
-        targetType: 'branch',
-        targetId: branchId,
-        details: `تم إنشاء فرع جديد: ${newBranch.name} (${newBranch.code})`,
-        timestamp: nowIso,
-      });
-
-      await batch.commit();
-
-      setBranches((prev) => [...prev, newBranch]);
-      return newBranch;
-    } catch (error) {
-      console.error('Error adding branch:', error);
-      handleFirestoreError(error, OperationType.CREATE, `branches/${branchId}`);
-    }
+    throw new Error(
+      'إضافة الفروع الجديدة مقتصرة حصراً على المدير الرئيسي للنظام (amoal2030@gmail.com). يرجى تقديم طلب إضافة فرع عبر الدعم.'
+    );
   };
 
   const createEmployeeAccount = async (data: {
     email: string;
     password: string;
     displayName: string;
-    branchId: string;
-    branchName: string;
+    role?: 'employee' | 'branch_manager' | 'supervisor';
+    branchId?: string;
+    branchName?: string;
     phone?: string;
+    supervisorPermissions?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
   }): Promise<UserProfile> => {
-    if (!currentOrg || !userProfile || userProfile.role !== 'manager') {
-      throw new Error('Only managers can provision employee accounts');
+    if (!currentOrg || !userProfile || userProfile.role !== 'manager' || !userProfile.isActive) {
+      throw new Error('إدارة حسابات الموظفين والأدوار مقتصرة على مدير المؤسسة النشط فقط.');
     }
 
-    const targetBranch = branches.find((b) => b.id === data.branchId && b.orgId === currentOrg.id);
-    if (!targetBranch) {
+    const targetRole: 'employee' | 'branch_manager' | 'supervisor' =
+      data.role === 'supervisor' || data.role === 'branch_manager' ? data.role : 'employee';
+
+    const cleanName = data.displayName.trim();
+    const cleanEmail = data.email.trim();
+    if (!cleanName || cleanName.length > 100) {
+      throw new Error('يرجى إدخال اسم موظف صحيح (1 إلى 100 حرف).');
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('صيغة البريد الإلكتروني غير صحيحة.');
+    }
+
+    const assignmentCheck = validateRoleAssignmentInput({
+      actorRole: userProfile.role,
+      targetRole,
+      branchId: data.branchId,
+      branchIds: targetRole === 'branch_manager' && data.branchId ? [data.branchId] : undefined,
+    });
+    if (!assignmentCheck.valid) {
+      throw new Error(assignmentCheck.error);
+    }
+
+    const targetBranch =
+      targetRole === 'supervisor'
+        ? undefined
+        : branches.find((b) => b.id === assignmentCheck.assignedBranchId && b.orgId === currentOrg.id);
+    if (targetRole !== 'supervisor' && !targetBranch) {
       throw new Error('الفرع المحدد غير موجود أو لا يتبع للمؤسسة الحالية.');
     }
 
@@ -791,11 +1209,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ? userProfile.displayName.trim().slice(0, 100)
         : currentUser?.email || 'المدير العام';
 
+    const canonicalPermissions = buildDefaultPermissionsForRole(
+      targetRole,
+      targetRole === 'supervisor' ? data.supervisorPermissions : undefined
+    );
+
     const secondaryAuth = getSecondaryAuth();
     try {
       const userCredential = await createUserWithEmailAndPassword(
         secondaryAuth,
-        data.email.trim(),
+        cleanEmail,
         data.password
       );
 
@@ -805,26 +1228,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const newProfile: UserProfile = {
         uid: newUid,
         orgId: currentOrg.id,
-        email: data.email.trim(),
-        displayName: data.displayName.trim(),
-        role: 'employee',
-        branchId: targetBranch.id,
-        branchName: targetBranch.name || data.branchName,
-        phone: data.phone?.trim() || '',
+        email: cleanEmail,
+        displayName: cleanName,
+        role: targetRole,
+        ...(targetBranch ? { branchId: targetBranch.id, branchName: targetBranch.name || data.branchName || '' } : {}),
+        ...(targetRole === 'branch_manager' && targetBranch ? { branchIds: [targetBranch.id] } : {}),
+        phone: data.phone?.trim().slice(0, 25) || '',
         isActive: true,
-        permissions: {
-          canCreateClosing: true,
-          canViewAllClosings: false,
-          canApproveClosings: false,
-          canManageBranches: false,
-          canManageEmployees: false,
-          canExportReports: false,
-        },
+        isArchived: false,
+        permissions: canonicalPermissions,
         createdAt: nowIso,
+        updatedAt: nowIso,
       };
 
       const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const auditLogRef = doc(db, 'auditLogs', logId);
+
+      const roleAr =
+        targetRole === 'supervisor'
+          ? 'مسؤول'
+          : targetRole === 'branch_manager'
+          ? 'مسؤول فرع'
+          : 'موظف';
 
       const batch = writeBatch(db);
       batch.set(doc(db, 'users', newUid), newProfile);
@@ -837,7 +1262,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         action: 'EMPLOYEE_PROVISIONED',
         targetType: 'employee',
         targetId: newUid,
-        details: `تم إنشاء حساب موظف جديد: ${newProfile.displayName} (${newProfile.email}) على فرع ${newProfile.branchName}`,
+        details: `تم إنشاء حساب ${roleAr} جديد: ${newProfile.displayName} (${newProfile.email})${
+          targetBranch ? ` على فرع ${targetBranch.name}` : ' (نطاق المؤسسة)'
+        }`,
         timestamp: nowIso,
       });
 
@@ -856,20 +1283,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const toggleEmployeeStatus = async (employeeUid: string, isActive: boolean) => {
-    if (!currentOrg || userProfile?.role !== 'manager') {
-      throw new Error('Only managers can toggle employee status');
+    if (!currentOrg || userProfile?.role !== 'manager' || !userProfile.isActive) {
+      throw new Error('تعديل حالة حسابات الموظفين مقتصر على مدير المؤسسة النشط فقط.');
     }
+    if (employeeUid === userProfile.uid) {
+      throw new Error('لا يمكن تعطيل حساب مدير المؤسسة من هذه الشاشة.');
+    }
+
+    const targetEmployee = employees.find((e) => e.uid === employeeUid);
+    if (targetEmployee && (targetEmployee.orgId !== currentOrg.id || targetEmployee.role === 'manager')) {
+      throw new Error('لا يمكن تعديل حساب خارج المؤسسة أو حساب مدير المؤسسة.');
+    }
+
     const safeActorName =
       userProfile.displayName && userProfile.displayName.trim().length >= 2
         ? userProfile.displayName.trim().slice(0, 100)
         : currentUser?.email || 'المدير العام';
 
+    const nowIso = new Date().toISOString();
     const userRef = doc(db, 'users', employeeUid);
     const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const logRef = doc(db, 'auditLogs', logId);
 
+    const statusUpdatePayload: Record<string, any> = {
+      isActive,
+      updatedAt: nowIso,
+    };
+    if (isActive) {
+      statusUpdatePayload.isArchived = false;
+      statusUpdatePayload.archivedAt = deleteField();
+      statusUpdatePayload.archivedBy = deleteField();
+    }
+
+    const targetLabel = targetEmployee?.displayName || employeeUid;
     const batch = writeBatch(db);
-    batch.update(userRef, { isActive });
+    batch.update(userRef, statusUpdatePayload);
     batch.set(logRef, {
       id: logId,
       orgId: currentOrg.id,
@@ -879,16 +1327,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       action: isActive ? 'EMPLOYEE_ACTIVATED' : 'EMPLOYEE_DISABLED',
       targetType: 'employee',
       targetId: employeeUid,
-      details: `${isActive ? 'تنشيط' : 'تعطيل'} حساب الموظف معرف ${employeeUid}`,
-      timestamp: new Date().toISOString(),
+      details: `${isActive ? 'تنشيط' : 'تعطيل'} حساب الموظف ${targetLabel}`,
+      timestamp: nowIso,
     });
 
     await batch.commit();
   };
 
   const updateEmployeeBranch = async (employeeUid: string, branchId: string, branchName: string) => {
-    if (!currentOrg || userProfile?.role !== 'manager') {
-      throw new Error('Only managers can update employee branch');
+    if (!currentOrg || userProfile?.role !== 'manager' || !userProfile.isActive) {
+      throw new Error('نقل الموظف بين الفروع مقتصر على مدير المؤسسة النشط فقط.');
     }
 
     const targetBranch = branches.find((b) => b.id === branchId && b.orgId === currentOrg.id);
@@ -900,6 +1348,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (targetEmployee && targetEmployee.orgId !== currentOrg.id) {
       throw new Error('لا يمكن تعديل موظف يتبع لمؤسسة أخرى.');
     }
+    if (targetEmployee?.role === 'manager' || targetEmployee?.role === 'supervisor') {
+      throw new Error('هذا الدور يعمل على مستوى المؤسسة ولا يرتبط بفرع واحد.');
+    }
     if (targetEmployee && targetEmployee.branchId === targetBranch.id) {
       return;
     }
@@ -910,12 +1361,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         : currentUser?.email || 'المدير العام';
 
     const resolvedBranchName = targetBranch.name || branchName;
+    const nowIso = new Date().toISOString();
     const userRef = doc(db, 'users', employeeUid);
     const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const logRef = doc(db, 'auditLogs', logId);
 
+    const userUpdatePayload: Record<string, any> = {
+      branchId: targetBranch.id,
+      branchName: resolvedBranchName,
+      updatedAt: nowIso,
+    };
+    if (targetEmployee?.role === 'branch_manager') {
+      userUpdatePayload.branchIds = [targetBranch.id];
+    } else {
+      userUpdatePayload.branchIds = deleteField();
+    }
+
     const batch = writeBatch(db);
-    batch.update(userRef, { branchId: targetBranch.id, branchName: resolvedBranchName });
+    batch.update(userRef, userUpdatePayload);
     batch.set(logRef, {
       id: logId,
       orgId: currentOrg.id,
@@ -925,11 +1388,237 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       action: 'EMPLOYEE_BRANCH_CHANGED',
       targetType: 'employee',
       targetId: employeeUid,
-      details: `تغيير فرع الموظف ${employeeUid} إلى ${resolvedBranchName}`,
-      timestamp: new Date().toISOString(),
+      details: `نقل الموظف ${targetEmployee?.displayName || employeeUid} إلى فرع ${resolvedBranchName}`,
+      timestamp: nowIso,
     });
 
     await batch.commit();
+  };
+
+  const updateEmployeeAccount: AuthContextType['updateEmployeeAccount'] = async (data) => {
+    if (!currentOrg || !userProfile || userProfile.role !== 'manager' || !userProfile.isActive) {
+      throw new Error('تحديث بيانات الموظفين والأدوار مقتصر على مدير المؤسسة النشط فقط.');
+    }
+    if (data.employeeUid === userProfile.uid) {
+      throw new Error('لا يمكن تعديل دور أو صلاحيات مدير المؤسسة.');
+    }
+
+    const userRef = doc(db, 'users', data.employeeUid);
+    const existingSnap = await getDoc(userRef);
+    if (!existingSnap.exists()) {
+      throw new Error('حساب الموظف غير موجود في قاعدة البيانات.');
+    }
+    const prevProfile = existingSnap.data() as UserProfile;
+    if (prevProfile.orgId !== currentOrg.id) {
+      throw new Error('لا يمكن تعديل حساب يتبع لمؤسسة أخرى.');
+    }
+    if (prevProfile.role === 'manager') {
+      throw new Error('لا يمكن تعديل حساب مدير المؤسسة من إدارة الموظفين.');
+    }
+
+    const cleanName = data.displayName.trim();
+    const cleanEmail = data.email.trim();
+    const cleanPhone = (data.phone || '').trim().slice(0, 25);
+    if (!cleanName || cleanName.length > 100) {
+      throw new Error('يرجى إدخال اسم موظف صحيح (1 إلى 100 حرف).');
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('صيغة البريد الإلكتروني غير صحيحة.');
+    }
+
+    const assignmentCheck = validateRoleAssignmentInput({
+      actorRole: userProfile.role,
+      targetRole: data.role,
+      branchId: data.branchId,
+      branchIds: data.role === 'branch_manager' && data.branchId ? [data.branchId] : undefined,
+    });
+    if (!assignmentCheck.valid) {
+      throw new Error(assignmentCheck.error);
+    }
+
+    const targetBranch =
+      data.role === 'supervisor'
+        ? undefined
+        : branches.find((b) => b.id === assignmentCheck.assignedBranchId && b.orgId === currentOrg.id);
+    if (data.role !== 'supervisor' && !targetBranch) {
+      throw new Error('الفرع المحدد غير موجود أو لا يتبع للمؤسسة الحالية.');
+    }
+
+    const nextPermissions = buildDefaultPermissionsForRole(
+      data.role,
+      data.role === 'supervisor' ? data.supervisorPermissions : undefined
+    );
+
+    const safeActorName =
+      userProfile.displayName && userProfile.displayName.trim().length >= 2
+        ? userProfile.displayName.trim().slice(0, 100)
+        : currentUser?.email || 'المدير العام';
+
+    const nowIso = new Date().toISOString();
+    const updatePayload: Record<string, any> = {
+      displayName: cleanName,
+      email: cleanEmail,
+      phone: cleanPhone,
+      role: data.role,
+      permissions: nextPermissions,
+      updatedAt: nowIso,
+    };
+
+    if (data.role === 'supervisor') {
+      updatePayload.branchId = deleteField();
+      updatePayload.branchIds = deleteField();
+      updatePayload.branchName = deleteField();
+    } else if (targetBranch) {
+      updatePayload.branchId = targetBranch.id;
+      updatePayload.branchName = targetBranch.name;
+      updatePayload.branchIds =
+        data.role === 'branch_manager' ? [targetBranch.id] : deleteField();
+    }
+
+    const roleOrPermsChanged =
+      prevProfile.role !== data.role ||
+      JSON.stringify(prevProfile.permissions || {}) !== JSON.stringify(nextPermissions);
+    const branchChanged =
+      data.role !== 'supervisor' &&
+      targetBranch &&
+      (prevProfile.branchId || '') !== targetBranch.id;
+
+    let auditAction = 'EMPLOYEE_UPDATED';
+    if (roleOrPermsChanged) {
+      auditAction = 'EMPLOYEE_ROLE_PERMISSIONS_UPDATED';
+    } else if (branchChanged) {
+      auditAction = 'EMPLOYEE_BRANCH_CHANGED';
+    }
+
+    const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const logRef = doc(db, 'auditLogs', logId);
+
+    const roleLabels: Record<'employee' | 'branch_manager' | 'supervisor', string> = {
+      employee: 'موظف',
+      branch_manager: 'مسؤول فرع',
+      supervisor: 'مسؤول',
+    };
+
+    const batch = writeBatch(db);
+    batch.update(userRef, updatePayload);
+    batch.set(logRef, {
+      id: logId,
+      orgId: currentOrg.id,
+      actorId: userProfile.uid,
+      actorName: safeActorName,
+      actorRole: 'manager',
+      action: auditAction,
+      targetType: 'employee',
+      targetId: data.employeeUid,
+      details: `تحديث بيانات وصلاحيات ${cleanName} (${roleLabels[data.role]}${
+        targetBranch ? ` - فرع ${targetBranch.name}` : ' - على مستوى المؤسسة'
+      })`,
+      timestamp: nowIso,
+    });
+
+    await batch.commit();
+  };
+
+  const archiveEmployeeAccount: AuthContextType['archiveEmployeeAccount'] = async (
+    employeeUid,
+    reason
+  ) => {
+    if (!currentOrg || !userProfile || userProfile.role !== 'manager' || !userProfile.isActive) {
+      throw new Error('أرشفة حسابات الموظفين مقتصرة على مدير المؤسسة النشط فقط.');
+    }
+    if (employeeUid === userProfile.uid) {
+      throw new Error('لا يمكن أرشفة حساب مدير المؤسسة.');
+    }
+
+    const userRef = doc(db, 'users', employeeUid);
+    const snap = await getDoc(userRef);
+    if (!snap.exists()) {
+      throw new Error('حساب الموظف غير موجود.');
+    }
+    const target = snap.data() as UserProfile;
+    if (target.orgId !== currentOrg.id || target.role === 'manager') {
+      throw new Error('لا يمكن أرشفة حساب خارج المؤسسة أو حساب مدير المؤسسة.');
+    }
+
+    const safeActorName =
+      userProfile.displayName && userProfile.displayName.trim().length >= 2
+        ? userProfile.displayName.trim().slice(0, 100)
+        : currentUser?.email || 'المدير العام';
+
+    const nowIso = new Date().toISOString();
+    const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const logRef = doc(db, 'auditLogs', logId);
+
+    const cleanReason = reason?.trim() ? ` السبب: ${reason.trim().slice(0, 200)}` : '';
+    const batch = writeBatch(db);
+    batch.update(userRef, {
+      isActive: false,
+      isArchived: true,
+      archivedAt: nowIso,
+      archivedBy: userProfile.uid,
+      updatedAt: nowIso,
+    });
+    batch.set(logRef, {
+      id: logId,
+      orgId: currentOrg.id,
+      actorId: userProfile.uid,
+      actorName: safeActorName,
+      actorRole: 'manager',
+      action: 'EMPLOYEE_ARCHIVED',
+      targetType: 'employee',
+      targetId: employeeUid,
+      details: `أرشفة وإيقاف حساب ${target.displayName} (${target.email}) مع الإبقاء التام على جميع الإقفالات والسجلات المالية السابقة.${cleanReason}`,
+      timestamp: nowIso,
+    });
+
+    await batch.commit();
+  };
+
+  const sendEmployeePasswordReset: AuthContextType['sendEmployeePasswordReset'] = async (
+    employeeUid
+  ) => {
+    if (!currentOrg || !userProfile || userProfile.role !== 'manager' || !userProfile.isActive) {
+      throw new Error('إرسال رابط إعادة تعيين كلمة المرور مقتصر على مدير المؤسسة النشط فقط.');
+    }
+
+    const targetEmployee =
+      employees.find((e) => e.uid === employeeUid) ||
+      ((await getDoc(doc(db, 'users', employeeUid))).data() as UserProfile | undefined);
+
+    if (!targetEmployee || targetEmployee.orgId !== currentOrg.id) {
+      throw new Error('الموظف غير موجود أو لا يتبع للمؤسسة الحالية.');
+    }
+    if (targetEmployee.role === 'manager') {
+      throw new Error('لا يمكن إرسال رابط استعادة لمدير المؤسسة من قائمة الموظفين.');
+    }
+    const cleanEmail = (targetEmployee.email || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('لا يملك هذا الموظف بريداً إلكترونياً صالحاً لاستلام الرابط.');
+    }
+
+    await sendPasswordResetEmail(auth, cleanEmail);
+
+    const safeActorName =
+      userProfile.displayName && userProfile.displayName.trim().length >= 2
+        ? userProfile.displayName.trim().slice(0, 100)
+        : currentUser?.email || 'المدير العام';
+    const nowIso = new Date().toISOString();
+    const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    await setDoc(doc(db, 'auditLogs', logId), {
+      id: logId,
+      orgId: currentOrg.id,
+      actorId: userProfile.uid,
+      actorName: safeActorName,
+      actorRole: 'manager',
+      action: 'EMPLOYEE_PASSWORD_RESET_SENT',
+      targetType: 'employee',
+      targetId: employeeUid,
+      details: `إرسال رابط إعادة تعيين كلمة المرور عبر Firebase إلى ${targetEmployee.displayName} (${cleanEmail})`,
+      timestamp: nowIso,
+    });
+
+    return cleanEmail;
   };
 
   /**
@@ -952,7 +1641,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('بيانات المستخدم أو المؤسسة غير محملة. يرجى تسجيل الدخول مجدداً.');
     }
 
-    if (userProfile.role === 'employee' && userProfile.isActive === false) {
+    if (userProfile.isActive === false) {
       throw new Error('حسابك معطل ولا يمكنك إرسال إقفالات.');
     }
 
@@ -961,8 +1650,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('لا يمكنك إنشاء إقفال لمؤسسة أخرى.');
     }
 
-    // Branch Assignment Security Check: Employee can ONLY submit for their assigned branch
-    if (userProfile.role === 'employee' && userProfile.branchId && userProfile.branchId !== data.branchId) {
+    const effectivePerms = resolveEffectivePermissions(userProfile);
+    if (!effectivePerms.canCreateClosing) {
+      throw new Error('لا يملك حسابك صلاحية إنشاء أو إرسال إقفالات الورديات.');
+    }
+
+    // Branch Assignment Security Check: Employee & Branch Manager can ONLY submit for their single assigned branch
+    if (!canUserAccessBranch(userProfile, data.branchId)) {
       throw new Error('لا يمكنك إنشاء إقفال لفرع غير مخصص لحسابك.');
     }
 
@@ -1156,8 +1850,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     action: 'approve' | 'reject',
     rejectionReason?: string
   ) => {
-    if (!currentOrg || userProfile?.role !== 'manager' || !currentUser) {
-      throw new Error('Only managers can review and approve closings');
+    const reviewerPerms = resolveEffectivePermissions(userProfile);
+    const canApproveClosings =
+      userProfile?.role === 'manager' ||
+      (userProfile?.role === 'supervisor' && reviewerPerms.canApproveClosings);
+    if (!currentOrg || !userProfile || !canApproveClosings || !currentUser) {
+      throw new Error('اعتماد أو إرجاع الإقفالات مقتصر على المدير العام أو المسؤول المخول.');
     }
 
     if (action === 'reject' && (!rejectionReason || !rejectionReason.trim())) {
@@ -1215,7 +1913,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         orgId: currentOrg.id,
         actorId: currentUser.uid,
         actorName: userProfile.displayName,
-        actorRole: 'manager',
+        actorRole: userProfile.role,
         action: action === 'approve' ? 'CLOSING_APPROVED' : 'CLOSING_REJECTED_FOR_REVISION',
         targetType: 'closing',
         targetId: closingId,
@@ -2097,72 +2795,1077 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSuperAdminLoading(true);
     setSuperAdminError(null);
     try {
-      // Ensure Firebase Auth ID token claims (email & email_verified) are attached before querying Firestore
-      await activeAuthUser.getIdToken();
-
-      const fetchCollection = async <T,>(colName: string): Promise<T[]> => {
-        const colRef = collection(db, colName);
-        const snap = await getDocsFromServer(colRef).catch((err: any) => {
-          const errMessage = String(err?.message || '').toLowerCase();
-          if (
-            err?.code === 'permission-denied' ||
-            errMessage.includes('insufficient permissions') ||
-            errMessage.includes('permission_denied')
-          ) {
-            throw err;
-          }
-          return getDocs(colRef);
-        });
-        const items: T[] = [];
-        snap.forEach((docSnap) => {
-          items.push(docSnap.data() as T);
-        });
-        return items;
-      };
-
-      const [orgs, allBranches, allUsers] = await Promise.all([
-        fetchCollection<Organization>('organizations'),
-        fetchCollection<Branch>('branches'),
-        fetchCollection<UserProfile>('users'),
-      ]);
-
-      const toSortableTime = (value: unknown): number => {
-        if (typeof value === 'string' || typeof value === 'number') {
-          const ts = new Date(value).getTime();
-          return Number.isNaN(ts) ? 0 : ts;
-        }
-        if (value && typeof value === 'object' && 'toDate' in value && typeof (value as any).toDate === 'function') {
-          const ts = (value as any).toDate().getTime();
-          return Number.isNaN(ts) ? 0 : ts;
-        }
-        return 0;
-      };
-
-      orgs.sort((a, b) => toSortableTime(b.createdAt) - toSortableTime(a.createdAt));
+      const overview = await fetchSuperAdminOverviewWithDiagnostics({
+        user: activeAuthUser,
+        databaseId: TARGET_FIRESTORE_DATABASE_ID,
+        fetchCollection: async <T,>(colName: string): Promise<T[]> => {
+          const colRef = collection(db, colName);
+          const snap = await getDocsFromServer(colRef).catch((err: any) => {
+            if (isPermissionDeniedError(err)) {
+              throw err;
+            }
+            return getDocs(colRef);
+          });
+          const items: T[] = [];
+          snap.forEach((docSnap) => {
+            items.push(docSnap.data() as T);
+          });
+          return items;
+        },
+      });
 
       if (!isVerifiedSuperAdmin(auth.currentUser)) {
         setSuperAdminOverview(null);
         return;
       }
 
-      setSuperAdminOverview({
-        organizations: orgs,
-        branches: allBranches,
-        users: allUsers,
-        fetchedAt: new Date().toISOString(),
-      });
+      setSuperAdminOverview(overview);
+      if (overview.diagnosticMessage) {
+        setSuperAdminError(overview.diagnosticMessage);
+      }
     } catch (error: any) {
-      const errMessage = String(error?.message || '').toLowerCase();
+      setSuperAdminOverview(null);
       const msg =
-        error?.code === 'permission-denied' ||
-        errMessage.includes('insufficient permissions') ||
-        errMessage.includes('permission_denied')
-          ? 'تم رفض قراءة بيانات المراقبة من قواعد Firestore (Permission Denied).'
-          : error?.message || 'تعذر تحميل بيانات المراقبة من قاعدة البيانات.';
+        error?.message ||
+        (isPermissionDeniedError(error)
+          ? `تم رفض قراءة بيانات المراقبة من قواعد Firestore (Permission Denied) على قاعدة البيانات (${TARGET_FIRESTORE_DATABASE_ID}).`
+          : 'تعذر تحميل بيانات المراقبة من قاعدة البيانات.');
       setSuperAdminError(msg);
     } finally {
       setSuperAdminLoading(false);
     }
+  };
+
+  const assertAuthorizedSuperAdmin = (): FirebaseUser => {
+    const activeAuthUser = auth.currentUser;
+    if (!activeAuthUser || !isVerifiedSuperAdmin(activeAuthUser)) {
+      throw new Error('هذه العملية حصرية للمدير الرئيسي الموثق amoal2030@gmail.com فقط.');
+    }
+    return activeAuthUser;
+  };
+
+  const createPlatformAuditPayload = (params: {
+    actor: FirebaseUser;
+    action: PlatformAuditAction;
+    targetType: PlatformAuditLog['targetType'];
+    targetId: string;
+    orgId?: string;
+    details: string;
+    metadata?: Record<string, string | number | boolean | null>;
+  }): PlatformAuditLog => {
+    const nowIso = new Date().toISOString();
+    const id = `pal_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return {
+      id,
+      actorEmail: (params.actor.email || 'amoal2030@gmail.com').trim().toLowerCase(),
+      actorUid: params.actor.uid,
+      action: params.action,
+      targetType: params.targetType,
+      targetId: params.targetId.slice(0, 254),
+      ...(params.orgId ? { orgId: params.orgId } : {}),
+      details: (params.details.trim().length >= 5 ? params.details.trim() : `إجراء: ${params.action}`).slice(0, 1000),
+      ...(params.metadata ? { metadata: params.metadata } : {}),
+      timestamp: nowIso,
+    };
+  };
+
+  const parseDateInputOrFallback = (isoOrDateStr: string | undefined, fallback: Date): Date => {
+    if (!isoOrDateStr || !isoOrDateStr.trim()) return fallback;
+    const trimmed = isoOrDateStr.trim();
+    const candidate = /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
+      ? new Date(`${trimmed}T12:00:00.000Z`)
+      : new Date(trimmed);
+    return Number.isNaN(candidate.getTime()) ? fallback : candidate;
+  };
+
+  const createSuperAdminOrganizationWithInvite: AuthContextType['createSuperAdminOrganizationWithInvite'] = async (
+    input
+  ) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const cleanOrgName = input.name.trim();
+    const cleanOwnerName = input.ownerName.trim();
+    const emailNormalized = normalizeEmail(input.ownerEmail);
+    if (cleanOrgName.length < 2) {
+      throw new Error('اسم المؤسسة يجب أن يكون حرفين على الأقل.');
+    }
+    if (!isValidNormalizedEmailDocId(emailNormalized)) {
+      throw new Error('بريد Google للمدير غير صالح.');
+    }
+    if (!cleanOwnerName) {
+      throw new Error('اسم المدير مطلوب.');
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const startDate = parseDateInputOrFallback(input.startDateIso, now);
+    const computedEndDate = input.endDateIso
+      ? parseDateInputOrFallback(input.endDateIso, calculateSubscriptionEndDate(startDate, input.subscriptionPlan))
+      : calculateSubscriptionEndDate(startDate, input.subscriptionPlan);
+
+    if (computedEndDate.getTime() <= startDate.getTime()) {
+      throw new Error('تاريخ نهاية الاشتراك يجب أن يكون بعد تاريخ البداية.');
+    }
+
+    const existingInvSnap = await getDocFromServer(doc(db, 'managerInvites', emailNormalized)).catch(() =>
+      getDoc(doc(db, 'managerInvites', emailNormalized))
+    );
+    if (existingInvSnap.exists()) {
+      const existingInv = existingInvSnap.data() as ManagerInvite;
+      if (existingInv.status === 'accepted') {
+        throw new Error('هذا البريد مرتبط بدعوة تم قبولها مسبقاً ولا يمكن إعادة إصدارها كدعوة أولية.');
+      }
+    }
+
+    const orgId = `org_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const branchId = `br_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+
+    const setupFeePaidAt =
+      input.setupFeeStatus === 'paid'
+        ? Timestamp.fromDate(parseDateInputOrFallback(input.setupFeePaidDateIso, now))
+        : null;
+
+    const firstBranchName = (input.firstBranchName || 'الفرع الرئيسي').trim() || 'الفرع الرئيسي';
+    const firstBranchCode = (input.firstBranchCode || 'MAIN').trim().toUpperCase().slice(0, 20) || 'MAIN';
+    const defaultNextMonth = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const branchDueDate = parseDateInputOrFallback(input.firstBranchDueDateIso, defaultNextMonth);
+    const isFirstBranchPaid = input.firstBranchPaymentStatus === 'paid' || input.firstBranchPaymentStatus === 'exempt';
+
+    const graceDueDate = new Date(now.getTime() + NO_PAID_BRANCH_GRACE_DAYS * 24 * 60 * 60 * 1000);
+
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'organizations', orgId), {
+      id: orgId,
+      name: cleanOrgName,
+      ...(input.taxNumber?.trim() ? { taxNumber: input.taxNumber.trim().slice(0, 40) } : {}),
+      ...(input.commercialRegistration?.trim()
+        ? { commercialRegistration: input.commercialRegistration.trim().slice(0, 50) }
+        : {}),
+      activityType: input.activityType || 'retail',
+      currency: input.currency || 'SAR',
+      ownerEmail: input.ownerEmail.trim(),
+      ownerName: cleanOwnerName,
+      driveConnected: false,
+      isActive: true,
+      subscriptionPlan: input.subscriptionPlan,
+      subscriptionStatus: 'active',
+      subscriptionStartAt: Timestamp.fromDate(startDate),
+      subscriptionEndAt: Timestamp.fromDate(computedEndDate),
+      subscriptionUpdatedAt: serverTimestamp(),
+      subscriptionUpdatedBy: actorEmail,
+      ...(input.subscriptionNote?.trim() ? { subscriptionNote: input.subscriptionNote.trim().slice(0, 500) } : {}),
+      branchPricingModel: BRANCH_PRICING_MODEL,
+      includedBranchesCount: NEW_ORG_INCLUDED_BRANCHES_COUNT,
+      extraBranchMonthlyFeeSar: BRANCH_MONTHLY_FEE_SAR,
+      extraBranchesCount: 1,
+      extraBranchesMonthlyTotalSar: BRANCH_MONTHLY_FEE_SAR,
+      branchPricingUpdatedAt: serverTimestamp(),
+      branchPricingUpdatedBy: actorEmail,
+      accountSetupFeeSar: ACCOUNT_SETUP_FEE_SAR,
+      setupFeeStatus: input.setupFeeStatus,
+      setupFeePaidAt,
+      reactivationFeeSar: ORG_REACTIVATION_FEE_SAR,
+      reactivationFeeStatus: 'waived',
+      ...(!isFirstBranchPaid
+        ? {
+            noPaidBranchGraceStartedAt: Timestamp.fromDate(now),
+            deactivationDueAt: Timestamp.fromDate(graceDueDate),
+          }
+        : {}),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+
+    batch.set(doc(db, 'branches', branchId), {
+      id: branchId,
+      orgId,
+      name: firstBranchName,
+      code: firstBranchCode,
+      isActive: true,
+      lifecycleStatus: 'active',
+      subscriptionStartAt: Timestamp.fromDate(startDate),
+      feeDueAt: Timestamp.fromDate(branchDueDate),
+      monthlyFeeSar: BRANCH_MONTHLY_FEE_SAR,
+      paymentStatus: input.firstBranchPaymentStatus,
+      lastPaidAt: isFirstBranchPaid ? Timestamp.fromDate(now) : null,
+      lastPaidBy: isFirstBranchPaid ? actorEmail : null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+
+    const inviteRef = doc(db, 'managerInvites', emailNormalized);
+    if (existingInvSnap.exists()) {
+      batch.update(inviteRef, {
+        email: input.ownerEmail.trim(),
+        orgId,
+        orgName: cleanOrgName.slice(0, 120),
+        managerName: cleanOwnerName.slice(0, 100),
+        status: 'pending',
+        updatedAt: serverTimestamp(),
+        cancelledAt: deleteField(),
+      });
+    } else {
+      batch.set(inviteRef, {
+        id: emailNormalized,
+        email: input.ownerEmail.trim(),
+        emailNormalized,
+        orgId,
+        orgName: cleanOrgName.slice(0, 120),
+        managerName: cleanOwnerName.slice(0, 100),
+        role: 'manager',
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        createdBy: actorEmail,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action: 'ORG_CREATED_WITH_INVITE',
+      targetType: 'organization',
+      targetId: orgId,
+      orgId,
+      details: `إنشاء مؤسسة جديدة "${cleanOrgName}" مع فرع أول (${firstBranchName}) ودعوة المدير ${emailNormalized} — رسوم تأسيس ${ACCOUNT_SETUP_FEE_SAR} ر.س (${input.setupFeeStatus})`,
+      metadata: {
+        branchId,
+        inviteEmail: emailNormalized,
+        setupFeeSar: ACCOUNT_SETUP_FEE_SAR,
+        setupFeeStatus: input.setupFeeStatus,
+        branchFeeSar: BRANCH_MONTHLY_FEE_SAR,
+      },
+    });
+    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+    return { orgId, branchId, inviteEmail: emailNormalized };
+  };
+
+  const updateSuperAdminOrganizationProfileAndBilling: AuthContextType['updateSuperAdminOrganizationProfileAndBilling'] =
+    async (input) => {
+      const actor = assertAuthorizedSuperAdmin();
+      await actor.getIdToken();
+
+      const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+      const orgRef = doc(db, 'organizations', input.orgId);
+      const orgSnap = await getDocFromServer(orgRef).catch(() => getDoc(orgRef));
+      if (!orgSnap.exists()) {
+        throw new Error('المؤسسة غير موجودة.');
+      }
+      const existingOrg = orgSnap.data() as Organization;
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const subEval = evaluateOrganizationSubscription(existingOrg, now);
+
+      const updatePayload: Record<string, any> = {
+        name: input.name.trim(),
+        taxNumber: (input.taxNumber || '').trim().slice(0, 40),
+        commercialRegistration: (input.commercialRegistration || '').trim().slice(0, 50),
+        activityType: input.activityType || existingOrg.activityType || 'retail',
+        currency: input.currency || existingOrg.currency || 'SAR',
+        ownerName: input.ownerName.trim().slice(0, 100),
+        ownerEmail: input.ownerEmail.trim(),
+        updatedAt: nowIso,
+      };
+
+      const shouldConfigureSubscription =
+        !subEval.isLegacy || input.convertLegacyToPaid === true;
+
+      if (shouldConfigureSubscription && input.subscriptionPlan && input.startDateIso) {
+        const startDate = parseDateInputOrFallback(input.startDateIso, now);
+        const endDate = input.endDateIso
+          ? parseDateInputOrFallback(
+              input.endDateIso,
+              calculateSubscriptionEndDate(startDate, input.subscriptionPlan)
+            )
+          : calculateSubscriptionEndDate(startDate, input.subscriptionPlan);
+
+        if (endDate.getTime() <= startDate.getTime()) {
+          throw new Error('تاريخ نهاية الاشتراك يجب أن يكون بعد تاريخ البداية.');
+        }
+
+        updatePayload.subscriptionPlan = input.subscriptionPlan;
+        updatePayload.subscriptionStatus = input.subscriptionStatus || 'active';
+        updatePayload.subscriptionStartAt = Timestamp.fromDate(startDate);
+        updatePayload.subscriptionEndAt = Timestamp.fromDate(endDate);
+        updatePayload.subscriptionUpdatedAt = serverTimestamp();
+        updatePayload.subscriptionUpdatedBy = actorEmail;
+        if (input.subscriptionNote !== undefined) {
+          updatePayload.subscriptionNote = input.subscriptionNote.trim().slice(0, 500);
+        }
+        if (input.convertLegacyToPaid) {
+          updatePayload.branchPricingModel = BRANCH_PRICING_MODEL;
+          updatePayload.includedBranchesCount = NEW_ORG_INCLUDED_BRANCHES_COUNT;
+          updatePayload.extraBranchMonthlyFeeSar = BRANCH_MONTHLY_FEE_SAR;
+          updatePayload.accountSetupFeeSar = existingOrg.accountSetupFeeSar ?? ACCOUNT_SETUP_FEE_SAR;
+          updatePayload.setupFeeStatus = input.setupFeeStatus || 'waived';
+          updatePayload.reactivationFeeSar = ORG_REACTIVATION_FEE_SAR;
+        }
+      }
+
+      if (input.setupFeeStatus) {
+        updatePayload.accountSetupFeeSar = existingOrg.accountSetupFeeSar ?? ACCOUNT_SETUP_FEE_SAR;
+        updatePayload.setupFeeStatus = input.setupFeeStatus;
+        updatePayload.setupFeePaidAt =
+          input.setupFeeStatus === 'paid'
+            ? Timestamp.fromDate(parseDateInputOrFallback(input.setupFeePaidDateIso, now))
+            : null;
+      }
+
+      const batch = writeBatch(db);
+      batch.update(orgRef, updatePayload);
+
+      const action: PlatformAuditAction = input.convertLegacyToPaid
+        ? 'LEGACY_CONVERTED_TO_PAID'
+        : input.setupFeeStatus && input.setupFeeStatus !== existingOrg.setupFeeStatus
+        ? 'SETUP_FEE_UPDATED'
+        : 'ORG_PROFILE_UPDATED';
+
+      const auditLog = createPlatformAuditPayload({
+        actor,
+        action,
+        targetType: 'organization',
+        targetId: input.orgId,
+        orgId: input.orgId,
+        details: input.convertLegacyToPaid
+          ? `تحويل المؤسسة القديمة "${input.name.trim()}" إلى الاشتراك المدفوع يدوياً دون رسوم بأثر رجعي`
+          : `تحديث بيانات/فوترة المؤسسة "${input.name.trim()}" (الرقم الضريبي: ${updatePayload.taxNumber || '—'}، حالة التأسيس: ${updatePayload.setupFeeStatus || existingOrg.setupFeeStatus || 'legacy'})`,
+      });
+      batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+
+      await batch.commit();
+      await loadSuperAdminOverview();
+    };
+
+  const updateSuperAdminOrgStatus: AuthContextType['updateSuperAdminOrgStatus'] = async (input) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+    const orgRef = doc(db, 'organizations', input.orgId);
+    const orgSnap = await getDocFromServer(orgRef).catch(() => getDoc(orgRef));
+    if (!orgSnap.exists()) {
+      throw new Error('المؤسسة غير موجودة.');
+    }
+    const existingOrg = orgSnap.data() as Organization;
+    const subEval = evaluateOrganizationSubscription(existingOrg);
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    const batch = writeBatch(db);
+    let action: PlatformAuditAction = 'ORG_SUSPENDED';
+    let details = '';
+
+    if (input.action === 'suspend') {
+      batch.update(orgRef, {
+        isActive: false,
+        deactivationReason: input.reason || 'manual_suspension',
+        deactivatedAt: Timestamp.fromDate(now),
+        ...(subEval.isLegacy ? {} : { subscriptionStatus: 'suspended' }),
+        updatedAt: nowIso,
+      });
+      action = 'ORG_SUSPENDED';
+      details = `إيقاف المؤسسة "${existingOrg.name}" (${input.reason || 'manual_suspension'})`;
+    } else if (input.action === 'start_no_paid_branch_grace') {
+      const graceDue = new Date(now.getTime() + NO_PAID_BRANCH_GRACE_DAYS * 24 * 60 * 60 * 1000);
+      batch.update(orgRef, {
+        noPaidBranchGraceStartedAt: Timestamp.fromDate(now),
+        deactivationDueAt: Timestamp.fromDate(graceDue),
+        deactivationReason: 'no_paid_branches',
+        updatedAt: nowIso,
+      });
+      action = 'ORG_DEACTIVATED_NO_PAID_BRANCHES';
+      details = `بدء مهلة 7 أيام لعدم وجود فروع مدفوعة للمؤسسة "${existingOrg.name}" حتى ${graceDue.toISOString().slice(0, 10)}`;
+    } else if (input.action === 'deactivate_no_paid_branches') {
+      batch.update(orgRef, {
+        isActive: false,
+        deactivationReason: 'no_paid_branches',
+        deactivatedAt: Timestamp.fromDate(now),
+        reactivationFeeSar: ORG_REACTIVATION_FEE_SAR,
+        reactivationFeeStatus: 'unpaid',
+        reactivationFeePaidAt: null,
+        updatedAt: nowIso,
+      });
+      action = 'ORG_DEACTIVATED_NO_PAID_BRANCHES';
+      details = `تعطيل المؤسسة "${existingOrg.name}" لانتهاء المهلة دون فروع مدفوعة — رسوم إعادة التنشيط ${ORG_REACTIVATION_FEE_SAR} ر.س`;
+    } else if (input.action === 'reactivate') {
+      const feeStatus = input.reactivationFeeStatus || 'paid';
+      if (existingOrg.deactivationReason === 'no_paid_branches' && feeStatus === 'unpaid') {
+        throw new Error('يجب تسجيل سداد أو إعفاء رسوم إعادة التنشيط (10 ر.س) قبل إعادة تفعيل المؤسسة.');
+      }
+      const paidDate = parseDateInputOrFallback(input.reactivationFeePaidDateIso, now);
+      batch.update(orgRef, {
+        isActive: true,
+        deactivationReason: null,
+        noPaidBranchGraceStartedAt: null,
+        deactivationDueAt: null,
+        deactivatedAt: null,
+        reactivationFeeSar: ORG_REACTIVATION_FEE_SAR,
+        reactivationFeeStatus: feeStatus,
+        reactivationFeePaidAt: feeStatus === 'paid' ? Timestamp.fromDate(paidDate) : null,
+        reactivatedAt: Timestamp.fromDate(now),
+        reactivatedBy: actorEmail,
+        ...(subEval.isLegacy ? {} : { subscriptionStatus: 'active' }),
+        ...(input.note?.trim() ? { subscriptionNote: input.note.trim().slice(0, 500) } : {}),
+        updatedAt: nowIso,
+      });
+      action = 'ORG_REACTIVATED';
+      details = `إعادة تنشيط المؤسسة "${existingOrg.name}" (رسوم إعادة التنشيط 10 ر.س: ${feeStatus})`;
+    }
+
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action,
+      targetType: 'organization',
+      targetId: input.orgId,
+      orgId: input.orgId,
+      details,
+    });
+    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+  };
+
+  const upsertSuperAdminManagerInvite: AuthContextType['upsertSuperAdminManagerInvite'] = async (
+    input
+  ) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const emailNormalized = normalizeEmail(input.email);
+    if (!isValidNormalizedEmailDocId(emailNormalized)) {
+      throw new Error('بريد Google غير صالح.');
+    }
+
+    const orgSnap = await getDocFromServer(doc(db, 'organizations', input.orgId)).catch(() =>
+      getDoc(doc(db, 'organizations', input.orgId))
+    );
+    if (!orgSnap.exists()) {
+      throw new Error('المؤسسة المستهدفة غير موجودة.');
+    }
+    const org = orgSnap.data() as Organization;
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+    const invRef = doc(db, 'managerInvites', emailNormalized);
+    const invSnap = await getDocFromServer(invRef).catch(() => getDoc(invRef));
+    const managerName = (input.managerName || org.ownerName || 'مدير المؤسسة').trim().slice(0, 100);
+
+    const batch = writeBatch(db);
+    if (invSnap.exists()) {
+      const existingInv = invSnap.data() as ManagerInvite;
+      if (existingInv.status === 'accepted') {
+        throw new Error('تم قبول هذه الدعوة مسبقاً من حساب مدير آخر.');
+      }
+      batch.update(invRef, {
+        email: input.email.trim(),
+        orgId: input.orgId,
+        orgName: org.name.slice(0, 120),
+        managerName,
+        status: 'pending',
+        updatedAt: serverTimestamp(),
+        cancelledAt: deleteField(),
+      });
+    } else {
+      batch.set(invRef, {
+        id: emailNormalized,
+        email: input.email.trim(),
+        emailNormalized,
+        orgId: input.orgId,
+        orgName: org.name.slice(0, 120),
+        managerName,
+        role: 'manager',
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        createdBy: actorEmail,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action: 'INVITE_UPSERTED',
+      targetType: 'invite',
+      targetId: emailNormalized,
+      orgId: input.orgId,
+      details: `إصدار / تحديث دعوة المدير ${emailNormalized} للمؤسسة "${org.name}"`,
+    });
+    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+  };
+
+  const cancelSuperAdminManagerInvite: AuthContextType['cancelSuperAdminManagerInvite'] = async (
+    email
+  ) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const emailNormalized = normalizeEmail(email);
+    const invRef = doc(db, 'managerInvites', emailNormalized);
+    const invSnap = await getDocFromServer(invRef).catch(() => getDoc(invRef));
+    if (!invSnap.exists()) {
+      throw new Error('الدعوة غير موجودة.');
+    }
+    const existingInv = invSnap.data() as ManagerInvite;
+    if (existingInv.status === 'accepted') {
+      throw new Error('لا يمكن إلغاء دعوة تم قبولها بالفعل.');
+    }
+
+    const batch = writeBatch(db);
+    batch.update(invRef, {
+      status: 'cancelled',
+      cancelledAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action: 'INVITE_CANCELLED',
+      targetType: 'invite',
+      targetId: emailNormalized,
+      orgId: existingInv.orgId,
+      details: `إلغاء دعوة المدير ${emailNormalized} التابعة للمؤسسة ${existingInv.orgId}`,
+    });
+    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+  };
+
+  const syncOrgBranchBillingTotalsInBatch = async (
+    batch: ReturnType<typeof writeBatch>,
+    org: Organization,
+    updatedBranches: Branch[],
+    now: Date,
+    actorEmail: string
+  ) => {
+    const subEval = evaluateOrganizationSubscription(org, now);
+    if (subEval.isLegacy) return;
+
+    const paidBranches = updatedBranches.filter((b) => isBranchCountedAsPaid(b, org, now));
+    const activeBranches = updatedBranches.filter(
+      (b) => b.isActive !== false && b.lifecycleStatus !== 'suspended' && b.lifecycleStatus !== 'purged_from_db'
+    );
+    const included = org.includedBranchesCount ?? NEW_ORG_INCLUDED_BRANCHES_COUNT;
+    const perBranch = org.extraBranchMonthlyFeeSar ?? BRANCH_MONTHLY_FEE_SAR;
+    const billableCount = Math.max(0, activeBranches.length - included);
+
+    const orgUpdate: Record<string, any> = {
+      extraBranchesCount: billableCount,
+      extraBranchesMonthlyTotalSar: billableCount * perBranch,
+      branchPricingUpdatedAt: serverTimestamp(),
+      branchPricingUpdatedBy: actorEmail,
+      updatedAt: now.toISOString(),
+    };
+
+    if (paidBranches.length > 0 && org.isActive !== false) {
+      orgUpdate.noPaidBranchGraceStartedAt = null;
+      orgUpdate.deactivationDueAt = null;
+      if (org.deactivationReason === 'no_paid_branches') {
+        orgUpdate.deactivationReason = null;
+      }
+    } else if (paidBranches.length === 0 && org.isActive !== false && !org.deactivationDueAt) {
+      const graceDue = new Date(now.getTime() + NO_PAID_BRANCH_GRACE_DAYS * 24 * 60 * 60 * 1000);
+      orgUpdate.noPaidBranchGraceStartedAt = Timestamp.fromDate(now);
+      orgUpdate.deactivationDueAt = Timestamp.fromDate(graceDue);
+      orgUpdate.deactivationReason = 'no_paid_branches';
+    }
+
+    batch.update(doc(db, 'organizations', org.id), orgUpdate);
+  };
+
+  const createSuperAdminBranch: AuthContextType['createSuperAdminBranch'] = async (input) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const cleanName = input.name.trim();
+    if (cleanName.length < 2) {
+      throw new Error('اسم الفرع يجب أن يكون حرفين على الأقل.');
+    }
+
+    const orgSnap = await getDocFromServer(doc(db, 'organizations', input.orgId)).catch(() =>
+      getDoc(doc(db, 'organizations', input.orgId))
+    );
+    if (!orgSnap.exists()) {
+      throw new Error('المؤسسة غير موجودة.');
+    }
+    const org = orgSnap.data() as Organization;
+    const subEval = evaluateOrganizationSubscription(org);
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const startDate = parseDateInputOrFallback(input.subscriptionStartIso, now);
+    const dueDate = parseDateInputOrFallback(
+      input.feeDueDateIso,
+      new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000)
+    );
+    const branchId = `br_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const code = (input.code || `BR${Math.floor(100 + Math.random() * 900)}`).trim().toUpperCase().slice(0, 20);
+    const paymentStatus: BranchPaymentStatus = subEval.isLegacy ? 'exempt' : input.paymentStatus;
+    const monthlyFeeSar = subEval.isLegacy ? 0 : BRANCH_MONTHLY_FEE_SAR;
+    const isPaid = paymentStatus === 'paid' || paymentStatus === 'exempt';
+
+    const newBranch: Branch = {
+      id: branchId,
+      orgId: input.orgId,
+      name: cleanName,
+      code,
+      ...(input.address?.trim() ? { address: input.address.trim().slice(0, 255) } : {}),
+      ...(input.phone?.trim() ? { phone: input.phone.trim().slice(0, 25) } : {}),
+      isActive: true,
+      lifecycleStatus: 'active',
+      subscriptionStartAt: Timestamp.fromDate(startDate),
+      feeDueAt: Timestamp.fromDate(dueDate),
+      monthlyFeeSar,
+      paymentStatus,
+      ...(isPaid ? { lastPaidAt: Timestamp.fromDate(now), lastPaidBy: actorEmail } : {}),
+      ...(input.paymentNote?.trim() ? { paymentNote: input.paymentNote.trim().slice(0, 500) } : {}),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    const existingOrgBranchesSnap = await getDocs(
+      query(collection(db, 'branches'), where('orgId', '==', input.orgId))
+    );
+    const existingOrgBranches = existingOrgBranchesSnap.docs.map((d) => d.data() as Branch);
+
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'branches', branchId), newBranch);
+    await syncOrgBranchBillingTotalsInBatch(
+      batch,
+      org,
+      [...existingOrgBranches, newBranch],
+      now,
+      actorEmail
+    );
+
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action: 'BRANCH_CREATED',
+      targetType: 'branch',
+      targetId: branchId,
+      orgId: input.orgId,
+      details: `إضافة فرع جديد "${cleanName}" (${code}) للمؤسسة "${org.name}" — ${monthlyFeeSar} ر.س/شهرياً (${paymentStatus})`,
+    });
+    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+    return newBranch;
+  };
+
+  const recordSuperAdminBranchPayment: AuthContextType['recordSuperAdminBranchPayment'] = async (
+    input
+  ) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const branchRef = doc(db, 'branches', input.branchId);
+    const branchSnap = await getDocFromServer(branchRef).catch(() => getDoc(branchRef));
+    if (!branchSnap.exists()) {
+      throw new Error('الفرع غير موجود.');
+    }
+    const existingBranch = branchSnap.data() as Branch;
+    const orgSnap = await getDocFromServer(doc(db, 'organizations', existingBranch.orgId)).catch(() =>
+      getDoc(doc(db, 'organizations', existingBranch.orgId))
+    );
+    if (!orgSnap.exists()) {
+      throw new Error('المؤسسة غير موجودة.');
+    }
+    const org = orgSnap.data() as Organization;
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+    const now = new Date();
+    const paidDate = parseDateInputOrFallback(input.paidDateIso, now);
+    const defaultNextDue = new Date(paidDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const dueDate = parseDateInputOrFallback(input.feeDueDateIso, defaultNextDue);
+    const monthlyFeeSar = input.monthlyFeeSar ?? existingBranch.monthlyFeeSar ?? BRANCH_MONTHLY_FEE_SAR;
+
+    const existingOrgBranchesSnap = await getDocs(
+      query(collection(db, 'branches'), where('orgId', '==', existingBranch.orgId))
+    );
+    const updatedBranch: Branch = {
+      ...existingBranch,
+      monthlyFeeSar,
+      paymentStatus: input.paymentStatus,
+      feeDueAt: Timestamp.fromDate(dueDate),
+      lastPaidAt: input.paymentStatus === 'paid' ? Timestamp.fromDate(paidDate) : existingBranch.lastPaidAt,
+      lastPaidBy: actorEmail,
+      paymentNote: input.paymentNote?.trim().slice(0, 500) || existingBranch.paymentNote,
+      updatedAt: now.toISOString(),
+    };
+    const mergedBranches = existingOrgBranchesSnap.docs.map((d) =>
+      d.id === existingBranch.id ? updatedBranch : (d.data() as Branch)
+    );
+
+    const batch = writeBatch(db);
+    batch.update(branchRef, {
+      monthlyFeeSar,
+      paymentStatus: input.paymentStatus,
+      feeDueAt: Timestamp.fromDate(dueDate),
+      lastPaidAt:
+        input.paymentStatus === 'paid'
+          ? Timestamp.fromDate(paidDate)
+          : existingBranch.lastPaidAt || null,
+      lastPaidBy: actorEmail,
+      paymentNote: input.paymentNote?.trim().slice(0, 500) || null,
+      updatedAt: now.toISOString(),
+    });
+    await syncOrgBranchBillingTotalsInBatch(batch, org, mergedBranches, now, actorEmail);
+
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action: 'BRANCH_PAYMENT_UPDATED',
+      targetType: 'branch',
+      targetId: existingBranch.id,
+      orgId: existingBranch.orgId,
+      details: `تحديث دفع فرع "${existingBranch.name}" إلى ${input.paymentStatus} (${monthlyFeeSar} ر.س) — الاستحقاق القادم ${dueDate.toISOString().slice(0, 10)}`,
+    });
+    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+  };
+
+  const suspendSuperAdminBranch: AuthContextType['suspendSuperAdminBranch'] = async (input) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const branchRef = doc(db, 'branches', input.branchId);
+    const branchSnap = await getDocFromServer(branchRef).catch(() => getDoc(branchRef));
+    if (!branchSnap.exists()) {
+      throw new Error('الفرع غير موجود.');
+    }
+    const existingBranch = branchSnap.data() as Branch;
+    if (existingBranch.lifecycleStatus === 'purged_from_db') {
+      throw new Error('تم تنظيف سجلات هذا الفرع من قاعدة البيانات مسبقاً.');
+    }
+
+    const orgSnap = await getDocFromServer(doc(db, 'organizations', existingBranch.orgId)).catch(() =>
+      getDoc(doc(db, 'organizations', existingBranch.orgId))
+    );
+    if (!orgSnap.exists()) {
+      throw new Error('المؤسسة غير موجودة.');
+    }
+    const org = orgSnap.data() as Organization;
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+    const now = new Date();
+    const graceEnds = new Date(
+      now.getTime() + BRANCH_SUSPENSION_GRACE_DAYS * 24 * 60 * 60 * 1000
+    );
+
+    const existingOrgBranchesSnap = await getDocs(
+      query(collection(db, 'branches'), where('orgId', '==', existingBranch.orgId))
+    );
+    const updatedBranch: Branch = {
+      ...existingBranch,
+      isActive: false,
+      lifecycleStatus: 'suspended',
+      suspendedAt: Timestamp.fromDate(now),
+      gracePeriodEndsAt: Timestamp.fromDate(graceEnds),
+      driveBackupVerified: false,
+    };
+    const mergedBranches = existingOrgBranchesSnap.docs.map((d) =>
+      d.id === existingBranch.id ? updatedBranch : (d.data() as Branch)
+    );
+
+    const batch = writeBatch(db);
+    batch.update(branchRef, {
+      isActive: false,
+      lifecycleStatus: 'suspended',
+      suspendedAt: Timestamp.fromDate(now),
+      suspendedBy: actorEmail,
+      suspensionReason: (input.reason || 'تعليق إداري من صاحب الموقع').trim().slice(0, 500),
+      gracePeriodEndsAt: Timestamp.fromDate(graceEnds),
+      driveBackupVerified: false,
+      driveBackupVerifiedAt: null,
+      driveBackupVerifiedBy: null,
+      updatedAt: now.toISOString(),
+    });
+    await syncOrgBranchBillingTotalsInBatch(batch, org, mergedBranches, now, actorEmail);
+
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action: 'BRANCH_SUSPENDED',
+      targetType: 'branch',
+      targetId: existingBranch.id,
+      orgId: existingBranch.orgId,
+      details: `تعليق فرع "${existingBranch.name}" وبدء مهلة 30 يوماً حتى ${graceEnds.toISOString().slice(0, 10)}`,
+    });
+    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+  };
+
+  const reactivateSuperAdminBranch: AuthContextType['reactivateSuperAdminBranch'] = async (
+    input
+  ) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const branchRef = doc(db, 'branches', input.branchId);
+    const branchSnap = await getDocFromServer(branchRef).catch(() => getDoc(branchRef));
+    if (!branchSnap.exists()) {
+      throw new Error('الفرع غير موجود.');
+    }
+    const existingBranch = branchSnap.data() as Branch;
+    if (existingBranch.lifecycleStatus === 'purged_from_db') {
+      throw new Error('لا يمكن إعادة تنشيط فرع تم حذف سجلاته من قاعدة البيانات؛ أضف فرعاً جديداً بدلاً من ذلك.');
+    }
+
+    const orgSnap = await getDocFromServer(doc(db, 'organizations', existingBranch.orgId)).catch(() =>
+      getDoc(doc(db, 'organizations', existingBranch.orgId))
+    );
+    if (!orgSnap.exists()) {
+      throw new Error('المؤسسة غير موجودة.');
+    }
+    const org = orgSnap.data() as Organization;
+    const subEval = evaluateOrganizationSubscription(org);
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+    const now = new Date();
+    const dueDate = parseDateInputOrFallback(
+      input.feeDueDateIso,
+      new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
+    );
+    const paymentStatus: BranchPaymentStatus = subEval.isLegacy ? 'exempt' : input.paymentStatus;
+    const isPaid = paymentStatus === 'paid' || paymentStatus === 'exempt';
+
+    const existingOrgBranchesSnap = await getDocs(
+      query(collection(db, 'branches'), where('orgId', '==', existingBranch.orgId))
+    );
+    const updatedBranch: Branch = {
+      ...existingBranch,
+      isActive: true,
+      lifecycleStatus: 'active',
+      paymentStatus,
+      feeDueAt: Timestamp.fromDate(dueDate),
+      driveBackupVerified: false,
+    };
+    const mergedBranches = existingOrgBranchesSnap.docs.map((d) =>
+      d.id === existingBranch.id ? updatedBranch : (d.data() as Branch)
+    );
+
+    const batch = writeBatch(db);
+    batch.update(branchRef, {
+      isActive: true,
+      lifecycleStatus: 'active',
+      paymentStatus,
+      feeDueAt: Timestamp.fromDate(dueDate),
+      lastPaidAt: isPaid ? Timestamp.fromDate(now) : existingBranch.lastPaidAt || null,
+      lastPaidBy: isPaid ? actorEmail : existingBranch.lastPaidBy || null,
+      ...(input.paymentNote?.trim() ? { paymentNote: input.paymentNote.trim().slice(0, 500) } : {}),
+      suspendedAt: null,
+      suspendedBy: null,
+      suspensionReason: null,
+      gracePeriodEndsAt: null,
+      driveBackupVerified: false,
+      driveBackupVerifiedAt: null,
+      driveBackupVerifiedBy: null,
+      updatedAt: now.toISOString(),
+    });
+    await syncOrgBranchBillingTotalsInBatch(batch, org, mergedBranches, now, actorEmail);
+
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action: 'BRANCH_REACTIVATED',
+      targetType: 'branch',
+      targetId: existingBranch.id,
+      orgId: existingBranch.orgId,
+      details: `إعادة تنشيط فرع "${existingBranch.name}" بحالة دفع ${paymentStatus} حتى ${dueDate.toISOString().slice(0, 10)}`,
+    });
+    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+  };
+
+  const inspectBranchDriveBackupForPurge: AuthContextType['inspectBranchDriveBackupForPurge'] = async (
+    branchId
+  ) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const branchRef = doc(db, 'branches', branchId);
+    const branchSnap = await getDocFromServer(branchRef).catch(() => getDoc(branchRef));
+    if (!branchSnap.exists()) {
+      throw new Error('الفرع غير موجود.');
+    }
+    const branch = branchSnap.data() as Branch;
+    const now = new Date();
+    const graceEnds = toValidDate(branch.gracePeriodEndsAt);
+    if (branch.isActive !== false || branch.lifecycleStatus !== 'suspended') {
+      return {
+        verified: false,
+        branchId,
+        totalClosingsCount: 0,
+        approvedClosingsCount: 0,
+        verifiedArchivedCount: 0,
+        unapprovedPendingCount: 0,
+        missingOrUnverifiedClosingIds: [],
+        failedOrStaleClosingIds: [],
+        purchasesCount: 0,
+        attachmentsCount: 0,
+        reason: 'يجب أن يكون الفرع معلقاً أولاً للتحقق من الجاهزية للحذف.',
+      };
+    }
+    if (!graceEnds || now.getTime() < graceEnds.getTime()) {
+      return {
+        verified: false,
+        branchId,
+        totalClosingsCount: 0,
+        approvedClosingsCount: 0,
+        verifiedArchivedCount: 0,
+        unapprovedPendingCount: 0,
+        missingOrUnverifiedClosingIds: [],
+        failedOrStaleClosingIds: [],
+        purchasesCount: 0,
+        attachmentsCount: 0,
+        reason: 'لم تنتهِ مهلة الـ 30 يوماً بعد تعليق الفرع بعد.',
+      };
+    }
+
+    const [closingsSnap, archivesSnap, purchasesSnap, attachmentsSnap] = await Promise.all([
+      getDocsFromServer(query(collection(db, 'closings'), where('branchId', '==', branchId))),
+      getDocsFromServer(query(collection(db, 'closingArchives'), where('branchId', '==', branchId))),
+      getDocsFromServer(query(collection(db, 'purchases'), where('branchId', '==', branchId))),
+      getDocsFromServer(query(collection(db, 'attachments'), where('branchId', '==', branchId))),
+    ]);
+
+    const branchClosings = closingsSnap.docs.map((d) => d.data() as ShiftClosing);
+    const branchArchives = archivesSnap.docs.map((d) => d.data() as ClosingArchiveRecord);
+
+    const verification = verifyBranchDriveBackupCompleteness({
+      branch,
+      closings: branchClosings,
+      archives: branchArchives,
+      now,
+    });
+
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+    const batch = writeBatch(db);
+    if (verification.verified) {
+      batch.update(branchRef, {
+        driveBackupVerified: true,
+        driveBackupVerifiedAt: Timestamp.fromDate(now),
+        driveBackupVerifiedBy: actorEmail,
+        driveBackupArchivedClosingsCount: verification.verifiedArchivedCount,
+        updatedAt: now.toISOString(),
+      });
+      const auditLog = createPlatformAuditPayload({
+        actor,
+        action: 'BRANCH_DRIVE_BACKUP_VERIFIED',
+        targetType: 'branch',
+        targetId: branchId,
+        orgId: branch.orgId,
+        details: `التحقق من اكتمال النسخ الاحتياطي في Google Drive للفرع "${branch.name}" (${verification.verifiedArchivedCount}/${verification.approvedClosingsCount} إقفال معتمد)`,
+      });
+      batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+    } else {
+      batch.update(branchRef, {
+        driveBackupVerified: false,
+        driveBackupVerifiedAt: null,
+        driveBackupVerifiedBy: null,
+        driveBackupArchivedClosingsCount: verification.verifiedArchivedCount,
+        updatedAt: now.toISOString(),
+      });
+    }
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+
+    return {
+      ...verification,
+      purchasesCount: purchasesSnap.size,
+      attachmentsCount: attachmentsSnap.size,
+    };
+  };
+
+  const purgeSuspendedBranchFromDb: AuthContextType['purgeSuspendedBranchFromDb'] = async (
+    branchId
+  ) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const branchRef = doc(db, 'branches', branchId);
+    const branchSnap = await getDocFromServer(branchRef).catch(() => getDoc(branchRef));
+    if (!branchSnap.exists()) {
+      throw new Error('الفرع غير موجود.');
+    }
+    const branch = branchSnap.data() as Branch;
+    if (branch.lifecycleStatus === 'purged_from_db') {
+      throw new Error('تم حذف سجلات هذا الفرع من قاعدة البيانات مسبقاً.');
+    }
+
+    const [closingsSnap, archivesSnap, purchasesSnap, attachmentsSnap] = await Promise.all([
+      getDocsFromServer(query(collection(db, 'closings'), where('branchId', '==', branchId))),
+      getDocsFromServer(query(collection(db, 'closingArchives'), where('branchId', '==', branchId))),
+      getDocsFromServer(query(collection(db, 'purchases'), where('branchId', '==', branchId))),
+      getDocsFromServer(query(collection(db, 'attachments'), where('branchId', '==', branchId))),
+    ]);
+
+    const verification = verifyBranchDriveBackupCompleteness({
+      branch,
+      closings: closingsSnap.docs.map((d) => d.data() as ShiftClosing),
+      archives: archivesSnap.docs.map((d) => d.data() as ClosingArchiveRecord),
+      now: new Date(),
+    });
+
+    if (!verification.verified || branch.driveBackupVerified !== true) {
+      throw new Error(verification.reason || 'تعذر التحقق من اكتمال أرشفة Google Drive؛ تم منع حذف البيانات.');
+    }
+
+    // Never touch Google Drive files and NEVER delete auditLogs!
+    const docsToDelete = [
+      ...closingsSnap.docs.map((d) => d.ref),
+      ...purchasesSnap.docs.map((d) => d.ref),
+      ...attachmentsSnap.docs.map((d) => d.ref),
+      ...archivesSnap.docs.map((d) => d.ref),
+    ];
+
+    for (let i = 0; i < docsToDelete.length; i += 400) {
+      const chunk = docsToDelete.slice(i, i + 400);
+      const delBatch = writeBatch(db);
+      chunk.forEach((ref) => delBatch.delete(ref));
+      await delBatch.commit();
+    }
+
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+    const now = new Date();
+    const finalizeBatch = writeBatch(db);
+    finalizeBatch.update(branchRef, {
+      lifecycleStatus: 'purged_from_db',
+      purgedFromDbAt: Timestamp.fromDate(now),
+      purgedFromDbBy: actorEmail,
+      updatedAt: now.toISOString(),
+    });
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action: 'BRANCH_DB_PURGED',
+      targetType: 'branch',
+      targetId: branchId,
+      orgId: branch.orgId,
+      details: `حذف سجلات فرع "${branch.name}" من قاعدة بيانات الموقع فقط (إقفالات: ${closingsSnap.size}، مشتريات: ${purchasesSnap.size}، مرفقات: ${attachmentsSnap.size}، أرشيف: ${archivesSnap.size}) بعد التحقق من أرشيف Google Drive دون المساس بملفات Drive أو auditLogs`,
+      metadata: {
+        deletedClosings: closingsSnap.size,
+        deletedPurchases: purchasesSnap.size,
+        deletedAttachments: attachmentsSnap.size,
+        deletedClosingArchives: archivesSnap.size,
+      },
+    });
+    finalizeBatch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+    await finalizeBatch.commit();
+
+    await loadSuperAdminOverview();
+    return {
+      deletedClosings: closingsSnap.size,
+      deletedPurchases: purchasesSnap.size,
+      deletedAttachments: attachmentsSnap.size,
+      deletedClosingArchives: archivesSnap.size,
+    };
   };
 
   const logout = async () => {
@@ -2172,15 +3875,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await signOut(auth);
       setUserProfile(null);
       setCurrentOrg(null);
-      setBranches([]);
-      setCurrentBranch(null);
-      setEmployees([]);
-      setClosings([]);
-      setClosingArchives([]);
-      setAuditLogs([]);
+      setSubscriptionEvaluation(null);
+      setSubscriptionBlockReason(null);
+      setInviteBlockInfo(null);
+      setAccessErrorInfo(null);
+      clearOperationalState();
       setSuperAdminOverview(null);
       setSuperAdminError(null);
       setNeedsOnboarding(false);
+      setTenantStatus('unauthenticated');
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
@@ -2210,12 +3913,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         auditLogs,
         loading,
         needsOnboarding,
+        tenantStatus,
+        subscriptionEvaluation,
+        subscriptionBlockReason,
+        inviteBlockInfo,
+        accessErrorInfo,
         loginWithGoogle,
         loginWithEmailPassword,
         resetPassword,
         completeOrganizationSetup,
         addBranch,
         createEmployeeAccount,
+        updateEmployeeAccount,
+        archiveEmployeeAccount,
+        sendEmployeePasswordReset,
         toggleEmployeeStatus,
         updateEmployeeBranch,
         submitShiftClosing,
@@ -2238,6 +3949,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         superAdminLoading,
         superAdminError,
         loadSuperAdminOverview,
+        createSuperAdminOrganizationWithInvite,
+        updateSuperAdminOrganizationProfileAndBilling,
+        updateSuperAdminOrgStatus,
+        upsertSuperAdminManagerInvite,
+        cancelSuperAdminManagerInvite,
+        createSuperAdminBranch,
+        recordSuperAdminBranchPayment,
+        suspendSuperAdminBranch,
+        reactivateSuperAdminBranch,
+        inspectBranchDriveBackupForPurge,
+        purgeSuspendedBranchFromDb,
       }}
     >
       {children}

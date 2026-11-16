@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import {
@@ -37,6 +37,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isForgotPassword, setIsForgotPassword] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab);
+      setErrorMsg(null);
+      setSuccessMsg(null);
+      setIsForgotPassword(false);
+    }
+  }, [isOpen, initialTab]);
 
   if (!isOpen) return null;
 
@@ -262,7 +271,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2.5">
                 <ShieldCheck className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
                 <p className="leading-relaxed">
-                  يتم تسجيل دخول المدير بواسطة حساب Google الرسمي. إذا كنت تسجل لأول مرة، سيتم نقلك تلقائياً لتأسيس مؤسستك التجارية الجديدة وفرعك الرئيسي.
+                  {t('subAuthNoticeNewManager')}
                 </p>
               </div>
 

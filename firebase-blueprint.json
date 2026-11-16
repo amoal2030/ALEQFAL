@@ -15,6 +15,11 @@
           "maxLength": 120,
           "description": "Organization trade name"
         },
+        "taxNumber": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "VAT/Tax registration number (الرقم الضريبي)"
+        },
         "commercialRegistration": {
           "type": "string",
           "maxLength": 50,
@@ -55,6 +60,119 @@
           "type": "boolean",
           "description": "Optional organization active status"
         },
+        "subscriptionPlan": {
+          "type": "string",
+          "enum": ["trial_7d", "1m", "3m", "6m", "1y"],
+          "description": "Assigned subscription duration plan"
+        },
+        "subscriptionStatus": {
+          "type": "string",
+          "enum": ["active", "expired", "suspended"],
+          "description": "Subscription lifecycle status"
+        },
+        "subscriptionStartAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore Timestamp for subscription start"
+        },
+        "subscriptionEndAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore Timestamp for subscription end"
+        },
+        "subscriptionUpdatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore Timestamp when subscription was last updated"
+        },
+        "subscriptionUpdatedBy": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Super Admin identifier who last updated the subscription"
+        },
+        "subscriptionNote": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Optional administrative note on the subscription"
+        },
+        "branchPricingModel": {
+          "type": "string",
+          "enum": ["per_branch_50_sar", "per_extra_branch_50_sar"],
+          "description": "Branch pricing model identifier (50 SAR/month starting from 1st branch on paid plans)"
+        },
+        "includedBranchesCount": {
+          "type": "number",
+          "description": "Number of included branches (0 for new paid orgs)"
+        },
+        "extraBranchMonthlyFeeSar": {
+          "type": "number",
+          "description": "Monthly SAR fee per billable branch (50 SAR)"
+        },
+        "extraBranchesCount": {
+          "type": "number",
+          "description": "Calculated billable branches count"
+        },
+        "extraBranchesMonthlyTotalSar": {
+          "type": "number",
+          "description": "Estimated monthly total fee in SAR for active billable branches"
+        },
+        "accountSetupFeeSar": {
+          "type": "number",
+          "description": "One-time new manager account/organization setup fee in SAR (80 SAR)"
+        },
+        "setupFeeStatus": {
+          "type": "string",
+          "enum": ["paid", "unpaid", "waived"],
+          "description": "Manual tracking status of the 80 SAR account setup fee"
+        },
+        "setupFeePaidAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Recorded date when the 80 SAR setup fee was paid"
+        },
+        "reactivationFeeSar": {
+          "type": "number",
+          "description": "Organization reactivation fee in SAR after deactivation (10 SAR)"
+        },
+        "reactivationFeeStatus": {
+          "type": "string",
+          "enum": ["paid", "unpaid", "waived"],
+          "description": "Manual tracking status of the 10 SAR reactivation fee"
+        },
+        "reactivationFeePaidAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Recorded date when the 10 SAR reactivation fee was paid"
+        },
+        "reactivatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the deactivated organization was reactivated by Super Admin"
+        },
+        "reactivatedBy": {
+          "type": "string",
+          "description": "Super Admin email or UID who reactivated the organization"
+        },
+        "deactivationReason": {
+          "type": "string",
+          "enum": ["no_paid_branches", "manual_suspension", "expired"],
+          "description": "Reason why the organization was deactivated"
+        },
+        "noPaidBranchGraceStartedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Start of the 7-day grace window when organization has zero paid branches"
+        },
+        "deactivationDueAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when organization auto-blocks after 7-day no-paid-branch grace"
+        },
+        "deactivatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when organization was deactivated"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -66,7 +184,82 @@
           "description": "Last update timestamp"
         }
       },
-      "required": ["id", "name", "activityType", "currency", "ownerId", "ownerEmail", "createdAt"]
+      "required": ["id", "name", "activityType", "currency", "ownerEmail", "createdAt"]
+    },
+    "ManagerInvite": {
+      "title": "ManagerInvite",
+      "description": "Verified Google email invitation issued exclusively by Super Admin to bind an organization manager",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Normalized lowercase Google email matching document ID"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 254,
+          "description": "Invited manager Google email"
+        },
+        "emailNormalized": {
+          "type": "string",
+          "maxLength": 254,
+          "description": "Lowercase trimmed email matching document ID"
+        },
+        "orgId": {
+          "type": "string",
+          "description": "Target organization ID"
+        },
+        "orgName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Target organization display name"
+        },
+        "managerName": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Optional manager display name"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["manager"],
+          "description": "Assigned role"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted", "cancelled"],
+          "description": "Invitation status"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Invitation creation timestamp"
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Super Admin creator identifier"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        },
+        "acceptedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when invite was claimed"
+        },
+        "acceptedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the manager who claimed the invite"
+        },
+        "cancelledAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when invite was cancelled"
+        }
+      },
+      "required": ["id", "email", "emailNormalized", "orgId", "role", "status", "createdAt", "createdBy", "updatedAt"]
     },
     "UserProfile": {
       "title": "UserProfile",
@@ -92,12 +285,16 @@
         },
         "role": {
           "type": "string",
-          "enum": ["manager", "employee"],
+          "enum": ["manager", "supervisor", "branch_manager", "employee"],
           "description": "Role within the organization"
         },
         "branchId": {
           "type": "string",
-          "description": "Assigned branch ID for cashier/employee"
+          "description": "Assigned branch ID for employee or branch manager"
+        },
+        "branchIds": {
+          "type": "array",
+          "description": "Optional assigned branch IDs list (single branch enforced for branch_manager)"
         },
         "branchName": {
           "type": "string",
@@ -112,10 +309,28 @@
           "type": "boolean",
           "description": "Whether account is currently active"
         },
+        "isArchived": {
+          "type": "boolean",
+          "description": "Soft-archive flag retaining all historical financial and audit records"
+        },
+        "archivedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when employee account was archived"
+        },
+        "archivedBy": {
+          "type": "string",
+          "description": "Manager UID who archived the employee account"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
           "description": "Account creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
         }
       },
       "required": ["uid", "orgId", "email", "displayName", "role", "isActive", "createdAt"]
@@ -158,10 +373,68 @@
           "type": "boolean",
           "description": "Branch active status"
         },
+        "lifecycleStatus": {
+          "type": "string",
+          "enum": ["active", "suspended", "purged_from_db"],
+          "description": "Branch lifecycle status controlled exclusively by Super Admin"
+        },
+        "subscriptionStartAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Branch billing start date"
+        },
+        "feeDueAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Branch next monthly fee due date"
+        },
+        "monthlyFeeSar": {
+          "type": "number",
+          "description": "Monthly branch fee in SAR (50 SAR)"
+        },
+        "paymentStatus": {
+          "type": "string",
+          "enum": ["paid", "unpaid", "overdue", "exempt"],
+          "description": "Manual branch payment tracking status"
+        },
+        "lastPaidAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Date of last recorded 50 SAR branch payment"
+        },
+        "suspendedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when branch was suspended (starts 30-day grace)"
+        },
+        "gracePeriodEndsAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "End of 30-day post-suspension grace window before DB purge eligibility"
+        },
+        "driveBackupVerified": {
+          "type": "boolean",
+          "description": "Whether complete Google Drive backup proof was verified prior to DB purge"
+        },
+        "driveBackupVerifiedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when Google Drive backup completeness was verified"
+        },
+        "purgedFromDbAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when branch records were purged from Firestore DB"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
           "description": "Branch creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Branch last update timestamp"
         }
       },
       "required": ["id", "orgId", "name", "code", "isActive", "createdAt"]
@@ -360,7 +633,7 @@
         },
         "actorRole": {
           "type": "string",
-          "enum": ["manager", "employee"],
+          "enum": ["manager", "supervisor", "branch_manager", "employee"],
           "description": "Role of actor"
         },
         "action": {
@@ -369,7 +642,7 @@
         },
         "targetType": {
           "type": "string",
-          "enum": ["closing", "branch", "employee", "drive", "organization"],
+          "enum": ["closing", "branch", "employee", "drive", "organization", "supplier", "purchase"],
           "description": "Type of affected resource"
         },
         "targetId": {
@@ -388,6 +661,44 @@
         }
       },
       "required": ["id", "orgId", "actorId", "actorName", "actorRole", "action", "targetType", "targetId", "timestamp"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Registered supplier entity belonging to an organization",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orgId": { "type": "string" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "taxNumber": { "type": "string", "maxLength": 40 },
+        "phone": { "type": "string", "maxLength": 25 },
+        "isActive": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orgId", "name", "isActive", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Purchase": {
+      "title": "Purchase",
+      "description": "Branch-scoped purchase invoice tied to a registered organization supplier",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orgId": { "type": "string" },
+        "branchId": { "type": "string" },
+        "supplierId": { "type": "string" },
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "amount": { "type": "number" },
+        "vatAmount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["cash", "card", "transfer", "credit"] },
+        "createdBy": { "type": "string" },
+        "createdByRole": { "type": "string", "enum": ["manager", "supervisor", "branch_manager", "employee"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orgId", "branchId", "supplierId", "date", "amount", "totalAmount", "paymentMethod", "createdBy", "createdByRole", "createdAt", "updatedAt"]
     },
     "ClosingArchive": {
       "title": "ClosingArchive",
@@ -477,12 +788,33 @@
         }
       },
       "required": ["closingId", "orgId", "branchId", "yearMonth", "archiveStatus", "updatedAt"]
+    },
+    "PlatformAuditLog": {
+      "title": "PlatformAuditLog",
+      "description": "Immutable Super Admin platform-level audit trail for organizations, invites, billing, and branch lifecycle actions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "actorEmail": { "type": "string", "maxLength": 254 },
+        "actorUid": { "type": "string" },
+        "action": { "type": "string", "maxLength": 80 },
+        "targetType": { "type": "string", "enum": ["organization", "branch", "invite", "billing"] },
+        "targetId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "details": { "type": "string", "maxLength": 1000 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "actorEmail", "actorUid", "action", "targetType", "targetId", "details", "timestamp"]
     }
   },
   "firestore": {
     "/organizations/{orgId}": {
       "schema": "Organization",
       "description": "Organization documents keyed by orgId"
+    },
+    "/managerInvites/{inviteEmail}": {
+      "schema": "ManagerInvite",
+      "description": "Super Admin issued manager email invitations keyed by normalized email"
     },
     "/users/{userId}": {
       "schema": "UserProfile",
@@ -496,6 +828,14 @@
       "schema": "ShiftClosing",
       "description": "Daily shift closings"
     },
+    "/suppliers/{supplierId}": {
+      "schema": "Supplier",
+      "description": "Organization suppliers"
+    },
+    "/purchases/{purchaseId}": {
+      "schema": "Purchase",
+      "description": "Branch-scoped purchases"
+    },
     "/attachments/{attachmentId}": {
       "schema": "Attachment",
       "description": "Receipt and invoice attachment metadata"
@@ -507,6 +847,10 @@
     "/closingArchives/{closingId}": {
       "schema": "ClosingArchive",
       "description": "Google Drive Excel archival index keyed by closingId"
+    },
+    "/platformAuditLogs/{logId}": {
+      "schema": "PlatformAuditLog",
+      "description": "Immutable Super Admin platform audit trail"
     }
   }
 }

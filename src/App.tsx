@@ -11,10 +11,13 @@ import { Navbar } from './components/Navbar';
 import { LandingPage } from './components/LandingPage';
 import { Footer } from './components/Footer';
 import { AuthModal } from './components/AuthModal';
-import { OrganizationOnboarding } from './components/OrganizationOnboarding';
+import { SubscriptionRequestView } from './components/SubscriptionRequestView';
+import { SubscriptionBlockedView } from './components/SubscriptionBlockedView';
+import { TenantAccessNoticeView } from './components/TenantAccessNoticeView';
 import { Dashboard } from './components/Dashboard';
 import { SuperAdminDashboard } from './components/superadmin/SuperAdminDashboard';
 import { LegalPage } from './components/LegalPage';
+import { canRenderTenantDashboard } from './utils/tenantAccess';
 import {
   AppPageRoute,
   buildLegalPath,
@@ -26,7 +29,17 @@ const DEFAULT_DOCUMENT_TITLE = 'الإقفال | AL EQFAL - نظام إدارة 
 
 const AppContent: React.FC = () => {
   const { direction, language } = useLanguage();
-  const { currentUser, currentOrg, loading, needsOnboarding, authNotice, clearAuthNotice, isSuperAdmin } = useAuth();
+  const {
+    currentUser,
+    userProfile,
+    currentOrg,
+    loading,
+    tenantStatus,
+    subscriptionEvaluation,
+    authNotice,
+    clearAuthNotice,
+    isSuperAdmin,
+  } = useAuth();
 
   const [currentPage, setCurrentPage] = useState<AppPageRoute>(() => resolveAppPageFromLocation());
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -133,19 +146,27 @@ const AppContent: React.FC = () => {
     }
   };
 
+  const hasDashboardAccess = canRenderTenantDashboard({
+    tenantStatus,
+    hasAuthUser: Boolean(currentUser),
+    userProfile,
+    currentOrg,
+    subscriptionEvaluation,
+  });
+
   // Public & Authenticated Legal Pages (/ALEQFAL/privacy and /ALEQFAL/terms)
   if (currentPage === 'privacy' || currentPage === 'terms') {
     return (
       <LegalPage
         page={currentPage}
-        isAuthenticated={Boolean(currentUser && (currentOrg || isSuperAdmin))}
+        isAuthenticated={Boolean(currentUser && (hasDashboardAccess || isSuperAdmin))}
         onNavigatePage={navigateToPage}
       />
     );
   }
 
-  // Global Loading State
-  if (loading) {
+  // Global Loading State (also guards transient frame before tenantStatus settles for signed-in user)
+  if (loading || (currentUser && tenantStatus === 'loading')) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-[#070e17] text-slate-900 dark:text-white" dir={direction}>
         <div className="text-center space-y-4">
@@ -178,32 +199,51 @@ const AppContent: React.FC = () => {
     </div>
   ) : null;
 
-  // Verified Super Admin Read-Only Monitoring Portal (amoal2030@gmail.com only)
+  // Verified Super Admin Portal (amoal2030@gmail.com only)
   if (currentUser && isSuperAdmin && superAdminPortalActive) {
     return (
       <>
         {NoticeBanner}
         <SuperAdminDashboard
-          onSwitchToTenantDashboard={currentOrg ? () => setSuperAdminPortalActive(false) : undefined}
-          onSwitchToOnboarding={!currentOrg && needsOnboarding ? () => setSuperAdminPortalActive(false) : undefined}
+          onSwitchToTenantDashboard={hasDashboardAccess ? () => setSuperAdminPortalActive(false) : undefined}
           onNavigatePage={navigateToPage}
         />
       </>
     );
   }
 
-  // First-time Manager Setup Screen
-  if (currentUser && needsOnboarding) {
+  // Verified Google user with no user doc and no invite -> New Subscription Request
+  if (currentUser && tenantStatus === 'subscription_request_required') {
     return (
       <>
         {NoticeBanner}
-        <OrganizationOnboarding />
+        <SubscriptionRequestView />
       </>
     );
   }
 
-  // Authenticated Organization Dashboard (Manager or Employee)
-  if (currentUser && currentOrg) {
+  // Expired / Suspended / Not-Started organization subscription gate
+  if (currentUser && tenantStatus === 'subscription_blocked') {
+    return (
+      <>
+        {NoticeBanner}
+        <SubscriptionBlockedView />
+      </>
+    );
+  }
+
+  // Cancelled / Already-used invite or Verification / Permission / Network error
+  if (currentUser && (tenantStatus === 'invite_blocked' || tenantStatus === 'access_error')) {
+    return (
+      <>
+        {NoticeBanner}
+        <TenantAccessNoticeView />
+      </>
+    );
+  }
+
+  // Authenticated & Active Organization Dashboard (Strict gate: active user + active/legacy org)
+  if (hasDashboardAccess) {
     return (
       <>
         {NoticeBanner}
@@ -255,16 +295,16 @@ const AppContent: React.FC = () => {
 
           <div className="text-[11px] text-slate-300 flex items-center gap-1.5">
             <CheckCircle2 className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-            <span>المرحلة 2: ربط Firebase وقواعد البيانات والأمان (مكتملة بنجاح)</span>
+            <span>المرحلة 3: بوابة الاشتراكات وقبول الدعوات المعتمدة (مفعّلة)</span>
           </div>
 
           {showPhasesOverview && (
             <div className="pt-2 border-t border-slate-700 space-y-1.5 text-[11px] text-slate-400">
               <div className="text-amber-400 font-semibold">الميزات الفعالة حالياً:</div>
-              <div>• Firebase Authentication لمصادقة المدير عبر Google والموظف بالبريد.</div>
-              <div>• إنشاء حساب الموظف بواسطة المدير دون تسجيل خروج المدير.</div>
-              <div>• Cloud Firestore مهيأة بهيكل Multi-Tenant وعزل تام بين المؤسسات.</div>
-              <div>• نشر قواعد الأمان Firestore Security Rules.</div>
+              <div>• مصادقة المدير عبر Google والموظف بالبريد مع فرض صلاحية الاشتراك.</div>
+              <div>• تفعيل المؤسسات الجديدة عبر دعوات المديرين المعتمدة ذرياً.</div>
+              <div>• طلب الاشتراك والتجديد عبر واتساب مع إغلاق فوري عند الانتهاء أو الإيقاف.</div>
+              <div>• عزل Multi-Tenant كامل وقواعد أمان Firestore Security Rules صارمة.</div>
             </div>
           )}
         </div>

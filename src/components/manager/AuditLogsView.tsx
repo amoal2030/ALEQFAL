@@ -1,6 +1,7 @@
 import React from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
+import { getUserRoleLabel } from '../../utils/permissions';
 import { ShieldCheck, History, User, Clock, FileText } from 'lucide-react';
 
 export const AuditLogsView: React.FC = () => {
@@ -29,9 +30,15 @@ export const AuditLogsView: React.FC = () => {
             CLOSING_SUBMITTED_FOR_REVIEW: { label: 'إرسال إقفال', color: 'text-sky-400 bg-sky-500/10 border-sky-500/20' },
             CLOSING_DRAFT_SAVED: { label: 'حفظ مسودة', color: 'text-slate-400 bg-slate-500/10 border-slate-500/20' },
             BRANCH_CREATED: { label: 'إنشاء فرع', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+            CLOSING_ADMIN_CORRECTED: { label: 'تصحيح إداري', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
             EMPLOYEE_PROVISIONED: { label: 'إنشاء موظف', color: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20' },
+            EMPLOYEE_UPDATED: { label: 'تحديث موظف', color: 'text-sky-400 bg-sky-500/10 border-sky-500/20' },
+            EMPLOYEE_BRANCH_CHANGED: { label: 'نقل فرع موظف', color: 'text-sky-400 bg-sky-500/10 border-sky-500/20' },
+            EMPLOYEE_ROLE_PERMISSIONS_UPDATED: { label: 'تعديل دور وصلاحيات', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+            EMPLOYEE_PASSWORD_RESET_SENT: { label: 'إرسال استعادة كلمة مرور', color: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20' },
             EMPLOYEE_ACTIVATED: { label: 'تنشيط موظف', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
             EMPLOYEE_DISABLED: { label: 'تعطيل موظف', color: 'text-rose-400 bg-rose-500/10 border-rose-500/20' },
+            EMPLOYEE_ARCHIVED: { label: 'أرشفة موظف', color: 'text-rose-400 bg-rose-500/10 border-rose-500/20' },
             ORGANIZATION_ESTABLISHED: { label: 'تأسيس مؤسسة', color: 'text-amber-300 bg-amber-500/15 border-amber-500/30' },
           };
 
@@ -58,7 +65,7 @@ export const AuditLogsView: React.FC = () => {
                 <User className="w-3.5 h-3.5 text-slate-400" />
                 <span className="font-bold text-slate-900 dark:text-white">{log.actorName}</span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
-                  {log.actorRole === 'manager' ? 'المدير' : 'موظف'}
+                  {getUserRoleLabel(log.actorRole)}
                 </span>
               </div>
 
@@ -96,9 +103,15 @@ export const AuditLogsView: React.FC = () => {
                   CLOSING_SUBMITTED_FOR_REVIEW: { label: 'إرسال إقفال', color: 'text-sky-400 bg-sky-500/10' },
                   CLOSING_DRAFT_SAVED: { label: 'حفظ مسودة', color: 'text-slate-400 bg-slate-500/10' },
                   BRANCH_CREATED: { label: 'إنشاء فرع', color: 'text-amber-400 bg-amber-500/10' },
+                  CLOSING_ADMIN_CORRECTED: { label: 'تصحيح إداري', color: 'text-amber-400 bg-amber-500/10' },
                   EMPLOYEE_PROVISIONED: { label: 'إنشاء موظف', color: 'text-indigo-400 bg-indigo-500/10' },
+                  EMPLOYEE_UPDATED: { label: 'تحديث موظف', color: 'text-sky-400 bg-sky-500/10' },
+                  EMPLOYEE_BRANCH_CHANGED: { label: 'نقل فرع موظف', color: 'text-sky-400 bg-sky-500/10' },
+                  EMPLOYEE_ROLE_PERMISSIONS_UPDATED: { label: 'تعديل دور وصلاحيات', color: 'text-amber-400 bg-amber-500/10' },
+                  EMPLOYEE_PASSWORD_RESET_SENT: { label: 'إرسال استعادة كلمة مرور', color: 'text-indigo-400 bg-indigo-500/10' },
                   EMPLOYEE_ACTIVATED: { label: 'تنشيط موظف', color: 'text-amber-400 bg-amber-500/10' },
                   EMPLOYEE_DISABLED: { label: 'تعطيل موظف', color: 'text-rose-400 bg-rose-500/10' },
+                  EMPLOYEE_ARCHIVED: { label: 'أرشفة موظف', color: 'text-rose-400 bg-rose-500/10' },
                   ORGANIZATION_ESTABLISHED: { label: 'تأسيس مؤسسة', color: 'text-amber-300 bg-amber-500/15' },
                 };
 
@@ -115,7 +128,7 @@ export const AuditLogsView: React.FC = () => {
                     <td className="p-4 font-sans font-semibold text-slate-900 dark:text-white">
                       <div>{log.actorName}</div>
                       <div className="text-[10px] text-slate-400 font-normal">
-                        {log.actorRole === 'manager' ? 'المدير' : 'موظف'}
+                        {getUserRoleLabel(log.actorRole)}
                       </div>
                     </td>
                     <td className="p-4 font-sans">

@@ -13,6 +13,7 @@ import { useTheme } from '../context/ThemeContext';
 import { SupportedLanguage } from '../types';
 import { getActiveDriveSession } from '../services/driveService';
 import { AppPageRoute, buildLegalPath } from '../utils/legalRoutes';
+import { getUserRoleLabel, resolveEffectivePermissions } from '../utils/permissions';
 import {
   Building2,
   Lock,
@@ -58,13 +59,32 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
   const { theme, toggleTheme } = useTheme();
 
   const isManager = userProfile?.role === 'manager';
+  const effectivePerms = resolveEffectivePermissions(userProfile);
+  const canSupervisorReviewClosings =
+    !isManager &&
+    userProfile?.role === 'supervisor' &&
+    (effectivePerms.canApproveClosings || effectivePerms.canViewAllClosings);
+  const canSupervisorViewReports =
+    !isManager &&
+    userProfile?.role === 'supervisor' &&
+    effectivePerms.canViewFinancialReports;
+  const hasSupervisorExtraTabs = canSupervisorReviewClosings || canSupervisorViewReports;
 
   // Manager navigation tab state (including new Settings tab)
   const [managerTab, setManagerTab] = useState<'overview' | 'closings' | 'reports' | 'branches' | 'employees' | 'audit' | 'settings'>('overview');
+  const [staffTab, setStaffTab] = useState<'workspace' | 'closings' | 'reports'>('workspace');
   const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [hasActiveDriveSession, setHasActiveDriveSession] = useState<boolean>(() =>
     Boolean(getActiveDriveSession(currentOrg?.id))
   );
+
+  useEffect(() => {
+    if (staffTab === 'closings' && !canSupervisorReviewClosings) {
+      setStaffTab('workspace');
+    } else if (staffTab === 'reports' && !canSupervisorViewReports) {
+      setStaffTab('workspace');
+    }
+  }, [staffTab, canSupervisorReviewClosings, canSupervisorViewReports]);
 
   useEffect(() => {
     const syncSessionFlag = () => setHasActiveDriveSession(Boolean(getActiveDriveSession(currentOrg?.id)));
@@ -99,11 +119,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
                         : 'bg-sky-500/15 text-sky-400 border-sky-500/30'
                     }`}
                   >
-                    {isManager ? 'المدير' : 'موظف'}
+                    {getUserRoleLabel(userProfile?.role, language)}
                   </span>
                 </div>
                 <div className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5 truncate">
-                  <span className="truncate">{currentBranch?.name || 'الفرع الرئيسي'}</span>
+                  <span className="truncate">
+                    {userProfile?.role === 'manager' || userProfile?.role === 'supervisor'
+                      ? 'جميع فروع المؤسسة'
+                      : currentBranch?.name || 'الفرع الرئيسي'}
+                  </span>
                   <span>•</span>
                   <span>{currentOrg?.currency || 'SAR'}</span>
                 </div>
@@ -333,6 +357,59 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
               </div>
             </div>
           )}
+
+          {/* Optional Supervisor Sub-Navigation (Shown ONLY if manager explicitly opted in extra tabs) */}
+          {!isManager && hasSupervisorExtraTabs && (
+            <div className="py-2.5 border-t border-slate-100 dark:border-slate-800/80 no-print flex items-center gap-1.5 overflow-x-auto text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setStaffTab('workspace')}
+                className={`px-3.5 py-2 rounded-xl transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                  staffTab === 'workspace'
+                    ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-bold'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>تسجيل الورديات</span>
+              </button>
+
+              {canSupervisorReviewClosings && (
+                <button
+                  type="button"
+                  onClick={() => setStaffTab('closings')}
+                  className={`px-3.5 py-2 rounded-xl transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                    staffTab === 'closings'
+                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>مراجعة الإقفالات</span>
+                  {pendingCount > 0 && (
+                    <span className="w-4 h-4 rounded-full bg-amber-500 text-slate-950 text-[10px] flex items-center justify-center font-bold">
+                      {pendingCount}
+                    </span>
+                  )}
+                </button>
+              )}
+
+              {canSupervisorViewReports && (
+                <button
+                  type="button"
+                  onClick={() => setStaffTab('reports')}
+                  className={`px-3.5 py-2 rounded-xl transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                    staffTab === 'reports'
+                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>التقارير المالية</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </header>
 
@@ -398,8 +475,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
             {managerTab === 'settings' && <SettingsView />}
           </>
         ) : (
-          /* Dedicated Employee View */
-          <EmployeeDashboard />
+          /* Staff / Supervisor / Branch Manager View Router */
+          <>
+            {staffTab === 'closings' && canSupervisorReviewClosings ? (
+              <ClosingsReview />
+            ) : staffTab === 'reports' && canSupervisorViewReports ? (
+              <FinancialReports />
+            ) : (
+              <EmployeeDashboard />
+            )}
+          </>
         )}
       </main>
 

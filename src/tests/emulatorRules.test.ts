@@ -447,32 +447,70 @@ async function runTestSuite() {
   }
 
   // -------------------------------------------------------------------------------------------------
-  // 11. نجاح تأسيس المؤسسة الأولي بالدفعة الذرية (Organization Onboarding Batch)
+  // 11. رفض التأسيس الذاتي غير المعتمد ونجاح تأسيس المؤسسة عبر دعوة المدير الرئيسي
   // -------------------------------------------------------------------------------------------------
   try {
-    const newOwnerUid = 'new_owner_99';
-    const newOwnerDb = testEnv.authenticatedContext(newOwnerUid).firestore();
-    const batch = newOwnerDb.batch();
+    const firebaseCompat = await import('firebase/compat/app');
+    await import('firebase/compat/firestore');
+    const serverTs = firebaseCompat.default.firestore.FieldValue.serverTimestamp();
+    const Timestamp = firebaseCompat.default.firestore.Timestamp;
 
-    const newOrgId = 'org_new_owner_99_mwb1';
-    const newBranchId = 'br_new_01';
-    const newLogId = 'log_estab_01';
+    // 11a. Unapproved self-onboarding MUST fail in Phase 2
+    const unapprovedUid = 'new_owner_99';
+    const unapprovedDb = testEnv.authenticatedContext(unapprovedUid, {
+      email: 'unapproved@example.com',
+      email_verified: true,
+    }).firestore();
+    const selfBatch = unapprovedDb.batch();
+    const selfOrgId = 'org_new_owner_99_mwb1';
+    selfBatch.set(unapprovedDb.doc(`organizations/${selfOrgId}`), {
+      id: selfOrgId,
+      name: 'مؤسسة ذاتية غير معتمدة',
+      activityType: 'retail',
+      currency: 'SAR',
+      ownerId: unapprovedUid,
+      ownerEmail: 'unapproved@example.com',
+      ownerName: 'مستخدم غير معتمد',
+      driveConnected: false,
+      createdAt: '2026-11-10T16:20:00Z',
+      updatedAt: '2026-11-10T16:20:00Z',
+    });
+    await assertFails(selfBatch.commit());
 
-    batch.set(newOwnerDb.doc(`organizations/${newOrgId}`), {
+    // 11b. Super Admin creates org + main branch + pending invite, then verified manager atomically claims it
+    const saDb = testEnv.authenticatedContext('sa_uid_01', {
+      email: 'amoal2030@gmail.com',
+      email_verified: true,
+    }).firestore();
+    const invitedEmail = 'owner@example.com';
+    const newOrgId = 'org_invited_99_mwb1';
+    const newBranchId = 'br_invited_01';
+    const nowMs = Date.now();
+    const startTs = Timestamp.fromMillis(nowMs - 60_000);
+    const endTs = Timestamp.fromMillis(nowMs + 7 * 24 * 60 * 60 * 1000);
+
+    const saBatch = saDb.batch();
+    saBatch.set(saDb.doc(`organizations/${newOrgId}`), {
       id: newOrgId,
       name: 'مؤسسة الرياض التجارية',
       commercialRegistration: '1010123456',
       activityType: 'retail',
       currency: 'SAR',
-      ownerId: newOwnerUid,
-      ownerEmail: 'owner@example.com',
+      ownerId: '',
+      ownerEmail: invitedEmail,
       ownerName: 'المالك الجديد',
       driveConnected: false,
+      isActive: true,
+      subscriptionPlan: 'trial_7d',
+      subscriptionStatus: 'active',
+      subscriptionStartAt: startTs,
+      subscriptionEndAt: endTs,
+      subscriptionUpdatedAt: serverTs,
+      subscriptionUpdatedBy: 'amoal2030@gmail.com',
       createdAt: '2026-11-10T16:20:00Z',
       updatedAt: '2026-11-10T16:20:00Z',
     });
-
-    batch.set(newOwnerDb.doc(`branches/${newBranchId}`), {
+    saBatch.set(saDb.doc(`branches/${newBranchId}`), {
       id: newBranchId,
       orgId: newOrgId,
       name: 'الفرع الرئيسي',
@@ -481,11 +519,42 @@ async function runTestSuite() {
       isActive: true,
       createdAt: '2026-11-10T16:20:00Z',
     });
+    saBatch.set(saDb.doc(`managerInvites/${invitedEmail}`), {
+      id: invitedEmail,
+      email: invitedEmail,
+      emailNormalized: invitedEmail,
+      orgId: newOrgId,
+      orgName: 'مؤسسة الرياض التجارية',
+      managerName: 'المالك الجديد',
+      role: 'manager',
+      status: 'pending',
+      createdAt: serverTs,
+      createdBy: 'amoal2030@gmail.com',
+      updatedAt: serverTs,
+    });
+    await assertSucceeds(saBatch.commit());
 
-    batch.set(newOwnerDb.doc(`users/${newOwnerUid}`), {
+    const newOwnerUid = 'new_owner_99';
+    const newOwnerDb = testEnv.authenticatedContext(newOwnerUid, {
+      email: invitedEmail,
+      email_verified: true,
+    }).firestore();
+    const claimBatch = newOwnerDb.batch();
+    claimBatch.update(newOwnerDb.doc(`organizations/${newOrgId}`), {
+      ownerId: newOwnerUid,
+      ownerName: 'المالك الجديد',
+      updatedAt: '2026-11-10T16:25:00Z',
+    });
+    claimBatch.update(newOwnerDb.doc(`managerInvites/${invitedEmail}`), {
+      status: 'accepted',
+      acceptedByUid: newOwnerUid,
+      acceptedAt: serverTs,
+      updatedAt: serverTs,
+    });
+    claimBatch.set(newOwnerDb.doc(`users/${newOwnerUid}`), {
       uid: newOwnerUid,
       orgId: newOrgId,
-      email: 'owner@example.com',
+      email: invitedEmail,
       displayName: 'المالك الجديد',
       role: 'manager',
       isActive: true,
@@ -497,11 +566,10 @@ async function runTestSuite() {
         canManageEmployees: true,
         canExportReports: true,
       },
-      createdAt: '2026-11-10T16:20:00Z',
+      createdAt: '2026-11-10T16:25:00Z',
     });
-
-    batch.set(newOwnerDb.doc(`auditLogs/${newLogId}`), {
-      id: newLogId,
+    claimBatch.set(newOwnerDb.doc('auditLogs/log_estab_01'), {
+      id: 'log_estab_01',
       orgId: newOrgId,
       actorId: newOwnerUid,
       actorName: 'المالك الجديد',
@@ -509,12 +577,12 @@ async function runTestSuite() {
       action: 'ORGANIZATION_ESTABLISHED',
       targetType: 'organization',
       targetId: newOrgId,
-      details: 'تم تأسيس المؤسسة بنجاح مع الفرع الرئيسي',
-      timestamp: '2026-11-10T16:20:00Z',
+      details: 'تم تفعيل حساب المدير وتأسيس المؤسسة بناءً على دعوة معتمدة',
+      timestamp: '2026-11-10T16:25:00Z',
     });
 
-    await assertSucceeds(batch.commit());
-    console.log('✔ Test 11 PASSED: Brand new owner successfully completes organization onboarding batch.');
+    await assertSucceeds(claimBatch.commit());
+    console.log('✔ Test 11 PASSED: Unapproved self-onboarding blocked; Super Admin invite + atomic manager claim succeeded.');
   } catch (err: any) {
     console.error('✖ Test 11 FAILED:', err.message);
     process.exit(1);

@@ -321,19 +321,26 @@ async function runSuperAdminPhase1Tests() {
     await assertFails(empAlphaDb.collection('users').get());
     console.log('✔ Test 5 PASSED: Regular employee cannot browse other organizations.');
 
-    // 6. Super Admin CANNOT modify or delete other organizations, employees, branches, or closings in Phase 1
-    await assertFails(saWithOrgDb.doc('organizations/org_alpha').update({ isActive: false }));
+    // 6. Phase 4.2: Super Admin manages org & branch lifecycle (requiring valid 30d grace on suspend), while staying blocked from active org closings & org users
+    await assertSucceeds(saWithOrgDb.doc('organizations/org_alpha').update({ isActive: false }));
+    await assertSucceeds(saWithOrgDb.doc('organizations/org_alpha').update({ isActive: true }));
     await assertFails(saWithOrgDb.doc('organizations/org_alpha').delete());
     await assertFails(saWithOrgDb.doc('users/emp_alpha').update({ isActive: false }));
     await assertFails(saWithOrgDb.doc('users/emp_alpha').delete());
+    // Bare branch deactivation without lifecycleStatus/suspendedAt/gracePeriodEndsAt (>= 30d) MUST fail
     await assertFails(saWithOrgDb.doc('branches/br_alpha_01').update({ isActive: false }));
     await assertFails(saWithOrgDb.doc('branches/br_alpha_01').delete());
+    // Org manager & onlak2030 CANNOT suspend/delete branches either
+    await assertFails(mgrAlphaDb.doc('branches/br_alpha_01').update({ isActive: false }));
+    await assertFails(mgrAlphaDb.doc('branches/br_alpha_01').delete());
+    await assertFails(onlakDb.doc('branches/br_alpha_01').update({ isActive: false }));
     await assertFails(saWithOrgDb.doc('closings/cls_beta_01').update({ status: 'approved' }));
     await assertFails(saWithOrgDb.doc('closings/cls_beta_01').delete());
+    await assertFails(saNoDocDb.collection('closings').get());
     // Also verify no one can promote a user doc to role: 'super_admin'
     await assertFails(mgrAlphaDb.doc('users/emp_alpha').update({ role: 'super_admin' }));
     await assertFails(empAlphaDb.doc('users/emp_alpha').update({ role: 'super_admin' }));
-    console.log('✔ Test 6 PASSED: Super Admin cannot modify/delete other organizations or users in Phase 1, and role promotion is blocked.');
+    console.log('✔ Test 6 PASSED: Super Admin enforces valid 30d branch grace rules while remaining blocked from active org closings/users & role promotion.');
 
     // 7. Manager and Employee retain all existing permissions inside their own organization (plus Super Admin retains access to their own org)
     await assertSucceeds(mgrAlphaDb.doc('organizations/org_alpha').get());

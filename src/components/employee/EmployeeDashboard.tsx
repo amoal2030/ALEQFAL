@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { ShiftClosing } from '../../types';
+import { resolveEffectivePermissions } from '../../utils/permissions';
 import {
   calculateShiftTotals,
   formatCurrency,
@@ -30,6 +31,7 @@ export const EmployeeDashboard: React.FC = () => {
     currentUser,
     userProfile,
     currentOrg,
+    branches,
     currentBranch,
     closings,
     driveReadiness,
@@ -37,6 +39,31 @@ export const EmployeeDashboard: React.FC = () => {
     logout,
   } = useAuth();
   const { language, t } = useLanguage();
+  const effectivePerms = resolveEffectivePermissions(userProfile);
+  const canSelectAnyBranch = effectivePerms.hasOrgWideBranchScope;
+  const selectableBranches = branches.filter(
+    (b) => b.isActive !== false && b.lifecycleStatus !== 'purged_from_db'
+  );
+  const [selectedBranchId, setSelectedBranchId] = useState<string>(
+    () => currentBranch?.id || selectableBranches[0]?.id || ''
+  );
+
+  useEffect(() => {
+    if (!canSelectAnyBranch) {
+      if (currentBranch?.id) setSelectedBranchId(currentBranch.id);
+      return;
+    }
+    if (
+      selectableBranches.length > 0 &&
+      !selectableBranches.some((b) => b.id === selectedBranchId)
+    ) {
+      setSelectedBranchId(currentBranch?.id || selectableBranches[0].id);
+    }
+  }, [canSelectAnyBranch, currentBranch?.id, selectableBranches, selectedBranchId]);
+
+  const effectiveBranch = canSelectAnyBranch
+    ? selectableBranches.find((b) => b.id === selectedBranchId) || currentBranch || selectableBranches[0] || null
+    : currentBranch;
 
   // Employee's own closings
   const myClosings = closings.filter((c) => c.employeeId === currentUser?.uid);
@@ -60,12 +87,17 @@ export const EmployeeDashboard: React.FC = () => {
   const calc = calculateShiftTotals(cashSales, cardSales, expenses);
 
   const handleSubmit = async (targetStatus: 'draft' | 'pending_review') => {
+    if (!effectivePerms.canCreateClosing) {
+      setErrorMsg('صلاحية إنشاء إقفالات الورديات غير مفعلة لحسابك من قبل مدير المؤسسة.');
+      return;
+    }
+
     if (!driveReadiness.isReady) {
       setErrorMsg(driveReadiness.message);
       return;
     }
 
-    if (!currentBranch) {
+    if (!effectiveBranch) {
       setErrorMsg('لم يتم تعيين فرع لحسابك. يرجى التواصل مع المدير العام.');
       return;
     }
@@ -81,8 +113,8 @@ export const EmployeeDashboard: React.FC = () => {
 
     try {
       const saved = await submitShiftClosing({
-        branchId: currentBranch.id,
-        branchName: currentBranch.name,
+        branchId: effectiveBranch.id,
+        branchName: effectiveBranch.name,
         date,
         period,
         cashSales: calc.cashSales,
@@ -133,10 +165,16 @@ export const EmployeeDashboard: React.FC = () => {
               المؤسسة: {currentOrg?.name}
             </span>
             <span className="hidden sm:inline">•</span>
-            <span className="flex items-center gap-1.5 font-bold text-sky-400">
-              <Lock className="w-3.5 h-3.5 shrink-0" />
-              الفرع: {currentBranch?.name || 'الفرع الرئيسي'}
-            </span>
+            {canSelectAnyBranch ? (
+              <span className="flex items-center gap-1.5 font-bold text-sky-400">
+                الفرع: جميع فروع المؤسسة ({selectableBranches.length})
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 font-bold text-sky-400">
+                <Lock className="w-3.5 h-3.5 shrink-0" />
+                الفرع: {effectiveBranch?.name || 'الفرع الرئيسي'}
+              </span>
+            )}
           </div>
         </div>
 
@@ -212,7 +250,36 @@ export const EmployeeDashboard: React.FC = () => {
             </div>
           )}
 
+          {!effectivePerms.canCreateClosing ? (
+            <div className="p-5 rounded-2xl bg-slate-100 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300 space-y-2">
+              <div className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                <Lock className="w-4 h-4 text-amber-500" />
+                <span>صلاحية إنشاء إقفالات الورديات غير مفعلة لهذا الحساب</span>
+              </div>
+              <p className="leading-relaxed">
+                بصفتك مسؤولاً على مستوى المؤسسة، تبقى الصلاحيات الاختيارية معطلة افتراضياً حتى يقوم مدير المؤسسة بتفعيلها لك من شاشة إدارة الموظفين.
+              </p>
+            </div>
+          ) : (
           <fieldset disabled={!driveReadiness.isReady || loading} className="space-y-4 disabled:opacity-60">
+            {canSelectAnyBranch && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  الفرع المستهدف للإقفال *
+                </label>
+                <select
+                  value={effectiveBranch?.id || ''}
+                  onChange={(e) => setSelectedBranchId(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white"
+                >
+                  {selectableBranches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name} ({b.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             {/* Date & Period */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -377,6 +444,7 @@ export const EmployeeDashboard: React.FC = () => {
               </button>
             </div>
           </fieldset>
+          )}
         </div>
 
         {/* Employee Summary & Info: 5 Cols */}

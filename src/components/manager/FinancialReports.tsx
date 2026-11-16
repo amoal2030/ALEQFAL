@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { ShiftClosing } from '../../types';
+import { resolveEffectivePermissions } from '../../utils/permissions';
 import {
   formatCurrency,
   formatDate,
@@ -31,8 +32,10 @@ import {
 } from 'lucide-react';
 
 export const FinancialReports: React.FC = () => {
-  const { closings, branches, employees, currentOrg } = useAuth();
+  const { closings, branches, employees, currentOrg, userProfile } = useAuth();
   const { language, t } = useLanguage();
+  const effectivePerms = resolveEffectivePermissions(userProfile);
+  const canExport = effectivePerms.canExportReports;
 
   // Filter States: DEFAULT TO 'approved' TO ENSURE STRICT FINANCIAL INTEGRITY
   const [statusScope, setStatusScope] = useState<'approved' | 'all' | 'pending_review' | 'draft'>('approved');
@@ -126,32 +129,38 @@ export const FinancialReports: React.FC = () => {
           </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={handleExportCSV}
-            className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-800 dark:text-white bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 shadow-sm flex items-center gap-2 transition-colors"
-          >
-            <Download className="w-4 h-4 text-amber-500" />
-            <span>تصدير (CSV)</span>
-          </button>
+        {canExport ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={handleExportCSV}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-800 dark:text-white bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 shadow-sm flex items-center gap-2 transition-colors"
+            >
+              <Download className="w-4 h-4 text-amber-500" />
+              <span>تصدير (CSV)</span>
+            </button>
 
-          <button
-            onClick={handleExportXlsx}
-            disabled={exportingXlsx}
-            className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-800 dark:text-white bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-emerald-500/40 shadow-sm flex items-center gap-2 transition-colors disabled:opacity-50"
-          >
-            <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
-            <span>{exportingXlsx ? 'جاري التوليد...' : 'تصدير Excel (.xlsx)'}</span>
-          </button>
+            <button
+              onClick={handleExportXlsx}
+              disabled={exportingXlsx}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-800 dark:text-white bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-emerald-500/40 shadow-sm flex items-center gap-2 transition-colors disabled:opacity-50"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
+              <span>{exportingXlsx ? 'جاري التوليد...' : 'تصدير Excel (.xlsx)'}</span>
+            </button>
 
-          <button
-            onClick={handlePrint}
-            className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 shadow-sm flex items-center gap-2 transition-all active:scale-95"
-          >
-            <Printer className="w-4 h-4 text-slate-950" />
-            <span>طباعة التقرير / PDF</span>
-          </button>
-        </div>
+            <button
+              onClick={handlePrint}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 shadow-sm flex items-center gap-2 transition-all active:scale-95"
+            >
+              <Printer className="w-4 h-4 text-slate-950" />
+              <span>طباعة التقرير / PDF</span>
+            </button>
+          </div>
+        ) : (
+          <div className="px-3 py-2 rounded-xl text-xs bg-slate-100 dark:bg-slate-800/70 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700">
+            وضع العرض فقط — التصدير متاح لمن يملك صلاحية تصدير التقارير
+          </div>
+        )}
       </div>
 
       {/* Financial Scope Badge & Integrity Notice */}
