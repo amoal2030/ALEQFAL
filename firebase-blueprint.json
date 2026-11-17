@@ -805,6 +805,67 @@
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "actorEmail", "actorUid", "action", "targetType", "targetId", "details", "timestamp"]
+    },
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "Role-scoped, tenant-isolated real-time notification document with deterministic dedupKey ID and per-user readBy map",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "dedupKey": { "type": "string", "maxLength": 200 },
+        "category": {
+          "type": "string",
+          "enum": ["employees", "closings", "schedule_requests", "purchases_suppliers", "org_branches", "security_admin"]
+        },
+        "type": { "type": "string", "maxLength": 80 },
+        "severity": { "type": "string", "enum": ["info", "success", "warning", "critical"] },
+        "audienceScope": {
+          "type": "string",
+          "enum": ["user", "org_manager", "org_supervisor_permission", "branch_manager", "super_admin"]
+        },
+        "orgId": { "type": "string" },
+        "relatedOrgId": { "type": "string" },
+        "branchId": { "type": "string" },
+        "branchName": { "type": "string", "maxLength": 120 },
+        "recipientUid": { "type": "string" },
+        "requiredPermission": { "type": "string", "maxLength": 64 },
+        "secondaryPermission": { "type": "string", "maxLength": 64 },
+        "feedKeys": { "type": "array" },
+        "actorUid": { "type": "string" },
+        "actorName": { "type": "string", "maxLength": 120 },
+        "actorRole": { "type": "string", "maxLength": 40 },
+        "title": { "type": "string", "maxLength": 160 },
+        "body": { "type": "string", "maxLength": 1000 },
+        "targetType": {
+          "type": "string",
+          "enum": ["employee", "closing", "schedule_request", "purchase", "supplier", "branch", "organization", "drive", "security"]
+        },
+        "targetId": { "type": "string" },
+        "navTarget": { "type": "object" },
+        "readBy": { "type": "object" },
+        "isRead": { "type": "boolean" },
+        "readAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "dedupKey",
+        "category",
+        "type",
+        "severity",
+        "audienceScope",
+        "orgId",
+        "feedKeys",
+        "actorUid",
+        "actorName",
+        "actorRole",
+        "title",
+        "body",
+        "readBy",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -851,6 +912,10 @@
     "/platformAuditLogs/{logId}": {
       "schema": "PlatformAuditLog",
       "description": "Immutable Super Admin platform audit trail"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "AppNotification",
+      "description": "Role-scoped real-time notifications with deterministic deduplicated IDs and per-user read tracking"
     }
   }
 }

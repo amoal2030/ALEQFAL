@@ -6,7 +6,7 @@ import {
   SuperAdminOverviewData,
   UserProfile,
 } from '../types';
-import { SUPER_ADMIN_EMAIL } from './superAdmin';
+import { isVerifiedSuperAdmin, SUPER_ADMIN_EMAIL } from './superAdmin';
 
 export const TARGET_FIRESTORE_DATABASE_ID = 'ai-studio-aleqfal-cf1d4528-a7af-44d6-b623-8a556a614788';
 
@@ -108,6 +108,26 @@ export async function ensureVerifiedSuperAdminToken(
     deniedCollections: [],
     failedCollections: [],
   });
+}
+
+/**
+ * Verifies identity (`amoal2030@gmail.com` + `emailVerified === true`) and refreshes/validates
+ * Firebase Auth JWT claims via `ensureVerifiedSuperAdminToken` before attaching any Super Admin
+ * realtime listener (`onSnapshot`). Rejects `onlak2030@gmail.com`, unverified accounts, and
+ * stale/unverified tokens cleanly without ever starting the listener.
+ */
+export async function verifySuperAdminForRealtimeListener(
+  user: SuperAdminAuthUserLike | null | undefined
+): Promise<{ refreshed: boolean; claimsVerified: boolean }> {
+  if (!user || !isVerifiedSuperAdmin(user)) {
+    throw new SuperAdminMonitoringError({
+      message: 'غير مصرح بالوصول: الحساب الحالي ليس المدير الرئيسي الموثق amoal2030@gmail.com.',
+      code: 'unauthorized-super-admin',
+      deniedCollections: [],
+      failedCollections: [],
+    });
+  }
+  return ensureVerifiedSuperAdminToken(user);
 }
 
 function toSortableTime(value: unknown): number {

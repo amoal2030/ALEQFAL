@@ -32,6 +32,10 @@ import {
   getDocsFromServer,
   onSnapshot,
   orderBy,
+  limit,
+  startAt,
+  endAt,
+  documentId,
   serverTimestamp,
   writeBatch,
   runTransaction,
@@ -64,12 +68,14 @@ import {
   Purchase,
   AttachmentItem,
   UserRole,
+  AppNotification,
 } from '../types';
 import { isVerifiedSuperAdmin } from '../utils/superAdmin';
 import {
   fetchSuperAdminOverviewWithDiagnostics,
   isPermissionDeniedError,
   TARGET_FIRESTORE_DATABASE_ID,
+  verifySuperAdminForRealtimeListener,
 } from '../utils/superAdminMonitoring';
 import {
   calculateSubscriptionEndDate,
@@ -129,6 +135,28 @@ import {
   downloadXlsxBytes,
   generateClosingExcelWorkbook,
 } from '../services/excelReportService';
+import {
+  buildClosingAdminCorrectedNotifications,
+  buildClosingReviewedNotifications,
+  buildClosingSubmittedNotifications,
+  buildEmployeeLifecycleNotifications,
+  buildOrgThresholdNotifications,
+  buildSecurityAdminNotification,
+  buildSuperAdminPlatformNotification,
+  buildSuperAdminThresholdNotifications,
+  getNotificationSoundEnabled,
+  isNotificationReadByUser,
+  mergeAndSortNotifications,
+  NOTIFICATION_FEED_PAGE_SIZE,
+  NotificationPersistenceTracker,
+  NotificationSoundController,
+  resetNotificationRuntimeControllers,
+  resolveAuthorizedNotificationCheckFeedKey,
+  resolveFeedKeysForUser,
+  setNotificationSoundEnabled,
+  showForegroundBrowserNotification,
+  unlockNotificationAudio,
+} from '../utils/notifications';
 
 interface AuthContextType {
   currentUser: FirebaseUser | null;
@@ -338,6 +366,18 @@ interface AuthContextType {
     deletedAttachments: number;
     deletedClosingArchives: number;
   }>;
+  // Phase 4.6 — Real-time Notification System
+  tenantNotifications: AppNotification[];
+  superAdminNotifications: AppNotification[];
+  notificationsLoading: boolean;
+  tenantNotificationsHasMore: boolean;
+  superAdminNotificationsHasMore: boolean;
+  notificationSoundEnabled: boolean;
+  toggleNotificationSound: () => void;
+  markNotificationAsRead: (notificationId: string) => Promise<void>;
+  markAllNotificationsAsRead: (surface: 'tenant' | 'super_admin') => Promise<void>;
+  loadMoreNotifications: (surface: 'tenant' | 'super_admin') => void;
+  emitSecurityAccessDeniedAlert: (detail: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -372,6 +412,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [superAdminOverview, setSuperAdminOverview] = useState<SuperAdminOverviewData | null>(null);
   const [superAdminLoading, setSuperAdminLoading] = useState(false);
   const [superAdminError, setSuperAdminError] = useState<string | null>(null);
+  const [tenantNotifications, setTenantNotifications] = useState<AppNotification[]>([]);
+  const [superAdminNotifications, setSuperAdminNotifications] = useState<AppNotification[]>([]);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [tenantNotifLimit, setTenantNotifLimit] = useState(NOTIFICATION_FEED_PAGE_SIZE);
+  const [saNotifLimit, setSaNotifLimit] = useState(NOTIFICATION_FEED_PAGE_SIZE);
+  const [tenantNotificationsHasMore, setTenantNotificationsHasMore] = useState(false);
+  const [superAdminNotificationsHasMore, setSuperAdminNotificationsHasMore] = useState(false);
+  const [notificationSoundEnabled, setNotificationSoundEnabledState] = useState<boolean>(true);
 
   const activeUserUidRef = useRef<string | null>(null);
   const activeOrgIdRef = useRef<string | null>(null);
@@ -379,9 +427,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const prevOrgIdRef = useRef<string | null>(null);
   const loadInFlightRef = useRef<{ uid: string; promise: Promise<void> } | null>(null);
   const inviteClaimLockRef = useRef<string | null>(null);
+  const tenantSoundControllerRef = useRef(new NotificationSoundController());
+  const saSoundControllerRef = useRef(new NotificationSoundController());
+  const notificationSoundEnabledRef = useRef<boolean>(true);
+  const emittedThresholdTrackerRef = useRef(new NotificationPersistenceTracker());
+  const loadedNotificationIdsRef = useRef<Set<string>>(new Set());
 
   activeUserUidRef.current = currentUser?.uid ?? null;
   activeOrgIdRef.current = currentOrg?.id ?? null;
+  notificationSoundEnabledRef.current = notificationSoundEnabled;
+
+  useEffect(() => {
+    const ids = new Set<string>();
+    for (const n of tenantNotifications) {
+      if (n.id) ids.add(n.id);
+    }
+    for (const n of superAdminNotifications) {
+      if (n.id) ids.add(n.id);
+    }
+    loadedNotificationIdsRef.current = ids;
+  }, [tenantNotifications, superAdminNotifications]);
 
   const clearOperationalState = () => {
     setBranches([]);
@@ -390,19 +455,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setClosings([]);
     setClosingArchives([]);
     setAuditLogs([]);
+    setTenantNotifications([]);
+    setTenantNotificationsHasMore(false);
+    setNotificationsLoading(false);
+    setTenantNotifLimit(NOTIFICATION_FEED_PAGE_SIZE);
+    tenantSoundControllerRef.current.reset('');
+    emittedThresholdTrackerRef.current.reset();
+    loadedNotificationIdsRef.current.clear();
   };
 
-  // Enforce strict RAM session & tenant-state isolation whenever Firebase user or organization switches
+  // Enforce strict RAM session & tenant-state isolation whenever Firebase user switches or logs out/in
   useEffect(() => {
     const nextUid = currentUser?.uid ?? null;
-    if (prevUserUidRef.current && prevUserUidRef.current !== nextUid) {
+    if (prevUserUidRef.current !== nextUid) {
       clearDriveSession();
+      resetNotificationRuntimeControllers({
+        tenantController: tenantSoundControllerRef.current,
+        saController: saSoundControllerRef.current,
+        persistenceTracker: emittedThresholdTrackerRef.current,
+        setTenantLimit: setTenantNotifLimit,
+        setSaLimit: setSaNotifLimit,
+      });
     }
     if (!nextUid) {
       clearDriveSession();
+      setTenantNotifications([]);
+      setTenantNotificationsHasMore(false);
+      setSuperAdminNotifications([]);
+      setSuperAdminNotificationsHasMore(false);
+      setNotificationsLoading(false);
+      setNotificationSoundEnabledState(true);
+      resetNotificationRuntimeControllers({
+        tenantController: tenantSoundControllerRef.current,
+        saController: saSoundControllerRef.current,
+        persistenceTracker: emittedThresholdTrackerRef.current,
+        setTenantLimit: setTenantNotifLimit,
+        setSaLimit: setSaNotifLimit,
+      });
+    } else {
+      setNotificationSoundEnabledState(getNotificationSoundEnabled(nextUid));
     }
     prevUserUidRef.current = nextUid;
   }, [currentUser?.uid]);
+
+  useEffect(() => {
+    const handleUnlock = () => unlockNotificationAudio();
+    window.addEventListener('pointerdown', handleUnlock, { passive: true });
+    window.addEventListener('keydown', handleUnlock, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', handleUnlock);
+      window.removeEventListener('keydown', handleUnlock);
+    };
+  }, []);
 
   useEffect(() => {
     const nextOrgId = currentOrg?.id ?? null;
@@ -459,6 +563,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setAccessErrorInfo(null);
         clearOperationalState();
         setSuperAdminOverview(null);
+        setSuperAdminNotifications([]);
+        setSuperAdminNotificationsHasMore(false);
+        resetNotificationRuntimeControllers({
+          tenantController: tenantSoundControllerRef.current,
+          saController: saSoundControllerRef.current,
+          persistenceTracker: emittedThresholdTrackerRef.current,
+          setTenantLimit: setTenantNotifLimit,
+          setSaLimit: setSaNotifLimit,
+        });
         setSuperAdminError(null);
         setNeedsOnboarding(false);
         setTenantStatus('unauthenticated');
@@ -792,6 +905,397 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     JSON.stringify(userProfile?.permissions || {}),
     subscriptionEvaluation?.isAllowed,
   ]);
+
+  // Helper to safely persist notifications without blocking primary actions,
+  // without issuing pre-create getDoc (which produces permission-denied on non-existent docs),
+  // and without probing feeds outside the caller's authorized scope.
+  const persistNonExistingNotificationsSafely = async (items: AppNotification[]) => {
+    if (!items.length) return;
+    try {
+      const activeAuthUser = auth.currentUser;
+      const isSa = isVerifiedSuperAdmin(activeAuthUser);
+      const uid = currentUser?.uid ?? activeAuthUser?.uid ?? null;
+
+      for (const item of items) {
+        await emittedThresholdTrackerRef.current.runOnce(item.id, async () => {
+          if (loadedNotificationIdsRef.current.has(item.id)) {
+            return 'already_exists';
+          }
+
+          const checkFeedKey = resolveAuthorizedNotificationCheckFeedKey(item, {
+            uid,
+            isSuperAdmin: isSa,
+            userProfile,
+          });
+
+          if (checkFeedKey) {
+            try {
+              const checkQuery = query(
+                collection(db, 'notifications'),
+                where('feedKeys', 'array-contains', checkFeedKey),
+                orderBy(documentId(), 'asc'),
+                startAt(item.id),
+                endAt(item.id),
+                limit(1)
+              );
+              const existingSnap = await getDocs(checkQuery);
+              if (!existingSnap.empty) {
+                loadedNotificationIdsRef.current.add(item.id);
+                return 'already_exists';
+              }
+            } catch (checkErr: any) {
+              console.warn('Notice checking notification feed:', checkErr?.message || checkErr);
+              return 'failed';
+            }
+          }
+
+          const ref = doc(db, 'notifications', item.id);
+          try {
+            await setDoc(ref, item);
+            loadedNotificationIdsRef.current.add(item.id);
+            return 'persisted';
+          } catch (err: any) {
+            console.warn('Notice creating notification:', err?.message || err);
+            return 'failed';
+          }
+        });
+      }
+    } catch (err: any) {
+      console.warn('Non-fatal notification persist notice:', err?.message || err);
+    }
+  };
+
+  const toggleNotificationSound = () => {
+    unlockNotificationAudio();
+    setNotificationSoundEnabledState((prev) => {
+      const next = !prev;
+      if (currentUser?.uid) {
+        setNotificationSoundEnabled(currentUser.uid, next);
+      }
+      return next;
+    });
+  };
+
+  const markNotificationAsRead = async (notificationId: string) => {
+    const uid = currentUser?.uid;
+    if (!uid || !notificationId) return;
+    const target =
+      tenantNotifications.find((n) => n.id === notificationId) ||
+      superAdminNotifications.find((n) => n.id === notificationId);
+    if (!target || isNotificationReadByUser(target, uid)) return;
+
+    const nowIso = new Date().toISOString();
+    const updatePayload: Record<string, unknown> = {
+      [`readBy.${uid}`]: nowIso,
+      updatedAt: nowIso,
+    };
+    if (target.audienceScope === 'user' && target.recipientUid === uid) {
+      updatePayload.isRead = true;
+      updatePayload.readAt = nowIso;
+    }
+
+    await updateDoc(doc(db, 'notifications', notificationId), updatePayload);
+  };
+
+  const markAllNotificationsAsRead = async (surface: 'tenant' | 'super_admin') => {
+    const uid = currentUser?.uid;
+    if (!uid) return;
+    const sourceList = surface === 'super_admin' ? superAdminNotifications : tenantNotifications;
+    const unread = sourceList.filter((n) => !isNotificationReadByUser(n, uid));
+    if (unread.length === 0) return;
+
+    const nowIso = new Date().toISOString();
+    for (let i = 0; i < unread.length; i += 400) {
+      const chunk = unread.slice(i, i + 400);
+      const batch = writeBatch(db);
+      for (const n of chunk) {
+        const updatePayload: Record<string, unknown> = {
+          [`readBy.${uid}`]: nowIso,
+          updatedAt: nowIso,
+        };
+        if (n.audienceScope === 'user' && n.recipientUid === uid) {
+          updatePayload.isRead = true;
+          updatePayload.readAt = nowIso;
+        }
+        batch.update(doc(db, 'notifications', n.id), updatePayload);
+      }
+      await batch.commit();
+    }
+  };
+
+  const loadMoreNotifications = (surface: 'tenant' | 'super_admin') => {
+    if (surface === 'super_admin') {
+      saSoundControllerRef.current.markPaginationExpansion();
+      setSaNotifLimit((prev) => prev + NOTIFICATION_FEED_PAGE_SIZE);
+    } else {
+      tenantSoundControllerRef.current.markPaginationExpansion();
+      setTenantNotifLimit((prev) => prev + NOTIFICATION_FEED_PAGE_SIZE);
+    }
+  };
+
+  const emitSecurityAccessDeniedAlert = async (detail: string) => {
+    if (!currentUser?.uid || !currentOrg?.id || !userProfile?.isActive) return;
+    const dayHourKey = new Date().toISOString().slice(0, 13);
+    const notif = buildSecurityAdminNotification({
+      dedupKey: `sec_denied:${currentOrg.id}:${currentUser.uid}:${dayHourKey}`,
+      type: 'SECURITY_ACCESS_DENIED_ALERT',
+      severity: 'critical',
+      orgId: currentOrg.id,
+      audienceScope: 'org_manager',
+      branchId: resolvePrimaryAssignedBranchId(userProfile) || undefined,
+      actorUid: currentUser.uid,
+      actorName: userProfile.displayName || currentUser.email || 'مستخدم',
+      actorRole: userProfile.role,
+      title: 'تنبيه أمني: محاولة وصول أو إجراء مرفوض',
+      body: detail,
+      targetType: 'security',
+      targetId: currentUser.uid,
+      tab: 'audit',
+    });
+    await persistNonExistingNotificationsSafely([notif]);
+  };
+
+  // Real-time role-scoped Tenant Notifications listener
+  useEffect(() => {
+    if (
+      tenantStatus !== 'active_tenant' ||
+      !currentOrg?.id ||
+      !currentUser?.uid ||
+      !userProfile ||
+      !userProfile.isActive ||
+      userProfile.orgId !== currentOrg.id ||
+      !subscriptionEvaluation?.isAllowed
+    ) {
+      setTenantNotifications([]);
+      setTenantNotificationsHasMore(false);
+      return;
+    }
+
+    const context = {
+      surface: 'tenant' as const,
+      isSuperAdmin: false,
+      uid: currentUser.uid,
+      userProfile,
+      orgId: currentOrg.id,
+    };
+    const feedKeys = resolveFeedKeysForUser(context);
+    if (feedKeys.length === 0) {
+      setTenantNotifications([]);
+      setTenantNotificationsHasMore(false);
+      return;
+    }
+
+    setNotificationsLoading(true);
+    const perFeedDocs = new Map<string, AppNotification[]>();
+    const perFeedHasMore = new Map<string, boolean>();
+    const hydratedFeeds = new Set<string>();
+    const scopeKey = `tenant:${currentOrg.id}:${currentUser.uid}`;
+
+    const syncMerged = () => {
+      const all: AppNotification[] = [];
+      for (const list of perFeedDocs.values()) {
+        all.push(...list);
+      }
+      const merged = mergeAndSortNotifications(all, context);
+      setTenantNotifications(merged);
+      setTenantNotificationsHasMore(Array.from(perFeedHasMore.values()).some(Boolean));
+
+      if (hydratedFeeds.size >= feedKeys.length) {
+        setNotificationsLoading(false);
+        const soundRes = tenantSoundControllerRef.current.processSnapshot(merged, {
+          scopeKey,
+          uid: currentUser.uid,
+          soundEnabled: notificationSoundEnabledRef.current,
+          pageLimit: tenantNotifLimit,
+        });
+        if (
+          soundRes.reason !== 'initial_hydration' &&
+          soundRes.reason !== 'pagination_hydration' &&
+          soundRes.newUnreadIds.length > 0
+        ) {
+          const newest = merged.find((n) => n.id === soundRes.newUnreadIds[0]);
+          if (newest) {
+            showForegroundBrowserNotification(newest);
+          }
+        }
+      }
+    };
+
+    const unsubs = feedKeys.map((feedKey) => {
+      const q = query(
+        collection(db, 'notifications'),
+        where('feedKeys', 'array-contains', feedKey),
+        orderBy(documentId(), 'asc'),
+        limit(tenantNotifLimit)
+      );
+      return onSnapshot(
+        q,
+        (snapshot) => {
+          const list: AppNotification[] = [];
+          snapshot.forEach((docSnap) => {
+            list.push(docSnap.data() as AppNotification);
+          });
+          perFeedDocs.set(feedKey, list);
+          perFeedHasMore.set(feedKey, snapshot.size >= tenantNotifLimit);
+          hydratedFeeds.add(feedKey);
+          syncMerged();
+        },
+        (error) => {
+          console.warn(`Tenant notifications listener notice (${feedKey}):`, error?.message);
+          hydratedFeeds.add(feedKey);
+          if (hydratedFeeds.size >= feedKeys.length) {
+            setNotificationsLoading(false);
+          }
+        }
+      );
+    });
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, [
+    tenantStatus,
+    currentOrg?.id,
+    currentUser?.uid,
+    userProfile?.role,
+    userProfile?.isActive,
+    userProfile?.orgId,
+    userProfile?.branchId,
+    userProfile?.branchIds?.join(','),
+    JSON.stringify(userProfile?.permissions || {}),
+    subscriptionEvaluation?.isAllowed,
+    tenantNotifLimit,
+  ]);
+
+  // Proactive Org & Branch threshold warnings for active Organization Manager (idempotent daily dedupKey)
+  useEffect(() => {
+    if (
+      tenantStatus !== 'active_tenant' ||
+      !currentOrg?.id ||
+      !currentUser?.uid ||
+      !userProfile?.isActive ||
+      userProfile.role !== 'manager' ||
+      userProfile.orgId !== currentOrg.id ||
+      !subscriptionEvaluation?.isAllowed
+    ) {
+      return;
+    }
+    const alerts = buildOrgThresholdNotifications({
+      org: currentOrg,
+      branches,
+      actorUid: currentUser.uid,
+      actorName: userProfile.displayName || currentUser.email || 'مدير المؤسسة',
+    });
+    if (alerts.length > 0) {
+      void persistNonExistingNotificationsSafely(alerts);
+    }
+  }, [
+    tenantStatus,
+    currentOrg?.id,
+    currentOrg?.subscriptionEndAt,
+    currentOrg?.deactivationDueAt,
+    branches,
+    currentUser?.uid,
+    userProfile?.role,
+    userProfile?.isActive,
+    userProfile?.orgId,
+    subscriptionEvaluation?.isAllowed,
+  ]);
+
+  // Real-time Super Admin Notifications listener (strictly amoal2030@gmail.com verified + verified JWT claims only)
+  useEffect(() => {
+    const authUser = auth.currentUser;
+    if (!currentUser?.uid || !authUser || !isVerifiedSuperAdmin(authUser)) {
+      setSuperAdminNotifications([]);
+      setSuperAdminNotificationsHasMore(false);
+      return;
+    }
+
+    let cancelled = false;
+    let unsub: (() => void) | null = null;
+
+    const attachSuperAdminListener = async () => {
+      try {
+        await verifySuperAdminForRealtimeListener(authUser);
+      } catch (verifyErr: any) {
+        if (!cancelled) {
+          setSuperAdminNotifications([]);
+          setSuperAdminNotificationsHasMore(false);
+          console.warn(
+            'Super Admin notifications token verification notice:',
+            verifyErr?.message || verifyErr
+          );
+        }
+        return;
+      }
+
+      const latestAuthUser = auth.currentUser;
+      if (
+        cancelled ||
+        !latestAuthUser ||
+        latestAuthUser.uid !== currentUser.uid ||
+        !isVerifiedSuperAdmin(latestAuthUser)
+      ) {
+        return;
+      }
+
+      const context = {
+        surface: 'super_admin' as const,
+        isSuperAdmin: true,
+        uid: currentUser.uid,
+      };
+      const scopeKey = `super_admin:${currentUser.uid}`;
+      const q = query(
+        collection(db, 'notifications'),
+        where('feedKeys', 'array-contains', 'super_admin'),
+        orderBy(documentId(), 'asc'),
+        limit(saNotifLimit)
+      );
+
+      unsub = onSnapshot(
+        q,
+        (snapshot) => {
+          if (cancelled) return;
+          const raw: AppNotification[] = [];
+          snapshot.forEach((docSnap) => {
+            raw.push(docSnap.data() as AppNotification);
+          });
+          const merged = mergeAndSortNotifications(raw, context);
+          setSuperAdminNotifications(merged);
+          setSuperAdminNotificationsHasMore(snapshot.size >= saNotifLimit);
+          const soundRes = saSoundControllerRef.current.processSnapshot(merged, {
+            scopeKey,
+            uid: currentUser.uid,
+            soundEnabled: notificationSoundEnabledRef.current,
+            pageLimit: saNotifLimit,
+          });
+          if (
+            soundRes.reason !== 'initial_hydration' &&
+            soundRes.reason !== 'pagination_hydration' &&
+            soundRes.newUnreadIds.length > 0
+          ) {
+            const newest = merged.find((n) => n.id === soundRes.newUnreadIds[0]);
+            if (newest) {
+              showForegroundBrowserNotification(newest);
+            }
+          }
+        },
+        (error) => {
+          console.warn('Super Admin notifications listener notice:', error?.message);
+        }
+      );
+    };
+
+    void attachSuperAdminListener();
+
+    return () => {
+      cancelled = true;
+      if (unsub) {
+        unsub();
+        unsub = null;
+      }
+    };
+  }, [currentUser?.uid, currentUser?.email, currentUser?.emailVerified, saNotifLimit]);
 
   const loadBranchesForOrg = async (orgId: string, profile: UserProfile) => {
     const branchesRef = collection(db, 'branches');
@@ -1268,6 +1772,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         timestamp: nowIso,
       });
 
+      const empNotifs = buildEmployeeLifecycleNotifications({
+        action: 'created',
+        orgId: currentOrg.id,
+        actorUid: userProfile.uid,
+        actorName: safeActorName,
+        employeeUid: newUid,
+        employeeName: newProfile.displayName,
+        employeeRole: targetRole,
+        branchId: targetBranch?.id,
+        branchName: targetBranch?.name || data.branchName,
+        createdAt: nowIso,
+      });
+      empNotifs.forEach((n) => batch.set(doc(db, 'notifications', n.id), n));
+
       await batch.commit();
       await signOut(secondaryAuth);
       return newProfile;
@@ -1331,6 +1849,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       timestamp: nowIso,
     });
 
+    const statusNotifs = buildEmployeeLifecycleNotifications({
+      action: isActive ? 'reactivated' : 'disabled',
+      orgId: currentOrg.id,
+      actorUid: userProfile.uid,
+      actorName: safeActorName,
+      employeeUid,
+      employeeName: targetLabel,
+      employeeRole: targetEmployee?.role || 'employee',
+      branchId: targetEmployee?.branchId,
+      branchName: targetEmployee?.branchName,
+      createdAt: nowIso,
+    });
+    statusNotifs.forEach((n) => batch.set(doc(db, 'notifications', n.id), n));
+
     await batch.commit();
   };
 
@@ -1391,6 +1923,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       details: `نقل الموظف ${targetEmployee?.displayName || employeeUid} إلى فرع ${resolvedBranchName}`,
       timestamp: nowIso,
     });
+
+    const branchNotifs = buildEmployeeLifecycleNotifications({
+      action: 'branch_changed',
+      orgId: currentOrg.id,
+      actorUid: userProfile.uid,
+      actorName: safeActorName,
+      employeeUid,
+      employeeName: targetEmployee?.displayName || employeeUid,
+      employeeRole: targetEmployee?.role || 'employee',
+      branchId: targetBranch.id,
+      branchName: resolvedBranchName,
+      createdAt: nowIso,
+    });
+    branchNotifs.forEach((n) => batch.set(doc(db, 'notifications', n.id), n));
 
     await batch.commit();
   };
@@ -1516,6 +2062,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       timestamp: nowIso,
     });
 
+    if (roleOrPermsChanged || branchChanged) {
+      const updateNotifs = buildEmployeeLifecycleNotifications({
+        action: roleOrPermsChanged ? 'role_permissions_updated' : 'branch_changed',
+        orgId: currentOrg.id,
+        actorUid: userProfile.uid,
+        actorName: safeActorName,
+        employeeUid: data.employeeUid,
+        employeeName: cleanName,
+        employeeRole: data.role,
+        branchId: targetBranch?.id,
+        branchName: targetBranch?.name,
+        createdAt: nowIso,
+      });
+      updateNotifs.forEach((n) => batch.set(doc(db, 'notifications', n.id), n));
+    }
+
     await batch.commit();
   };
 
@@ -1571,6 +2133,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       timestamp: nowIso,
     });
 
+    const archiveNotifs = buildEmployeeLifecycleNotifications({
+      action: 'archived',
+      orgId: currentOrg.id,
+      actorUid: userProfile.uid,
+      actorName: safeActorName,
+      employeeUid,
+      employeeName: target.displayName,
+      employeeRole: target.role,
+      branchId: target.branchId,
+      branchName: target.branchName,
+      createdAt: nowIso,
+    });
+    archiveNotifs.forEach((n) => batch.set(doc(db, 'notifications', n.id), n));
+
     await batch.commit();
   };
 
@@ -1605,7 +2181,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const nowIso = new Date().toISOString();
     const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    await setDoc(doc(db, 'auditLogs', logId), {
+    const resetBatch = writeBatch(db);
+    resetBatch.set(doc(db, 'auditLogs', logId), {
       id: logId,
       orgId: currentOrg.id,
       actorId: userProfile.uid,
@@ -1617,6 +2194,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       details: `إرسال رابط إعادة تعيين كلمة المرور عبر Firebase إلى ${targetEmployee.displayName} (${cleanEmail})`,
       timestamp: nowIso,
     });
+    const resetNotifMgr = buildSecurityAdminNotification({
+      dedupKey: `pwd_reset_mgr:${currentOrg.id}:${employeeUid}:${nowIso}`,
+      type: 'SECURITY_PASSWORD_RESET_SENT',
+      severity: 'info',
+      orgId: currentOrg.id,
+      audienceScope: 'org_manager',
+      branchId: targetEmployee.branchId,
+      actorUid: userProfile.uid,
+      actorName: safeActorName,
+      actorRole: 'manager',
+      title: 'إرسال رابط إعادة تعيين كلمة مرور',
+      body: `تم إرسال رابط استعادة كلمة المرور عبر Firebase إلى ${targetEmployee.displayName} (${cleanEmail}).`,
+      targetType: 'employee',
+      targetId: employeeUid,
+      tab: 'employees',
+      createdAt: nowIso,
+    });
+    resetBatch.set(doc(db, 'notifications', resetNotifMgr.id), resetNotifMgr);
+    await resetBatch.commit();
 
     return cleanEmail;
   };
@@ -1835,6 +2431,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     }
 
+    if (data.status === 'pending_review') {
+      const submitNotifs = buildClosingSubmittedNotifications({
+        closing: newClosing,
+        isResubmission: existingData?.status === 'rejected',
+        actorUid: currentUser.uid,
+        actorName: safeActorName,
+        actorRole: userProfile.role,
+        createdAt: nowIso,
+      });
+      submitNotifs.forEach((n) => batch.set(doc(db, 'notifications', n.id), n));
+    }
+
     try {
       await batch.commit();
     } catch (err: any) {
@@ -1941,6 +2549,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         }
       }
+
+      const reviewNotifs = buildClosingReviewedNotifications({
+        closing: existing,
+        action,
+        rejectionReason: rejectionReason?.trim(),
+        actorUid: currentUser.uid,
+        actorName: userProfile.displayName || currentUser.email || 'الإدارة',
+        actorRole: userProfile.role,
+        createdAt: nowIso,
+      });
+      reviewNotifs.forEach((n) => batch.set(doc(db, 'notifications', n.id), n));
 
       await batch.commit();
     } catch (error) {
@@ -2079,6 +2698,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
 
         transaction.set(auditLogDocRef, auditLogData);
+
+        const correctionNotifs = buildClosingAdminCorrectedNotifications({
+          closing: existing,
+          correctionReason: cleanReason,
+          actorUid: currentUser.uid,
+          actorName: userProfile.displayName || 'المدير العام',
+          createdAt: nowIso,
+        });
+        correctionNotifs.forEach((n) => transaction.set(doc(db, 'notifications', n.id), n));
       });
     } catch (error: any) {
       console.error('Error in administrative correction transaction:', error);
@@ -2287,6 +2915,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           : prev
       );
+
+      const driveFailNotif = buildSecurityAdminNotification({
+        dedupKey: `drive_health_fail:${targetOrgId}:${nowIso.slice(0, 13)}`,
+        type: 'SECURITY_DRIVE_HEALTH_FAILED',
+        severity: 'critical',
+        orgId: targetOrgId,
+        audienceScope: 'org_manager',
+        actorUid: targetUserUid,
+        actorName: userProfile.displayName || currentUser.email || 'مدير المؤسسة',
+        actorRole: 'manager',
+        title: 'فشل فحص اتصال Google Drive',
+        body: `تعذر التحقق من صلاحية الكتابة في Google Drive للمؤسسة: ${safeError}`,
+        targetType: 'drive',
+        targetId: targetOrgId,
+        tab: 'settings',
+        createdAt: nowIso,
+      });
+      void persistNonExistingNotificationsSafely([driveFailNotif]);
     } catch (err) {
       console.warn('Notice recording Drive health failure:', err);
     }
@@ -2350,6 +2996,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       await batch.commit();
+      const driveDisconnectNotif = buildSecurityAdminNotification({
+        dedupKey: `drive_disconnected:${targetOrgId}:${nowIso}`,
+        type: 'SECURITY_DRIVE_DISCONNECTED',
+        severity: 'warning',
+        orgId: targetOrgId,
+        audienceScope: 'org_manager',
+        actorUid: targetUserUid,
+        actorName: userProfile.displayName || currentUser.email || 'مدير المؤسسة',
+        actorRole: 'manager',
+        title: 'تم فصل ربط Google Drive',
+        body: 'تم فصل ربط Google Drive لهذه المؤسسة؛ ستتوقف الإقفالات التشغيلية الجديدة حتى إعادة الربط والتحقق.',
+        targetType: 'drive',
+        targetId: targetOrgId,
+        tab: 'settings',
+        createdAt: nowIso,
+      });
+      void persistNonExistingNotificationsSafely([driveDisconnectNotif]);
     } catch (error) {
       console.error('Error disconnecting Drive metadata:', error);
       handleFirestoreError(error, OperationType.UPDATE, `organizations/${targetOrgId}`);
@@ -2823,6 +3486,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (overview.diagnosticMessage) {
         setSuperAdminError(overview.diagnosticMessage);
       }
+      const saThresholdNotifs = buildSuperAdminThresholdNotifications({
+        organizations: overview.organizations,
+        branches: overview.branches,
+        actorUid: activeAuthUser.uid,
+        actorName: activeAuthUser.displayName || activeAuthUser.email || 'صاحب الموقع',
+      });
+      if (saThresholdNotifs.length > 0) {
+        void persistNonExistingNotificationsSafely(saThresholdNotifs);
+      }
     } catch (error: any) {
       setSuperAdminOverview(null);
       const msg =
@@ -3038,6 +3710,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       },
     });
     batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+    const saOrgNotif = buildSuperAdminPlatformNotification({
+      dedupKey: `sa_org_created:${orgId}`,
+      category: 'org_branches',
+      type: 'SA_ORG_CREATED',
+      severity: 'success',
+      relatedOrgId: orgId,
+      branchId,
+      branchName: firstBranchName,
+      actorUid: actor.uid,
+      actorName: actor.displayName || actorEmail,
+      title: `تأسيس مؤسسة "${cleanOrgName}"`,
+      body: `تم إنشاء المؤسسة مع الفرع الرئيسي "${firstBranchName}" وإصدار دعوة المدير ${emailNormalized}.`,
+      targetType: 'organization',
+      targetId: orgId,
+      tab: 'organizations',
+      createdAt: nowIso,
+    });
+    batch.set(doc(db, 'notifications', saOrgNotif.id), saOrgNotif);
 
     await batch.commit();
     await loadSuperAdminOverview();
@@ -3225,6 +3915,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       details,
     });
     batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+    const saStatusNotif = buildSuperAdminPlatformNotification({
+      dedupKey: `sa_org_status:${input.orgId}:${action}:${nowIso}`,
+      category: 'security_admin',
+      type: `SA_${action}`,
+      severity: action === 'ORG_REACTIVATED' ? 'success' : 'warning',
+      relatedOrgId: input.orgId,
+      actorUid: actor.uid,
+      actorName: actor.displayName || actorEmail,
+      title: action === 'ORG_REACTIVATED' ? `إعادة تنشيط "${existingOrg.name}"` : `تحديث حالة "${existingOrg.name}"`,
+      body: details,
+      targetType: 'organization',
+      targetId: input.orgId,
+      tab: 'organizations',
+      createdAt: nowIso,
+    });
+    batch.set(doc(db, 'notifications', saStatusNotif.id), saStatusNotif);
 
     await batch.commit();
     await loadSuperAdminOverview();
@@ -3452,6 +4158,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       details: `إضافة فرع جديد "${cleanName}" (${code}) للمؤسسة "${org.name}" — ${monthlyFeeSar} ر.س/شهرياً (${paymentStatus})`,
     });
     batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+    const saBranchAddNotif = buildSuperAdminPlatformNotification({
+      dedupKey: `sa_branch_created:${branchId}`,
+      category: 'org_branches',
+      type: 'SA_BRANCH_CREATED',
+      severity: 'info',
+      relatedOrgId: input.orgId,
+      branchId,
+      branchName: cleanName,
+      actorUid: actor.uid,
+      actorName: actor.displayName || actorEmail,
+      title: `إضافة فرع "${cleanName}"`,
+      body: `أُضيف الفرع (${code}) إلى مؤسسة "${org.name}" بحالة دفع (${paymentStatus}).`,
+      targetType: 'branch',
+      targetId: branchId,
+      tab: 'branches',
+      createdAt: nowIso,
+    });
+    batch.set(doc(db, 'notifications', saBranchAddNotif.id), saBranchAddNotif);
 
     await batch.commit();
     await loadSuperAdminOverview();
@@ -3596,6 +4320,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       details: `تعليق فرع "${existingBranch.name}" وبدء مهلة 30 يوماً حتى ${graceEnds.toISOString().slice(0, 10)}`,
     });
     batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+    const saSuspendBranchNotif = buildSuperAdminPlatformNotification({
+      dedupKey: `sa_branch_suspended:${existingBranch.id}:${now.toISOString()}`,
+      category: 'org_branches',
+      type: 'SA_BRANCH_SUSPENDED',
+      severity: 'warning',
+      relatedOrgId: existingBranch.orgId,
+      branchId: existingBranch.id,
+      branchName: existingBranch.name,
+      actorUid: actor.uid,
+      actorName: actor.displayName || actorEmail,
+      title: `تعليق فرع "${existingBranch.name}"`,
+      body: `تم تعليق فرع "${existingBranch.name}" لمؤسسة "${org.name}" وبدء مهلة 30 يوماً حتى ${graceEnds.toISOString().slice(0, 10)}.`,
+      targetType: 'branch',
+      targetId: existingBranch.id,
+      tab: 'branches',
+      createdAt: now.toISOString(),
+    });
+    batch.set(doc(db, 'notifications', saSuspendBranchNotif.id), saSuspendBranchNotif);
 
     await batch.commit();
     await loadSuperAdminOverview();
@@ -3678,6 +4420,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       details: `إعادة تنشيط فرع "${existingBranch.name}" بحالة دفع ${paymentStatus} حتى ${dueDate.toISOString().slice(0, 10)}`,
     });
     batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+    const saReactivateBranchNotif = buildSuperAdminPlatformNotification({
+      dedupKey: `sa_branch_reactivated:${existingBranch.id}:${now.toISOString()}`,
+      category: 'org_branches',
+      type: 'SA_BRANCH_REACTIVATED',
+      severity: 'success',
+      relatedOrgId: existingBranch.orgId,
+      branchId: existingBranch.id,
+      branchName: existingBranch.name,
+      actorUid: actor.uid,
+      actorName: actor.displayName || actorEmail,
+      title: `إعادة تنشيط فرع "${existingBranch.name}"`,
+      body: `تمت إعادة تنشيط فرع "${existingBranch.name}" بحالة دفع (${paymentStatus}) حتى ${dueDate.toISOString().slice(0, 10)}.`,
+      targetType: 'branch',
+      targetId: existingBranch.id,
+      tab: 'branches',
+      createdAt: now.toISOString(),
+    });
+    batch.set(doc(db, 'notifications', saReactivateBranchNotif.id), saReactivateBranchNotif);
 
     await batch.commit();
     await loadSuperAdminOverview();
@@ -3857,6 +4617,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       },
     });
     finalizeBatch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+    const saPurgeNotif = buildSuperAdminPlatformNotification({
+      dedupKey: `sa_branch_purged:${branchId}:${now.toISOString()}`,
+      category: 'security_admin',
+      type: 'SA_BRANCH_DB_PURGED',
+      severity: 'critical',
+      relatedOrgId: branch.orgId,
+      branchId,
+      branchName: branch.name,
+      actorUid: actor.uid,
+      actorName: actor.displayName || actorEmail,
+      title: `تنظيف سجلات فرع "${branch.name}" من قاعدة البيانات`,
+      body: `تم حذف سجلات الموقع فقط (إقفالات: ${closingsSnap.size}، مشتريات: ${purchasesSnap.size}) بعد التحقق من أرشيف Drive.`,
+      targetType: 'branch',
+      targetId: branchId,
+      tab: 'branches',
+      createdAt: now.toISOString(),
+    });
+    finalizeBatch.set(doc(db, 'notifications', saPurgeNotif.id), saPurgeNotif);
     await finalizeBatch.commit();
 
     await loadSuperAdminOverview();
@@ -3881,6 +4659,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setAccessErrorInfo(null);
       clearOperationalState();
       setSuperAdminOverview(null);
+      setSuperAdminNotifications([]);
+      setSuperAdminNotificationsHasMore(false);
+      resetNotificationRuntimeControllers({
+        tenantController: tenantSoundControllerRef.current,
+        saController: saSoundControllerRef.current,
+        persistenceTracker: emittedThresholdTrackerRef.current,
+        setTenantLimit: setTenantNotifLimit,
+        setSaLimit: setSaNotifLimit,
+      });
       setSuperAdminError(null);
       setNeedsOnboarding(false);
       setTenantStatus('unauthenticated');
@@ -3960,6 +4747,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         reactivateSuperAdminBranch,
         inspectBranchDriveBackupForPurge,
         purgeSuspendedBranchFromDb,
+        tenantNotifications,
+        superAdminNotifications,
+        notificationsLoading,
+        tenantNotificationsHasMore,
+        superAdminNotificationsHasMore,
+        notificationSoundEnabled,
+        toggleNotificationSound,
+        markNotificationAsRead,
+        markAllNotificationsAsRead,
+        loadMoreNotifications,
+        emitSecurityAccessDeniedAlert,
       }}
     >
       {children}

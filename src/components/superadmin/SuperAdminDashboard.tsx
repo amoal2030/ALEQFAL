@@ -13,7 +13,9 @@ import {
   SubscriptionPlan,
   SubscriptionStatus,
   UserProfile,
+  NotificationNavTarget,
 } from '../../types';
+import { NotificationCenter } from '../common/NotificationCenter';
 import { AppPageRoute, buildLegalPath } from '../../utils/legalRoutes';
 import { getUserRoleLabel } from '../../utils/permissions';
 import {
@@ -770,6 +772,28 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 <RefreshCw className={`w-3.5 h-3.5 text-amber-500 ${superAdminLoading ? 'animate-spin' : ''}`} />
                 <span className="hidden sm:inline">تحديث</span>
               </button>
+
+              <NotificationCenter
+                surface="super_admin"
+                onNavigate={(target: NotificationNavTarget) => {
+                  if (
+                    target.tab === 'organizations' ||
+                    target.tab === 'branches' ||
+                    target.tab === 'invites' ||
+                    target.tab === 'auditLogs'
+                  ) {
+                    setMainTab(target.tab);
+                  }
+                  if (
+                    target.tab === 'organizations' &&
+                    target.entityId &&
+                    organizations.some((o) => o.id === target.entityId)
+                  ) {
+                    setMainTab('organizations');
+                    setSelectedOrgId(target.entityId);
+                  }
+                }}
+              />
 
               <button
                 type="button"

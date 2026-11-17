@@ -37,7 +37,7 @@ service cloud.firestore {
     }
 
     function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function isValidEmailDocId(val) {
@@ -66,34 +66,34 @@ service cloud.firestore {
 
     // Active organization member (any of the 4 supported org roles)
     function isOrgMember(targetOrgId) {
+      let u = getUserData();
       return hasValidUserDoc() &&
-        getUserData().isActive == true &&
-        getUserData().orgId == targetOrgId;
+        u.isActive == true &&
+        u.orgId == targetOrgId;
     }
 
     // Active top-level manager of the organization
     function isOrgManager(targetOrgId) {
+      let u = getUserData();
       return hasValidUserDoc() &&
-        getUserData().isActive == true &&
-        getUserData().orgId == targetOrgId &&
-        getUserData().role == 'manager';
+        u.isActive == true &&
+        u.orgId == targetOrgId &&
+        u.role == 'manager';
     }
 
     // Explicit opt-in permission reader (fails closed when omitted or non-boolean)
     function userHasPermission(u, permKey) {
-      return 'permissions' in u &&
-        u.permissions is map &&
-        u.permissions.get(permKey, false) == true;
+      let p = u.get('permissions', {});
+      return p is map && p.get(permKey, false) == true;
     }
 
     // Verifies single-branch assignment while preserving legacy scalar `branchId` user docs
     function userHasSingleAssignedBranch(u, targetBranchId) {
-      return 'branchId' in u &&
-        u.branchId is string &&
-        u.branchId.size() > 0 &&
-        u.branchId == targetBranchId && (
+      return targetBranchId is string &&
+        targetBranchId.size() > 0 &&
+        u.get('branchId', '') == targetBranchId && (
           !('branchIds' in u) ||
-          (u.branchIds is list && u.branchIds.size() == 1 && u.branchIds[0] == u.branchId)
+          u.branchIds == [targetBranchId]
         );
     }
 
@@ -111,29 +111,23 @@ service cloud.firestore {
     }
 
     function hasValidActiveSubscriptionConfig(org) {
-      return 'subscriptionPlan' in org &&
-        org.subscriptionPlan in ['trial_7d', '1m', '3m', '6m', '1y'] &&
-        'subscriptionStatus' in org &&
-        org.subscriptionStatus == 'active' &&
-        'subscriptionStartAt' in org &&
-        org.subscriptionStartAt is timestamp &&
-        'subscriptionEndAt' in org &&
-        org.subscriptionEndAt is timestamp &&
-        org.subscriptionStartAt < org.subscriptionEndAt &&
+      return org.get('subscriptionPlan', '') in ['trial_7d', '1m', '3m', '6m', '1y'] &&
+        org.get('subscriptionStatus', '') == 'active' &&
+        org.get('subscriptionStartAt', null) is timestamp &&
+        org.get('subscriptionEndAt', null) is timestamp &&
         request.time >= org.subscriptionStartAt &&
         request.time < org.subscriptionEndAt;
     }
 
     function isNotPastDeactivationDue(org) {
-      return !('deactivationDueAt' in org) ||
-        org.deactivationDueAt == null ||
+      return org.get('deactivationDueAt', null) == null ||
         (org.deactivationDueAt is timestamp && request.time < org.deactivationDueAt);
     }
 
     // Preserves legacy organizations that have no subscription fields and are not suspended,
     // while failing closed on any incomplete, malformed, expired, future-dated, or suspended subscription.
     function isOrgSubscriptionAllowed(org) {
-      return (!('isActive' in org) || org.isActive == true) && (
+      return org.get('isActive', true) == true && (
         !hasAnySubscriptionField(org) ||
         (hasValidActiveSubscriptionConfig(org) && isNotPastDeactivationDue(org))
       );
@@ -273,7 +267,6 @@ service cloud.firestore {
 
     function isValidIsoTimestamp(ts) {
       return ts is string &&
-        ts.size() >= 20 &&
         ts.size() <= 40 &&
         ts.matches('^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$');
     }
@@ -641,9 +634,8 @@ service cloud.firestore {
         hasValidBranchPricingPayload(incoming());
 
       allow update: if isSignedIn() && isValidId(orgId) && (
-        // 1. Super Admin managing organization profile (name, taxNumber, commercialRegistration), status, owner binding, fees, and subscription fields
-        (
-          isSuperAdmin() &&
+        isSuperAdmin() ? (
+          // 1. Super Admin managing organization profile (name, taxNumber, commercialRegistration), status, owner binding, fees, and subscription fields
           incoming().id == existing().id &&
           incoming().createdAt == existing().createdAt &&
           incoming().diff(existing()).affectedKeys().hasOnly([
@@ -673,9 +665,8 @@ service cloud.firestore {
           hasValidSuperAdminSubscriptionPayload(incoming()) &&
           hasValidBranchPricingPayload(incoming()) &&
           hasValidOrgReactivationTransition(incoming(), existing())
-        ) ||
-        // 2. Active Manager updating ONLY non-sensitive Google Drive link/cache metadata (strict allowlist; protects name, taxNumber, CR, fees, subscription & ownership)
-        (
+        ) : hasValidUserDoc() ? (
+          // 2. Active Manager updating ONLY non-sensitive Google Drive link/cache metadata (strict allowlist; protects name, taxNumber, CR, fees, subscription & ownership)
           isOrgManager(orgId) &&
           hasActiveOrgSubscription(orgId) &&
           incoming().ownerId == existing().ownerId &&
@@ -696,9 +687,8 @@ service cloud.firestore {
             'driveHealthError',
             'updatedAt'
           ])
-        ) ||
-        // 3. Atomic invite claim binding ownerId on first verified Google login of invited manager
-        (
+        ) : (
+          // 3. Atomic invite claim binding ownerId on first verified Google login of invited manager
           isVerifiedEmailUser() &&
           hasActiveOrgSubscription(orgId) &&
           'ownerEmail' in existing() &&
@@ -838,16 +828,16 @@ service cloud.firestore {
           'canManagePurchases', 'canManageSuppliers', 'canViewSuppliers',
           'canViewFinancialReports'
         ]) &&
-        (!('canCreateClosing' in perms) || perms.canCreateClosing is bool) &&
-        (!('canViewAllClosings' in perms) || perms.canViewAllClosings is bool) &&
-        (!('canApproveClosings' in perms) || perms.canApproveClosings is bool) &&
-        (!('canManageBranches' in perms) || perms.canManageBranches is bool) &&
-        (!('canManageEmployees' in perms) || perms.canManageEmployees is bool) &&
-        (!('canExportReports' in perms) || perms.canExportReports is bool) &&
-        (!('canManagePurchases' in perms) || perms.canManagePurchases is bool) &&
-        (!('canManageSuppliers' in perms) || perms.canManageSuppliers is bool) &&
-        (!('canViewSuppliers' in perms) || perms.canViewSuppliers is bool) &&
-        (!('canViewFinancialReports' in perms) || perms.canViewFinancialReports is bool);
+        perms.get('canCreateClosing', false) is bool &&
+        perms.get('canViewAllClosings', false) is bool &&
+        perms.get('canApproveClosings', false) is bool &&
+        perms.get('canManageBranches', false) is bool &&
+        perms.get('canManageEmployees', false) is bool &&
+        perms.get('canExportReports', false) is bool &&
+        perms.get('canManagePurchases', false) is bool &&
+        perms.get('canManageSuppliers', false) is bool &&
+        perms.get('canViewSuppliers', false) is bool &&
+        perms.get('canViewFinancialReports', false) is bool;
     }
 
     function hasSafeNonManagerPermissions(role, perms) {
@@ -984,11 +974,9 @@ service cloud.firestore {
 
       // Harden user updates: requires active org subscription + strict allowlist + blocks self-privilege escalation and promotion to manager/super_admin
       allow update: if isSignedIn() && isValidId(userId) &&
-        incoming().role in ['manager', 'supervisor', 'branch_manager', 'employee'] &&
-        hasActiveOrgSubscription(existing().orgId) && (
-        // Case 1: Active user self-updating displayName or phone ONLY (blocks disabled users, role changes, and permissions tampering)
-        (
-          request.auth.uid == userId &&
+        incoming().role in ['manager', 'supervisor', 'branch_manager', 'employee'] && (
+        request.auth.uid == userId ? (
+          // Case 1: Active user self-updating displayName or phone ONLY (blocks disabled users, role changes, and permissions tampering)
           existing().isActive == true &&
           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone']) &&
           incoming().role == existing().role &&
@@ -997,12 +985,10 @@ service cloud.firestore {
           incoming().displayName is string &&
           incoming().displayName.size() >= 1 &&
           incoming().displayName.size() <= 100 &&
-          (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25))
-        ) ||
-        // Case 2: Active manager updating org staff (supervisor / branch_manager / employee) profile, role, single branch, permissions, status, or soft-archive
-        (
-          hasValidUserDoc() &&
-          isOrgManager(existing().orgId) &&
+          (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25)) &&
+          hasActiveOrgSubscription(existing().orgId)
+        ) : (
+          // Case 2: Active manager updating org staff (supervisor / branch_manager / employee) profile, role, single branch, permissions, status, or soft-archive
           existing().role in ['supervisor', 'branch_manager', 'employee'] &&
           incoming().role in ['supervisor', 'branch_manager', 'employee'] &&
           incoming().orgId == existing().orgId &&
@@ -1011,6 +997,8 @@ service cloud.firestore {
             'role', 'branchId', 'branchIds', 'branchName', 'permissions', 'isActive',
             'displayName', 'phone', 'email', 'isArchived', 'archivedAt', 'archivedBy', 'updatedAt'
           ]) &&
+          isOrgManager(existing().orgId) &&
+          hasActiveOrgSubscription(existing().orgId) &&
           isValidUserEmailString(incoming().email) &&
           incoming().displayName is string &&
           incoming().displayName.trim().size() >= 1 &&
@@ -1708,6 +1696,385 @@ service cloud.firestore {
         isValidIsoTimestamp(incoming().timestamp);
 
       allow update, delete: if false;
+    }
+
+    // Notifications Collection Helpers (Phase 4.6 — Role-Scoped, Anti-Spoofing & Tenant-Isolated)
+    function hasValidNotificationShape(notificationId, data) {
+      return data.keys().hasOnly([
+          'id', 'dedupKey', 'category', 'type', 'severity', 'audienceScope',
+          'orgId', 'relatedOrgId', 'branchId', 'branchName', 'recipientUid',
+          'requiredPermission', 'secondaryPermission', 'feedKeys',
+          'actorUid', 'actorName', 'actorRole', 'title', 'body',
+          'targetType', 'targetId', 'navTarget', 'readBy', 'isRead', 'readAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.get('id', '') == notificationId &&
+        data.get('dedupKey', '') is string && data.dedupKey.size() >= 3 && data.dedupKey.size() <= 200 &&
+        data.get('category', '') in ['employees', 'closings', 'schedule_requests', 'purchases_suppliers', 'org_branches', 'security_admin'] &&
+        data.get('type', '') is string && data.type.size() >= 3 && data.type.size() <= 80 &&
+        data.get('severity', '') in ['info', 'success', 'warning', 'critical'] &&
+        data.get('audienceScope', '') in ['user', 'org_manager', 'org_supervisor_permission', 'branch_manager', 'super_admin'] &&
+        data.get('actorUid', '') == request.auth.uid &&
+        data.get('actorName', '') is string && data.actorName.size() >= 1 && data.actorName.size() <= 120 &&
+        data.get('title', '') is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+        data.get('body', '') is string && data.body.size() >= 1 && data.body.size() <= 1000 &&
+        (!('branchName' in data) || (data.branchName is string && data.branchName.size() <= 120)) &&
+        (!('targetType' in data) || data.targetType in ['employee', 'closing', 'schedule_request', 'purchase', 'supplier', 'branch', 'organization', 'drive', 'security']) &&
+        (!('targetId' in data) || (data.targetId is string && data.targetId.size() <= 254)) &&
+        (!('navTarget' in data) || data.navTarget is map) &&
+        data.get('readBy', null) == {} &&
+        data.get('isRead', false) == false &&
+        !('readAt' in data) &&
+        isValidIsoTimestamp(data.get('createdAt', '')) &&
+        isValidIsoTimestamp(data.get('updatedAt', ''));
+    }
+
+    function isAllowedNotificationPerm(perm) {
+      return perm in [
+        'canApproveClosings',
+        'canViewAllClosings',
+        'canManagePurchases',
+        'canManageSuppliers',
+        'canViewSuppliers',
+        'canViewFinancialReports'
+      ];
+    }
+
+    function userBelongsToOrgAfter(targetUid, orgId) {
+      return (exists(/databases/$(database)/documents/users/$(targetUid)) &&
+          get(/databases/$(database)/documents/users/$(targetUid)).data.orgId == orgId) ||
+        (existsAfter(/databases/$(database)/documents/users/$(targetUid)) &&
+          getAfter(/databases/$(database)/documents/users/$(targetUid)).data.orgId == orgId);
+    }
+
+    function hasValidTenantNotificationFeeds(data) {
+      let orgId = data.orgId;
+      let scope = data.audienceScope;
+      let feeds = data.feedKeys;
+      return feeds is list &&
+        feeds.size() >= 1 &&
+        feeds.size() <= 4 && (
+          scope == 'user' ? (
+            'recipientUid' in data &&
+            isValidId(data.recipientUid) &&
+            feeds == ['user:' + orgId + ':' + data.recipientUid] &&
+            userBelongsToOrgAfter(data.recipientUid, orgId)
+          ) : scope == 'org_manager' ? (
+            feeds == ['org_mgr:' + orgId]
+          ) : scope == 'branch_manager' ? (
+            'branchId' in data &&
+            isBranchInOrg(data.branchId, orgId) && (
+              feeds == ['branch_mgr:' + orgId + ':' + data.branchId] ||
+              feeds == ['branch_mgr:' + orgId + ':' + data.branchId, 'org_mgr:' + orgId]
+            )
+          ) : scope == 'org_supervisor_permission' && (
+            'requiredPermission' in data &&
+            isAllowedNotificationPerm(data.requiredPermission) &&
+            (!('secondaryPermission' in data) || isAllowedNotificationPerm(data.secondaryPermission)) &&
+            ('org_perm:' + orgId + ':' + data.requiredPermission) in feeds &&
+            feeds.hasOnly([
+              'org_perm:' + orgId + ':' + data.requiredPermission,
+              ('secondaryPermission' in data ? 'org_perm:' + orgId + ':' + data.secondaryPermission : 'org_mgr:' + orgId),
+              'org_mgr:' + orgId,
+              ('branchId' in data && ('branch_mgr:' + orgId + ':' + data.branchId) in feeds && isBranchInOrg(data.branchId, orgId) ? 'branch_mgr:' + orgId + ':' + data.branchId : 'org_mgr:' + orgId)
+            ])
+          )
+        );
+    }
+
+    function matchesClosingSubmittedAfter(data, orgId) {
+      let c = getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data;
+      return c.orgId == orgId &&
+        c.branchId == data.branchId &&
+        c.employeeId == request.auth.uid &&
+        c.status == 'pending_review';
+    }
+
+    function hasClosingSubmittedAfter(data, orgId) {
+      return data.get('targetType', '') == 'closing' &&
+        isValidId(data.get('targetId', '')) &&
+        existsAfter(/databases/$(database)/documents/closings/$(data.targetId)) &&
+        matchesClosingSubmittedAfter(data, orgId);
+    }
+
+    function matchesClosingReviewedAfter(data, orgId) {
+      let c = getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data;
+      return c.orgId == orgId &&
+        c.reviewedBy == request.auth.uid &&
+        c.status == (data.type == 'CLOSING_APPROVED' ? 'approved' : 'rejected') && (
+          data.audienceScope == 'branch_manager'
+            ? ('branchId' in data && data.branchId == c.branchId)
+            : (data.audienceScope == 'user' && 'recipientUid' in data && data.recipientUid == c.employeeId)
+        );
+    }
+
+    function hasClosingReviewedAfter(data, orgId) {
+      return data.get('targetType', '') == 'closing' &&
+        'targetId' in data && isValidId(data.targetId) &&
+        existsAfter(/databases/$(database)/documents/closings/$(data.targetId)) &&
+        matchesClosingReviewedAfter(data, orgId);
+    }
+
+    function matchesClosingCorrectedAfter(data, orgId) {
+      let c = getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data;
+      return c.orgId == orgId &&
+        c.correctedBy == request.auth.uid &&
+        c.status == 'approved';
+    }
+
+    function hasClosingCorrectedAfter(data, orgId) {
+      return data.get('targetType', '') == 'closing' &&
+        'targetId' in data && isValidId(data.targetId) &&
+        existsAfter(/databases/$(database)/documents/closings/$(data.targetId)) &&
+        matchesClosingCorrectedAfter(data, orgId);
+    }
+
+    function hasEmployeeTargetAfter(data, orgId) {
+      return data.get('targetType', '') == 'employee' &&
+        'targetId' in data && isValidId(data.targetId) &&
+        existsAfter(/databases/$(database)/documents/users/$(data.targetId)) &&
+        getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.orgId == orgId;
+    }
+
+    function isSecurityAccessDeniedAlert(data) {
+      return data.type == 'SECURITY_ACCESS_DENIED_ALERT' &&
+        data.audienceScope == 'org_manager' &&
+        data.get('targetType', '') == 'security' &&
+        data.get('targetId', '') == request.auth.uid;
+    }
+
+    function canManagerCreateTenantNotification(data, orgId) {
+      let cat = data.category;
+      let t = data.type;
+      return cat == 'closings' ? (
+          (t in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] && data.audienceScope == 'org_supervisor_permission' && hasClosingSubmittedAfter(data, orgId)) ||
+          (t in ['CLOSING_APPROVED', 'CLOSING_REJECTED'] && data.audienceScope in ['user', 'branch_manager'] && hasClosingReviewedAfter(data, orgId)) ||
+          (t == 'CLOSING_ADMIN_CORRECTED' && data.audienceScope in ['user', 'org_manager'] && hasClosingCorrectedAfter(data, orgId))
+        ) : cat == 'employees' ? (
+          t in ['EMPLOYEE_CREATED', 'EMPLOYEE_DISABLED', 'EMPLOYEE_REACTIVATED', 'EMPLOYEE_ARCHIVED', 'EMPLOYEE_BRANCH_CHANGED', 'EMPLOYEE_ROLE_PERMISSIONS_UPDATED'] &&
+          data.audienceScope in ['org_manager', 'user'] &&
+          hasEmployeeTargetAfter(data, orgId)
+        ) : cat == 'org_branches' ? (
+          t in ['ORG_SUBSCRIPTION_EXPIRING', 'ORG_NO_PAID_BRANCH_WARNING', 'BRANCH_SUSPENDED_GRACE_WARNING', 'BRANCH_GRACE_EXPIRED_WARNING'] &&
+          data.audienceScope == 'org_manager'
+        ) : cat == 'security_admin' ? (
+          (t in ['SECURITY_DRIVE_HEALTH_FAILED', 'SECURITY_DRIVE_DISCONNECTED'] && data.audienceScope == 'org_manager') ||
+          isSecurityAccessDeniedAlert(data) ||
+          (t == 'CLOSING_ADMIN_CORRECTED' && data.audienceScope == 'org_manager' && hasClosingCorrectedAfter(data, orgId)) ||
+          (
+            (
+              (t in ['EMPLOYEE_DISABLED', 'EMPLOYEE_ARCHIVED', 'EMPLOYEE_ROLE_PERMISSIONS_UPDATED'] && data.audienceScope == 'user') ||
+              (t == 'SECURITY_PASSWORD_RESET_SENT' && data.audienceScope == 'org_manager')
+            ) && hasEmployeeTargetAfter(data, orgId)
+          )
+        ) : cat == 'purchases_suppliers' ? (
+          data.audienceScope == 'org_supervisor_permission' && (
+            (t in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] && data.get('targetType', '') == 'purchase') ||
+            (t == 'SUPPLIER_ADDED' && data.get('targetType', '') == 'supplier')
+          )
+        ) : cat == 'schedule_requests' && (
+          t in [
+            'SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE',
+            'SCHEDULE_REQUEST_APPROVED', 'SCHEDULE_REQUEST_REJECTED', 'SCHEDULE_SWAP_CONFIRMED', 'SCHEDULE_SWAP_DECLINED'
+          ] &&
+          data.audienceScope in ['branch_manager', 'user'] &&
+          data.get('targetType', '') == 'schedule_request'
+        );
+    }
+
+    function canSupervisorCreateTenantNotification(u, data, orgId) {
+      let cat = data.category;
+      let t = data.type;
+      return cat == 'closings' ? (
+          (t in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] && userHasPermission(u, 'canCreateClosing') && data.audienceScope == 'org_supervisor_permission' && data.get('requiredPermission', '') in ['canApproveClosings', 'canViewAllClosings'] && hasClosingSubmittedAfter(data, orgId)) ||
+          (t in ['CLOSING_APPROVED', 'CLOSING_REJECTED'] && userHasPermission(u, 'canApproveClosings') && data.audienceScope in ['user', 'branch_manager'] && hasClosingReviewedAfter(data, orgId))
+        ) : cat == 'purchases_suppliers' ? (
+          data.audienceScope == 'org_supervisor_permission' && (
+            (t in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] && userHasPermission(u, 'canManagePurchases') && data.get('targetType', '') == 'purchase' && 'branchId' in data && isBranchInOrg(data.branchId, orgId)) ||
+            (t == 'SUPPLIER_ADDED' && userHasPermission(u, 'canManageSuppliers') && data.get('targetType', '') == 'supplier')
+          )
+        ) : cat == 'schedule_requests' ? (
+          t in ['SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE'] &&
+          data.audienceScope in ['branch_manager', 'user'] &&
+          data.get('targetType', '') == 'schedule_request' &&
+          'branchId' in data &&
+          isBranchInOrg(data.branchId, orgId)
+        ) : cat == 'security_admin' && isSecurityAccessDeniedAlert(data);
+    }
+
+    function canBranchStaffCreateTenantNotification(u, data, orgId, actorRole) {
+      let cat = data.category;
+      let t = data.type;
+      return cat == 'security_admin' ? isSecurityAccessDeniedAlert(data) : (
+        'branchId' in data &&
+        userHasSingleAssignedBranch(u, data.branchId) && (
+          cat == 'closings' ? (
+            t in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] &&
+            u.get('permissions', {}).get('canCreateClosing', true) == true &&
+            data.audienceScope == 'org_supervisor_permission' &&
+            hasClosingSubmittedAfter(data, orgId)
+          ) : cat == 'schedule_requests' ? (
+            t in ['SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE'] &&
+            data.audienceScope in ['branch_manager', 'user'] &&
+            data.get('targetType', '') == 'schedule_request'
+          ) : (
+            actorRole == 'branch_manager' &&
+            cat == 'purchases_suppliers' &&
+            t in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] &&
+            u.get('permissions', {}).get('canManagePurchases', true) == true &&
+            data.audienceScope == 'org_supervisor_permission' &&
+            data.get('targetType', '') == 'purchase'
+          )
+        )
+      );
+    }
+
+    function canActorCreateTenantNotification(data) {
+      let u = getUserData();
+      let orgId = data.get('orgId', '');
+      let actorRole = data.get('actorRole', '');
+      return u.isActive == true &&
+        isValidId(orgId) &&
+        u.orgId == orgId &&
+        actorRole in ['manager', 'supervisor', 'branch_manager', 'employee'] &&
+        u.role == actorRole && (
+          actorRole == 'manager' ? canManagerCreateTenantNotification(data, orgId) :
+          actorRole == 'supervisor' ? canSupervisorCreateTenantNotification(u, data, orgId) :
+          canBranchStaffCreateTenantNotification(u, data, orgId, actorRole)
+        ) &&
+        hasActiveOrgSubscription(orgId) &&
+        hasValidTenantNotificationFeeds(data);
+    }
+
+    function canTenantUserReadNotification(data, checkDataOrgSub) {
+      let u = getUserData();
+      let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
+      return u.isActive == true &&
+        u.orgId == data.orgId &&
+        data.audienceScope != 'super_admin' &&
+        hasActiveOrgSubscription(orgSubId) && (
+          (data.audienceScope == 'user' && 'recipientUid' in data && data.recipientUid == request.auth.uid) ||
+          (u.role == 'manager' && ('org_mgr:' + u.orgId) in data.feedKeys) ||
+          (
+            u.role == 'branch_manager' &&
+            'branchId' in data &&
+            data.branchId is string &&
+            userHasSingleAssignedBranch(u, data.branchId) &&
+            ('branch_mgr:' + u.orgId + ':' + data.branchId) in data.feedKeys
+          ) ||
+          (
+            u.role == 'supervisor' &&
+            data.audienceScope == 'org_supervisor_permission' && (
+              (
+                'requiredPermission' in data &&
+                data.requiredPermission is string &&
+                userHasPermission(u, data.requiredPermission) &&
+                ('org_perm:' + u.orgId + ':' + data.requiredPermission) in data.feedKeys
+              ) ||
+              (
+                'secondaryPermission' in data &&
+                data.secondaryPermission is string &&
+                userHasPermission(u, data.secondaryPermission) &&
+                ('org_perm:' + u.orgId + ':' + data.secondaryPermission) in data.feedKeys
+              )
+            )
+          )
+        );
+    }
+
+    function canReadNotificationDoc(data, checkDataOrgSub) {
+      return (
+        isSuperAdmin() &&
+        data.audienceScope == 'super_admin' &&
+        data.orgId == 'platform' &&
+        'super_admin' in data.feedKeys
+      ) || (
+        hasValidUserDoc() &&
+        canTenantUserReadNotification(data, checkDataOrgSub)
+      );
+    }
+
+    function canListTenantNotificationDoc(data) {
+      let u = getUserData();
+      return u.isActive == true &&
+        hasActiveOrgSubscription(u.orgId) && (
+          ('user:' + u.orgId + ':' + request.auth.uid) in data.feedKeys ||
+          (u.role == 'manager' && ('org_mgr:' + u.orgId) in data.feedKeys) ||
+          (
+            u.role == 'branch_manager' &&
+            'branchId' in u &&
+            u.branchId is string &&
+            u.branchId.size() > 0 &&
+            (!('branchIds' in u) || (u.branchIds is list && u.branchIds.size() == 1 && u.branchIds[0] == u.branchId)) &&
+            ('branch_mgr:' + u.orgId + ':' + u.branchId) in data.feedKeys
+          ) ||
+          (
+            u.role == 'supervisor' && (
+              (userHasPermission(u, 'canApproveClosings') && ('org_perm:' + u.orgId + ':canApproveClosings') in data.feedKeys) ||
+              (userHasPermission(u, 'canViewAllClosings') && ('org_perm:' + u.orgId + ':canViewAllClosings') in data.feedKeys) ||
+              (userHasPermission(u, 'canManagePurchases') && ('org_perm:' + u.orgId + ':canManagePurchases') in data.feedKeys) ||
+              (userHasPermission(u, 'canManageSuppliers') && ('org_perm:' + u.orgId + ':canManageSuppliers') in data.feedKeys) ||
+              (userHasPermission(u, 'canViewSuppliers') && ('org_perm:' + u.orgId + ':canViewSuppliers') in data.feedKeys) ||
+              (userHasPermission(u, 'canViewFinancialReports') && ('org_perm:' + u.orgId + ':canViewFinancialReports') in data.feedKeys)
+            )
+          )
+        );
+    }
+
+    function canListNotificationDoc(data) {
+      return (
+        isSuperAdmin() &&
+        'super_admin' in data.feedKeys
+      ) || (
+        hasValidUserDoc() &&
+        canListTenantNotificationDoc(data)
+      );
+    }
+
+    match /notifications/{notificationId} {
+      allow get: if isSignedIn() && isValidId(notificationId) &&
+        canReadNotificationDoc(existing(), true);
+
+      allow list: if isSignedIn() &&
+        canListNotificationDoc(existing());
+
+      allow create: if isSignedIn() && isValidId(notificationId) &&
+        hasValidNotificationShape(notificationId, incoming()) && (
+        incoming().get('audienceScope', '') == 'super_admin' ? (
+          isSuperAdmin() &&
+          incoming().get('orgId', '') == 'platform' &&
+          incoming().get('feedKeys', []) == ['super_admin'] &&
+          incoming().get('actorRole', '') == 'super_admin' &&
+          (!('relatedOrgId' in incoming()) || isValidId(incoming().relatedOrgId))
+        ) : (
+          hasValidUserDoc() &&
+          canActorCreateTenantNotification(incoming())
+        )
+      );
+
+      allow update: if isSignedIn() && isValidId(notificationId) &&
+        canReadNotificationDoc(existing(), true) &&
+        incoming().id == existing().id &&
+        incoming().orgId == existing().orgId &&
+        incoming().feedKeys == existing().feedKeys &&
+        incoming().audienceScope == existing().audienceScope &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['readBy', 'updatedAt', 'isRead', 'readAt']) &&
+        incoming().readBy is map &&
+        incoming().readBy.diff(existing().get('readBy', {})).affectedKeys().hasOnly([request.auth.uid]) &&
+        incoming().readBy[request.auth.uid] is string &&
+        isValidIsoTimestamp(incoming().readBy[request.auth.uid]) &&
+        isValidIsoTimestamp(incoming().updatedAt) &&
+        (
+          !incoming().diff(existing()).affectedKeys().hasAny(['isRead', 'readAt']) || (
+            existing().audienceScope == 'user' &&
+            'recipientUid' in existing() &&
+            existing().recipientUid == request.auth.uid &&
+            incoming().isRead == true &&
+            (!('readAt' in incoming()) || isValidIsoTimestamp(incoming().readAt))
+          )
+        );
+
+      allow delete: if false;
     }
   }
 }

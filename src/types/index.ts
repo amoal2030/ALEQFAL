@@ -424,3 +424,90 @@ export interface FinancialSummary {
   rejectedCount: number;
   draftCount: number;
 }
+
+// Phase 4.6 — Comprehensive Role-Scoped Notification System
+export type NotificationCategory =
+  | 'employees'
+  | 'closings'
+  | 'schedule_requests'
+  | 'purchases_suppliers'
+  | 'org_branches'
+  | 'security_admin';
+
+export type NotificationSeverity = 'info' | 'success' | 'warning' | 'critical';
+
+export type NotificationAudienceScope =
+  | 'user'
+  | 'org_manager'
+  | 'org_supervisor_permission'
+  | 'branch_manager'
+  | 'super_admin';
+
+export type NotificationTargetType =
+  | 'employee'
+  | 'closing'
+  | 'schedule_request'
+  | 'purchase'
+  | 'supplier'
+  | 'branch'
+  | 'organization'
+  | 'drive'
+  | 'security';
+
+export interface NotificationNavTarget {
+  surface: 'tenant' | 'super_admin';
+  tab?:
+    | 'overview'
+    | 'closings'
+    | 'reports'
+    | 'branches'
+    | 'employees'
+    | 'audit'
+    | 'settings'
+    | 'workspace'
+    | 'organizations'
+    | 'invites'
+    | 'auditLogs';
+  entityId?: string;
+  branchId?: string;
+}
+
+export interface AppNotification {
+  id: string;
+  dedupKey: string;
+  category: NotificationCategory;
+  type: string;
+  severity: NotificationSeverity;
+  audienceScope: NotificationAudienceScope;
+  orgId: string; // 'platform' for super_admin platform feed, else tenant orgId
+  relatedOrgId?: string; // optional tenant orgId when orgId === 'platform'
+  branchId?: string;
+  branchName?: string;
+  recipientUid?: string; // required when audienceScope === 'user'
+  requiredPermission?: keyof UserPermissions;
+  secondaryPermission?: keyof UserPermissions;
+  feedKeys: string[];
+  actorUid: string;
+  actorName: string;
+  actorRole: string;
+  title: string;
+  body: string;
+  targetType?: NotificationTargetType;
+  targetId?: string;
+  navTarget?: NotificationNavTarget;
+  readBy: Record<string, string>;
+  isRead?: boolean;
+  readAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrowserNotificationCapability {
+  supported: boolean;
+  isSecureContext: boolean;
+  permission: 'default' | 'granted' | 'denied' | 'unsupported';
+  foregroundReady: boolean;
+  backgroundPushAvailable: false;
+  backgroundPushReason: string;
+}
+

@@ -10,10 +10,11 @@ import { AuditLogsView } from './manager/AuditLogsView';
 import { SettingsView } from './manager/SettingsView';
 import { EmployeeDashboard } from './employee/EmployeeDashboard';
 import { useTheme } from '../context/ThemeContext';
-import { SupportedLanguage } from '../types';
+import { SupportedLanguage, NotificationNavTarget } from '../types';
 import { getActiveDriveSession } from '../services/driveService';
 import { AppPageRoute, buildLegalPath } from '../utils/legalRoutes';
 import { getUserRoleLabel, resolveEffectivePermissions } from '../utils/permissions';
+import { NotificationCenter } from './common/NotificationCenter';
 import {
   Building2,
   Lock,
@@ -27,7 +28,6 @@ import {
   HardDrive,
   ShieldCheck,
   RefreshCw,
-  Bell,
   Settings,
   Sun,
   Moon,
@@ -96,6 +96,33 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
   // Count pending reviews for manager badge
   const pendingCount = closings.filter((c) => c.status === 'pending_review').length;
 
+  const handleNotificationNavigate = (target: NotificationNavTarget) => {
+    if (isManager) {
+      if (
+        target.tab === 'overview' ||
+        target.tab === 'closings' ||
+        target.tab === 'reports' ||
+        target.tab === 'branches' ||
+        target.tab === 'employees' ||
+        target.tab === 'audit' ||
+        target.tab === 'settings'
+      ) {
+        setManagerTab(target.tab);
+      } else {
+        setManagerTab('overview');
+      }
+      return;
+    }
+
+    if (target.tab === 'closings' && canSupervisorReviewClosings) {
+      setStaffTab('closings');
+    } else if (target.tab === 'reports' && canSupervisorViewReports) {
+      setStaffTab('reports');
+    } else {
+      setStaffTab('workspace');
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-[#070e17] text-slate-900 dark:text-slate-100" dir={direction}>
       {/* Top Organization Header */}
@@ -134,8 +161,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
               </div>
             </div>
 
-            {/* Header Controls: Theme, Language, Profile & Logout */}
+            {/* Header Controls: Notifications, Theme, Language, Profile & Logout */}
             <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
+              <NotificationCenter
+                surface="tenant"
+                onNavigate={handleNotificationNavigate}
+              />
+
               {/* Theme Toggle Button */}
               <button
                 type="button"
