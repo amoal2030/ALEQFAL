@@ -192,10 +192,10 @@ export const translations = {
 
     // Auth & Modals
     authModalTitle: 'الدخول إلى نظام الإقفال',
-    authManagerTab: 'تسجيل دخول المدير',
+    authManagerTab: 'تسجيل الدخول باستخدام جوجل',
     authEmployeeTab: 'دخول الموظف',
     authRegisterOrgTab: 'تسجيل مؤسسة جديدة',
-    authGoogleSignIn: 'المتابعة بحساب Google (المدير)',
+    authGoogleSignIn: 'تسجيل الدخول باستخدام جوجل',
     authGoogleSub: 'تسجيل دخول سريع وموثوق لحساب المدير',
     authEmail: 'البريد الإلكتروني',
     authPassword: 'كلمة المرور',
@@ -571,10 +571,10 @@ export const translations = {
 
     // Auth & Modals
     authModalTitle: 'Sign In to AL EQFAL',
-    authManagerTab: 'Manager Sign In',
+    authManagerTab: 'Sign in with Google',
     authEmployeeTab: 'Staff Sign In',
     authRegisterOrgTab: 'Create Organization',
-    authGoogleSignIn: 'Continue with Google (Manager)',
+    authGoogleSignIn: 'Sign in with Google',
     authGoogleSub: 'Fast, verified sign-in for organization managers',
     authEmail: 'Email Address',
     authPassword: 'Password',
@@ -950,10 +950,10 @@ export const translations = {
 
     // Auth & Modals
     authModalTitle: 'الاقفال سسٹم میں لاگ ان',
-    authManagerTab: 'منیجر لاگ ان',
+    authManagerTab: 'گوگل کے ذریعے لاگ ان کریں',
     authEmployeeTab: 'عملہ لاگ ان',
     authRegisterOrgTab: 'نیا ادارہ رجسٹر کریں',
-    authGoogleSignIn: 'گوگل اکاؤنٹ کے ساتھ جاری رکھیں (منیجر)',
+    authGoogleSignIn: 'گوگل کے ذریعے لاگ ان کریں',
     authGoogleSub: 'ادارے کے مالکان اور منیجرز کے لیے تیز اور محفوظ داخلہ',
     authEmail: 'ای میل ایڈریس',
     authPassword: 'پاس ورڈ',
