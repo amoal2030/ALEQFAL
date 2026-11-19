@@ -987,7 +987,7 @@ export function buildPurchaseRecordedNotification(params: {
     body: `سجل ${params.actorName} فاتورة مشتريات من المورد (${params.supplierName}) بمبلغ ${params.totalAmount} ${params.currency} لفرع ${params.branchName}.`,
     targetType: 'purchase',
     targetId: params.purchaseId,
-    navTarget: { surface: 'tenant', tab: 'reports', entityId: params.purchaseId, branchId: params.branchId },
+    navTarget: { surface: 'tenant', tab: 'purchases', entityId: params.purchaseId, branchId: params.branchId },
     createdAt: params.createdAt,
   });
 }
@@ -1018,7 +1018,7 @@ export function buildSupplierAddedNotification(params: {
     body: `تم تسجيل المورد "${params.supplierName}" في دليل موردي المؤسسة بواسطة ${params.actorName}.`,
     targetType: 'supplier',
     targetId: params.supplierId,
-    navTarget: { surface: 'tenant', tab: 'overview', entityId: params.supplierId },
+    navTarget: { surface: 'tenant', tab: 'suppliers', entityId: params.supplierId },
     createdAt: params.createdAt,
   });
 }
@@ -1735,3 +1735,217 @@ export function showForegroundBrowserNotification(notification: AppNotification)
     return false;
   }
 }
+
+// =============================================================================
+// Role- & Permission-Aware Tenant Notification Navigation Resolver
+// =============================================================================
+
+export type ManagerDashboardTab =
+  | 'overview'
+  | 'closings'
+  | 'purchase_reports'
+  | 'suppliers'
+  | 'reports'
+  | 'branches'
+  | 'employees'
+  | 'audit'
+  | 'settings';
+
+export type StaffDashboardTab =
+  | 'workspace'
+  | 'purchases'
+  | 'suppliers'
+  | 'closings'
+  | 'reports';
+
+export interface ResolvedTenantNotificationRoute {
+  roleGroup: 'manager' | 'staff';
+  managerTab?: ManagerDashboardTab;
+  staffTab?: StaffDashboardTab;
+  entityId?: string;
+  branchId?: string;
+  isPurchaseTarget: boolean;
+}
+
+const NON_PURCHASE_MANAGER_TABS: readonly ManagerDashboardTab[] = [
+  'overview',
+  'closings',
+  'suppliers',
+  'reports',
+  'branches',
+  'employees',
+  'audit',
+  'settings',
+];
+
+/**
+ * Identifies purchase-invoice notifications by metadata (`targetType`, `type`) OR tab,
+ * ensuring both new notifications (`tab: 'purchases'`) and legacy stored purchase
+ * notifications (which previously wrote `tab: 'reports'`) route accurately.
+ */
+export function isPurchaseNotification(
+  target: NotificationNavTarget,
+  notification?: Pick<
+    AppNotification,
+    'category' | 'type' | 'targetType' | 'targetId' | 'branchId' | 'navTarget'
+  > | null
+): boolean {
+  if (
+    notification?.targetType === 'purchase' ||
+    notification?.type === 'PURCHASE_INVOICE_RECORDED' ||
+    notification?.type === 'PURCHASE_REVIEW_NEEDED'
+  ) {
+    return true;
+  }
+  return target.tab === 'purchases' || target.tab === 'purchase_reports';
+}
+
+/**
+ * Resolves the destination tenant dashboard tab strictly from the recipient's
+ * role, effective permissions, branch scope, and notification metadata — never
+ * from `target.tab` alone.
+ *
+ * - Organization Manager + purchase notification -> 'purchase_reports' (NEVER general 'reports')
+ * - Supervisor (with canManagePurchases) + purchase notification -> 'purchases' (preserving real branchId)
+ * - Branch Manager (with canManagePurchases) + purchase notification -> 'purchases' locked to assigned branch ONLY
+ * - Employee / unpermitted / inactive -> 'workspace' (never purchases or reports)
+ * - Non-purchase notifications -> existing routes preserved identically
+ */
+export function resolveTenantNotificationRoute(params: {
+  userProfile: UserProfile | null | undefined;
+  target: NotificationNavTarget;
+  notification?: Pick<
+    AppNotification,
+    'category' | 'type' | 'targetType' | 'targetId' | 'branchId' | 'navTarget'
+  > | null;
+}): ResolvedTenantNotificationRoute {
+  const { userProfile, target, notification } = params;
+  const purchaseTarget = isPurchaseNotification(target, notification);
+
+  const rawEntityId = (target.entityId || notification?.targetId || '').trim() || undefined;
+  const rawBranchId = (target.branchId || notification?.branchId || '').trim() || undefined;
+
+  // 1. Active Organization Manager
+  if (userProfile?.role === 'manager' && userProfile.isActive === true) {
+    if (purchaseTarget) {
+      return {
+        roleGroup: 'manager',
+        managerTab: 'purchase_reports',
+        ...(rawEntityId ? { entityId: rawEntityId } : {}),
+        ...(rawBranchId ? { branchId: rawBranchId } : {}),
+        isPurchaseTarget: true,
+      };
+    }
+
+    const matchedManagerTab =
+      target.tab && (NON_PURCHASE_MANAGER_TABS as readonly string[]).includes(target.tab)
+        ? (target.tab as ManagerDashboardTab)
+        : 'overview';
+
+    return {
+      roleGroup: 'manager',
+      managerTab: matchedManagerTab,
+      ...(rawEntityId ? { entityId: rawEntityId } : {}),
+      ...(rawBranchId ? { branchId: rawBranchId } : {}),
+      isPurchaseTarget: false,
+    };
+  }
+
+  // 2. Staff roles (Supervisor, Branch Manager, Employee, or inactive/unknown)
+  if (!userProfile || userProfile.isActive !== true) {
+    return {
+      roleGroup: 'staff',
+      staffTab: 'workspace',
+      isPurchaseTarget: purchaseTarget,
+    };
+  }
+
+  const effectivePerms = resolveEffectivePermissions(userProfile);
+  const canStaffManagePurchases =
+    (userProfile.role === 'supervisor' || userProfile.role === 'branch_manager') &&
+    effectivePerms.canManagePurchases;
+  const canSupervisorManageSuppliers =
+    userProfile.role === 'supervisor' && effectivePerms.canCreateSuppliers;
+  const canSupervisorReviewClosings =
+    userProfile.role === 'supervisor' &&
+    (effectivePerms.canApproveClosings || effectivePerms.canViewAllClosings);
+  const canSupervisorViewReports =
+    userProfile.role === 'supervisor' && effectivePerms.canViewFinancialReports;
+
+  if (purchaseTarget) {
+    if (userProfile.role === 'supervisor' && canStaffManagePurchases) {
+      return {
+        roleGroup: 'staff',
+        staffTab: 'purchases',
+        ...(rawEntityId ? { entityId: rawEntityId } : {}),
+        ...(rawBranchId ? { branchId: rawBranchId } : {}),
+        isPurchaseTarget: true,
+      };
+    }
+
+    if (userProfile.role === 'branch_manager' && canStaffManagePurchases) {
+      const assignedBranchId = resolvePrimaryAssignedBranchId(userProfile);
+      if (assignedBranchId && (!rawBranchId || rawBranchId === assignedBranchId)) {
+        return {
+          roleGroup: 'staff',
+          staffTab: 'purchases',
+          ...(rawEntityId ? { entityId: rawEntityId } : {}),
+          branchId: assignedBranchId,
+          isPurchaseTarget: true,
+        };
+      }
+      return {
+        roleGroup: 'staff',
+        staffTab: 'workspace',
+        isPurchaseTarget: true,
+      };
+    }
+
+    // Regular employee or supervisor without purchase permission: NEVER open reports or purchases
+    return {
+      roleGroup: 'staff',
+      staffTab: 'workspace',
+      isPurchaseTarget: true,
+    };
+  }
+
+  // Non-purchase notifications for staff: preserve existing behavior strictly
+  if (target.tab === 'suppliers' && canSupervisorManageSuppliers) {
+    return {
+      roleGroup: 'staff',
+      staffTab: 'suppliers',
+      ...(rawEntityId ? { entityId: rawEntityId } : {}),
+      ...(rawBranchId ? { branchId: rawBranchId } : {}),
+      isPurchaseTarget: false,
+    };
+  }
+
+  if (target.tab === 'closings' && canSupervisorReviewClosings) {
+    return {
+      roleGroup: 'staff',
+      staffTab: 'closings',
+      ...(rawEntityId ? { entityId: rawEntityId } : {}),
+      ...(rawBranchId ? { branchId: rawBranchId } : {}),
+      isPurchaseTarget: false,
+    };
+  }
+
+  if (target.tab === 'reports' && canSupervisorViewReports) {
+    return {
+      roleGroup: 'staff',
+      staffTab: 'reports',
+      ...(rawEntityId ? { entityId: rawEntityId } : {}),
+      ...(rawBranchId ? { branchId: rawBranchId } : {}),
+      isPurchaseTarget: false,
+    };
+  }
+
+  return {
+    roleGroup: 'staff',
+    staffTab: 'workspace',
+    ...(rawEntityId ? { entityId: rawEntityId } : {}),
+    ...(rawBranchId ? { branchId: rawBranchId } : {}),
+    isPurchaseTarget: false,
+  };
+}
+

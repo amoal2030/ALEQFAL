@@ -168,15 +168,15 @@ const AppContent: React.FC = () => {
   // Global Loading State (also guards transient frame before tenantStatus settles for signed-in user)
   if (loading || (currentUser && tenantStatus === 'loading')) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-[#070e17] text-slate-900 dark:text-white" dir={direction}>
+      <div className="min-h-screen flex items-center justify-center bg-[#F4F7FB] dark:bg-[#070E17] text-[#0B192C] dark:text-white" dir={direction}>
         <div className="text-center space-y-4">
-          <div className="w-16 h-16 rounded-3xl bg-[#0b192c] border border-amber-500/40 text-amber-400 mx-auto flex items-center justify-center shadow-2xl relative">
-            <Lock className="w-7 h-7 animate-pulse text-amber-400" />
-            <div className="absolute inset-0 rounded-3xl border-2 border-amber-400/20 border-t-amber-400 animate-spin" />
+          <div className="w-16 h-16 rounded-2xl bg-[#0B192C] border border-blue-500/40 text-white mx-auto flex items-center justify-center shadow-xl relative">
+            <Lock className="w-7 h-7 text-blue-300" />
+            <div className="absolute inset-0 rounded-2xl border-2 border-blue-400/20 border-t-blue-500 animate-spin" />
           </div>
           <div>
-            <h2 className="text-lg font-bold">الإقفال | AL EQFAL</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">جاري الاتصال بقاعدة بيانات Cloud Firestore...</p>
+            <h2 className="text-lg font-extrabold">الإقفال | AL EQFAL</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">جاري الاتصال بقاعدة بيانات Cloud Firestore...</p>
           </div>
         </div>
       </div>
@@ -185,14 +185,14 @@ const AppContent: React.FC = () => {
 
   // Safe In-App Notification Banner (iFrame & Sandbox compliant)
   const NoticeBanner = authNotice ? (
-    <div className="fixed top-4 inset-x-4 max-w-md mx-auto z-50 p-4 rounded-2xl bg-[#0b192c] border border-amber-500/50 shadow-2xl text-white flex items-center justify-between gap-3 text-sm">
+    <div className="fixed top-4 inset-x-4 max-w-md mx-auto z-50 p-4 rounded-2xl bg-[#0B192C] border border-blue-500/40 shadow-2xl text-white flex items-center justify-between gap-3 text-sm">
       <div className="flex items-center gap-3">
-        <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0 animate-pulse" />
-        <p className="text-xs text-slate-200 font-medium">{authNotice.message}</p>
+        <span className="w-2.5 h-2.5 rounded-full bg-blue-400 shrink-0" />
+        <p className="text-xs text-slate-100 font-medium">{authNotice.message}</p>
       </div>
       <button
         onClick={clearAuthNotice}
-        className="text-xs text-amber-400 hover:text-amber-300 font-medium shrink-0 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20"
+        className="text-xs text-white hover:bg-blue-700 font-bold shrink-0 px-3 py-1.5 rounded-lg bg-blue-600 transition-colors"
       >
         إغلاق
       </button>
@@ -257,7 +257,7 @@ const AppContent: React.FC = () => {
 
   // Public Landing Page (Visitors & Unauthenticated Users)
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-[#070e17] text-slate-900 dark:text-slate-100 transition-colors" dir={direction}>
+    <div className="min-h-screen flex flex-col bg-[#F4F7FB] dark:bg-[#070E17] text-[#0B192C] dark:text-slate-100 transition-colors" dir={direction}>
       {NoticeBanner}
       {/* Top Navigation */}
       <Navbar onOpenAuth={handleOpenAuth} />
@@ -277,13 +277,13 @@ const AppContent: React.FC = () => {
         onClose={handleCloseAuth}
       />
 
-      {/* Phase 2 Operational Floating Badge */}
+      {/* Phase Operational Status Card */}
       <aside aria-label="حالة مراحل التأسيس" className="fixed bottom-4 start-4 z-40 hidden sm:block">
-        <div className="bg-[#0b192c]/95 backdrop-blur-md text-white border border-amber-500/40 rounded-2xl p-3.5 shadow-xl text-xs max-w-sm space-y-2">
+        <div className="bg-[#0B192C]/95 backdrop-blur-md text-white border border-[#1E3A63] rounded-2xl p-3.5 shadow-xl text-xs max-w-sm space-y-2">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
-              <span className="font-bold text-amber-300">مراحل تأسيس مشروع الإقفال</span>
+              <span className="w-2 h-2 rounded-full bg-blue-400" />
+              <span className="font-bold text-blue-200">مراحل تأسيس مشروع الإقفال</span>
             </div>
             <button
               onClick={() => setShowPhasesOverview(!showPhasesOverview)}
@@ -294,13 +294,13 @@ const AppContent: React.FC = () => {
           </div>
 
           <div className="text-[11px] text-slate-300 flex items-center gap-1.5">
-            <CheckCircle2 className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             <span>المرحلة 3: بوابة الاشتراكات وقبول الدعوات المعتمدة (مفعّلة)</span>
           </div>
 
           {showPhasesOverview && (
-            <div className="pt-2 border-t border-slate-700 space-y-1.5 text-[11px] text-slate-400">
-              <div className="text-amber-400 font-semibold">الميزات الفعالة حالياً:</div>
+            <div className="pt-2 border-t border-[#1A3152] space-y-1.5 text-[11px] text-slate-300">
+              <div className="text-blue-300 font-bold">الميزات الفعالة حالياً:</div>
               <div>• مصادقة المدير عبر Google والموظف بالبريد مع فرض صلاحية الاشتراك.</div>
               <div>• تفعيل المؤسسات الجديدة عبر دعوات المديرين المعتمدة ذرياً.</div>
               <div>• طلب الاشتراك والتجديد عبر واتساب مع إغلاق فوري عند الانتهاء أو الإيقاف.</div>

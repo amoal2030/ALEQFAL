@@ -25,6 +25,7 @@ import {
   resetNotificationRuntimeControllers,
   resolveAuthorizedNotificationCheckFeedKey,
   resolveFeedKeysForUser,
+  resolveTenantNotificationRoute,
   setNotificationSoundEnabled,
 } from '../utils/notifications';
 import { verifySuperAdminForRealtimeListener } from '../utils/superAdminMonitoring';
@@ -836,6 +837,240 @@ async function main() {
     passed += 1;
     console.log('PASS: Super Admin realtime listener guard refreshes stale claims and rejects onlak2030/unverified tokens');
   })();
+
+  // 12. Role- & permission-based tenant notification routing for Purchase & Non-Purchase notifications
+  testSync('Purchase notifications route Manager -> purchase_reports, Supervisor -> purchases, Branch Manager -> own branch purchases, never general reports, while non-purchase notifications stay intact', () => {
+    const mgr = makeUser({
+      uid: 'uid_mgr_route',
+      orgId: 'org_1',
+      role: 'manager',
+      permissions: buildDefaultPermissionsForRole('manager'),
+    });
+    const supPurchaser = makeUser({
+      uid: 'uid_sup_pur_route',
+      orgId: 'org_1',
+      role: 'supervisor',
+      permissions: buildDefaultPermissionsForRole('supervisor', {
+        canManagePurchases: true,
+        canViewFinancialReports: true,
+      }),
+    });
+    const supReportsOnly = makeUser({
+      uid: 'uid_sup_rep_route',
+      orgId: 'org_1',
+      role: 'supervisor',
+      permissions: buildDefaultPermissionsForRole('supervisor', {
+        canViewFinancialReports: true,
+      }),
+    });
+    const supSuppliers = makeUser({
+      uid: 'uid_sup_sup_route',
+      orgId: 'org_1',
+      role: 'supervisor',
+      permissions: buildDefaultPermissionsForRole('supervisor', {
+        canManageSuppliers: true,
+        canApproveClosings: true,
+      }),
+    });
+    const bmBr1 = makeUser({
+      uid: 'uid_bm1_route',
+      orgId: 'org_1',
+      role: 'branch_manager',
+      branchId: 'br_1',
+      branchIds: ['br_1'],
+      permissions: buildDefaultPermissionsForRole('branch_manager'),
+    });
+    const empBr1 = makeUser({
+      uid: 'uid_emp1_route',
+      orgId: 'org_1',
+      role: 'employee',
+      branchId: 'br_1',
+      permissions: buildDefaultPermissionsForRole('employee'),
+    });
+
+    const purchaseNotif = buildPurchaseRecordedNotification({
+      purchaseId: 'pur_nav_101',
+      orgId: 'org_1',
+      branchId: 'br_1',
+      branchName: 'الفرع الرئيسي',
+      supplierName: 'مورد الجملة',
+      totalAmount: 1250,
+      currency: 'SAR',
+      actorUid: supPurchaser.uid,
+      actorName: 'المسؤول',
+      actorRole: 'supervisor',
+    });
+
+    // Newly emitted purchase notification no longer points to general 'reports'
+    assert.equal(purchaseNotif.navTarget?.tab, 'purchases');
+    assert.equal(purchaseNotif.navTarget?.entityId, 'pur_nav_101');
+    assert.equal(purchaseNotif.navTarget?.branchId, 'br_1');
+
+    // A) Manager clicking new purchase notification -> 'purchase_reports' (NEVER 'reports')
+    const mgrRoute = resolveTenantNotificationRoute({
+      userProfile: mgr,
+      target: purchaseNotif.navTarget!,
+      notification: purchaseNotif,
+    });
+    assert.equal(mgrRoute.roleGroup, 'manager');
+    assert.equal(mgrRoute.managerTab, 'purchase_reports');
+    assert.notEqual(mgrRoute.managerTab, 'reports');
+    assert.equal(mgrRoute.entityId, 'pur_nav_101');
+    assert.equal(mgrRoute.branchId, 'br_1');
+
+    // A2) Manager clicking LEGACY stored purchase notification (which had tab: 'reports') -> STILL 'purchase_reports'!
+    const legacyPurchaseNotif = {
+      ...purchaseNotif,
+      navTarget: { surface: 'tenant' as const, tab: 'reports' as const, entityId: 'pur_legacy_9', branchId: 'br_1' },
+    };
+    const mgrLegacyRoute = resolveTenantNotificationRoute({
+      userProfile: mgr,
+      target: legacyPurchaseNotif.navTarget,
+      notification: legacyPurchaseNotif,
+    });
+    assert.equal(mgrLegacyRoute.managerTab, 'purchase_reports');
+    assert.equal(mgrLegacyRoute.entityId, 'pur_legacy_9');
+    assert.equal(mgrLegacyRoute.branchId, 'br_1');
+
+    // B) Supervisor with canManagePurchases -> opens 'purchases' (even if also has canViewFinancialReports)
+    const supRoute = resolveTenantNotificationRoute({
+      userProfile: supPurchaser,
+      target: purchaseNotif.navTarget!,
+      notification: purchaseNotif,
+    });
+    assert.equal(supRoute.roleGroup, 'staff');
+    assert.equal(supRoute.staffTab, 'purchases');
+    assert.equal(supRoute.entityId, 'pur_nav_101');
+    assert.equal(supRoute.branchId, 'br_1');
+
+    // B2) Supervisor WITHOUT canManagePurchases (reports-only) -> NEVER routed to general 'reports' or 'purchases'
+    const supUnpermittedRoute = resolveTenantNotificationRoute({
+      userProfile: supReportsOnly,
+      target: legacyPurchaseNotif.navTarget,
+      notification: legacyPurchaseNotif,
+    });
+    assert.equal(supUnpermittedRoute.staffTab, 'workspace');
+
+    // C) Branch Manager clicking purchase notification for OWN branch -> 'purchases' locked to own branch
+    const bmOwnRoute = resolveTenantNotificationRoute({
+      userProfile: bmBr1,
+      target: purchaseNotif.navTarget!,
+      notification: purchaseNotif,
+    });
+    assert.equal(bmOwnRoute.roleGroup, 'staff');
+    assert.equal(bmOwnRoute.staffTab, 'purchases');
+    assert.equal(bmOwnRoute.branchId, 'br_1');
+    assert.equal(bmOwnRoute.entityId, 'pur_nav_101');
+
+    // C2) Branch Manager clicking forged foreign-branch purchase notification -> blocked ('workspace')
+    const foreignBranchPurchase = buildPurchaseRecordedNotification({
+      purchaseId: 'pur_br2',
+      orgId: 'org_1',
+      branchId: 'br_2',
+      branchName: 'الفرع الثاني',
+      supplierName: 'مورد',
+      totalAmount: 100,
+      currency: 'SAR',
+      actorUid: supPurchaser.uid,
+      actorName: 'المسؤول',
+      actorRole: 'supervisor',
+    });
+    const bmForeignRoute = resolveTenantNotificationRoute({
+      userProfile: bmBr1,
+      target: foreignBranchPurchase.navTarget!,
+      notification: foreignBranchPurchase,
+    });
+    assert.equal(bmForeignRoute.staffTab, 'workspace');
+    assert.equal(bmForeignRoute.branchId, undefined);
+
+    // D) Regular Employee -> 'workspace' (never purchases or reports)
+    const empRoute = resolveTenantNotificationRoute({
+      userProfile: empBr1,
+      target: purchaseNotif.navTarget!,
+      notification: purchaseNotif,
+    });
+    assert.equal(empRoute.staffTab, 'workspace');
+
+    // E) Non-purchase notifications remain completely unaffected!
+    const closing = makeClosing();
+    const [closingNotif] = buildClosingSubmittedNotifications({
+      closing,
+      actorUid: empBr1.uid,
+      actorName: 'سالم',
+      actorRole: 'employee',
+    });
+    assert.equal(
+      resolveTenantNotificationRoute({
+        userProfile: mgr,
+        target: closingNotif.navTarget!,
+        notification: closingNotif,
+      }).managerTab,
+      'closings'
+    );
+    assert.equal(
+      resolveTenantNotificationRoute({
+        userProfile: supSuppliers,
+        target: closingNotif.navTarget!,
+        notification: closingNotif,
+      }).staffTab,
+      'closings'
+    );
+
+    const supAddedNotif = buildSupplierAddedNotification({
+      supplierId: 'sup_77',
+      orgId: 'org_1',
+      supplierName: 'مورد جديد',
+      actorUid: mgr.uid,
+      actorName: 'المدير',
+      actorRole: 'manager',
+    });
+    assert.equal(
+      resolveTenantNotificationRoute({
+        userProfile: mgr,
+        target: supAddedNotif.navTarget!,
+        notification: supAddedNotif,
+      }).managerTab,
+      'suppliers'
+    );
+    assert.equal(
+      resolveTenantNotificationRoute({
+        userProfile: supSuppliers,
+        target: supAddedNotif.navTarget!,
+        notification: supAddedNotif,
+      }).staffTab,
+      'suppliers'
+    );
+
+    // Genuine non-purchase financial reports notification still routes to 'reports'
+    assert.equal(
+      resolveTenantNotificationRoute({
+        userProfile: mgr,
+        target: { surface: 'tenant', tab: 'reports' },
+      }).managerTab,
+      'reports'
+    );
+    assert.equal(
+      resolveTenantNotificationRoute({
+        userProfile: supReportsOnly,
+        target: { surface: 'tenant', tab: 'reports' },
+      }).staffTab,
+      'reports'
+    );
+
+    // Settings / branches / employees / audit manager routes stay untouched
+    assert.equal(
+      resolveTenantNotificationRoute({ userProfile: mgr, target: { surface: 'tenant', tab: 'settings' } }).managerTab,
+      'settings'
+    );
+    assert.equal(
+      resolveTenantNotificationRoute({ userProfile: mgr, target: { surface: 'tenant', tab: 'branches' } }).managerTab,
+      'branches'
+    );
+    assert.equal(
+      resolveTenantNotificationRoute({ userProfile: mgr, target: { surface: 'tenant', tab: 'employees' } }).managerTab,
+      'employees'
+    );
+  });
 
   console.log(`\nALL ${passed} UNIT TESTS PASSED`);
 }

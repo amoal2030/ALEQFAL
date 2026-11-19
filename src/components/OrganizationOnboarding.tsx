@@ -54,27 +54,27 @@ export const OrganizationOnboarding: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-md" dir={direction}>
-      <div className="w-full max-w-2xl bg-white dark:bg-[#0c1829] rounded-2xl sm:rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden transition-all">
+    <div className="min-h-screen flex items-center justify-center p-4 bg-[#F4F7FB] dark:bg-[#070E17]" dir={direction}>
+      <div className="w-full max-w-2xl bg-white dark:bg-[#0C1829] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden transition-all">
         {/* Header Banner */}
-        <div className="bg-gradient-to-r from-[#0b192c] via-[#0f2038] to-[#1e293b] p-4 sm:p-8 text-white relative border-b border-amber-500/20">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5 sm:gap-3">
-              <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center font-bold shrink-0">
+        <div className="bg-[#0B192C] p-5 sm:p-8 text-white relative border-b border-[#1A3152]">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-blue-600/25 border border-blue-400/30 text-blue-200 flex items-center justify-center shrink-0">
                 <Building2 className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
               <div>
-                <span className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-amber-400">
+                <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-blue-300">
                   {t('badgeCloudSaaS')}
                 </span>
-                <h2 className="text-base sm:text-2xl font-black">
+                <h2 className="text-base sm:text-2xl font-extrabold">
                   تأسيس المؤسسة التجارية الجديدة
                 </h2>
               </div>
             </div>
             <button
               onClick={logout}
-              className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition-colors text-xs flex items-center gap-1.5"
+              className="p-2 rounded-xl text-slate-300 hover:text-white hover:bg-white/10 transition-colors text-xs flex items-center gap-1.5"
               title={t('navLogout')}
             >
               <LogOut className="w-4 h-4" />
@@ -83,14 +83,14 @@ export const OrganizationOnboarding: React.FC = () => {
           </div>
 
           <p className="mt-3 text-xs sm:text-sm text-slate-300 leading-relaxed max-w-xl">
-            مرحباً بك يا <span className="font-bold text-amber-300">{currentUser?.displayName || currentUser?.email}</span>. خطوة واحدة أخيرة لتجهيز منظومتك المحاسبية وقاعدة بياناتك المنعزلة.
+            مرحباً بك يا <span className="font-bold text-blue-300">{currentUser?.displayName || currentUser?.email}</span>. خطوة واحدة أخيرة لتجهيز منظومتك المحاسبية وقاعدة بياناتك المنعزلة.
           </p>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-4 sm:p-8 space-y-5 sm:space-y-6">
+        <form onSubmit={handleSubmit} className="p-5 sm:p-8 space-y-5 sm:space-y-6">
           {errorMsg && (
-            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs sm:text-sm flex items-start gap-3">
+            <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300 text-xs sm:text-sm flex items-start gap-3">
               <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
               <span>{errorMsg}</span>
             </div>
@@ -98,14 +98,14 @@ export const OrganizationOnboarding: React.FC = () => {
 
           {/* Section 1: Org Info */}
           <div className="space-y-4">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
-              <FileText className="w-4 h-4 text-amber-500" />
+            <h3 className="text-sm font-extrabold text-[#0B192C] dark:text-white flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
+              <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
               <span>البيانات الأساسية للمؤسسة</span>
             </h3>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
                   اسم المؤسسة / المتجر التجاري *
                 </label>
                 <input
@@ -114,12 +114,12 @@ export const OrganizationOnboarding: React.FC = () => {
                   value={orgName}
                   onChange={(e) => setOrgName(e.target.value)}
                   placeholder="مثال: مطاعم ومقاهي السعادة"
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500 font-medium"
+                  className="w-full px-4 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15 font-medium"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
                   رقم السجل التجاري (اختياري)
                 </label>
                 <input
@@ -127,20 +127,20 @@ export const OrganizationOnboarding: React.FC = () => {
                   value={commercialRegistration}
                   onChange={(e) => setCommercialRegistration(e.target.value)}
                   placeholder="مثال: 1010000000"
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                  className="w-full px-4 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15"
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
                   النشاط التجاري
                 </label>
                 <select
                   value={activityType}
                   onChange={(e) => setActivityType(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white"
+                  className="w-full px-4 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600"
                 >
                   <option value="restaurant">مطعم أو كافيه</option>
                   <option value="retail">تجارة تجزئة ومتاجر</option>
@@ -151,13 +151,13 @@ export const OrganizationOnboarding: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
                   العملة المحاسبية الأساسية
                 </label>
                 <select
                   value={currency}
                   onChange={(e) => setCurrency(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white"
+                  className="w-full px-4 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600"
                 >
                   <option value="SAR">SAR - ريال سعودي</option>
                   <option value="AED">AED - درهم إماراتي</option>
@@ -171,14 +171,14 @@ export const OrganizationOnboarding: React.FC = () => {
 
           {/* Section 2: First Branch Setup */}
           <div className="space-y-4 pt-2">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
-              <MapPin className="w-4 h-4 text-sky-400" />
+            <h3 className="text-sm font-extrabold text-[#0B192C] dark:text-white flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
+              <MapPin className="w-4 h-4 text-sky-600 dark:text-sky-400" />
               <span>إعداد الفرع الأول التلقائي</span>
             </h3>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
                   اسم الفرع الرئيسي *
                 </label>
                 <input
@@ -187,12 +187,12 @@ export const OrganizationOnboarding: React.FC = () => {
                   value={firstBranchName}
                   onChange={(e) => setFirstBranchName(e.target.value)}
                   placeholder="مثال: الفرع الرئيسي - العليا"
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500 font-medium"
+                  className="w-full px-4 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15 font-medium"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
                   عنوان الفرع أو المدينة (اختياري)
                 </label>
                 <input
@@ -200,15 +200,15 @@ export const OrganizationOnboarding: React.FC = () => {
                   value={firstBranchAddress}
                   onChange={(e) => setFirstBranchAddress(e.target.value)}
                   placeholder="مثال: الرياض - طريق الملك فهد"
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                  className="w-full px-4 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15"
                 />
               </div>
             </div>
           </div>
 
           {/* Privacy & Security Guarantee */}
-          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-3">
-            <ShieldCheck className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+          <div className="p-4 rounded-2xl bg-blue-50 dark:bg-blue-950/35 border border-blue-200/80 dark:border-blue-800/70 text-xs text-blue-950 dark:text-blue-200 flex items-start gap-3">
+            <ShieldCheck className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
             <div className="leading-relaxed space-y-1">
               <span className="font-bold block">ضمان العزل والخصوصية:</span>
               <span>
@@ -221,7 +221,7 @@ export const OrganizationOnboarding: React.FC = () => {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-4 rounded-2xl font-black text-sm sm:text-base text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-amber-500 hover:from-amber-300 hover:to-amber-400 active:scale-98 transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 disabled:opacity-50"
+            className="w-full py-3.5 rounded-xl font-bold text-sm sm:text-base text-white bg-blue-600 hover:bg-blue-700 active:scale-99 transition-all shadow-xs flex items-center justify-center gap-2 disabled:opacity-50"
           >
             <Building2 className="w-5 h-5" />
             <span>{loading ? 'جاري تأسيس المؤسسة وحفظ البيانات...' : 'تأكيد التأسيس والدخول إلى لوحة التحكم'}</span>

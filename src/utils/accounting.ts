@@ -3,6 +3,7 @@
  * High-precision financial arithmetic avoiding floating point rounding anomalies
  * using integer Halala arithmetic (100 Halalas = 1 Currency Unit).
  */
+import type { PurchaseLineItem } from '../types';
 
 export interface ShiftCalculations {
   cashSales: number;
@@ -91,6 +92,273 @@ export function calculateShiftTotals(
     totalSalesHalalas,
     remainingInBoxHalalas,
     netPeriodHalalas,
+    isValid: errors.length === 0,
+    errors,
+  };
+}
+
+export interface PurchaseLineItemInput {
+  id?: string;
+  name: string;
+  quantity: number | string;
+  unitPrice: number | string;
+}
+
+export interface CalculatePurchaseTotalsInput {
+  items?: PurchaseLineItemInput[];
+  subtotalAmount?: number | string;
+  discountAmount?: number | string;
+  vatRate?: number | string;
+  /**
+   * Maximum allowed items for this calculation.
+   * Defaults to MAX_PURCHASE_LINE_ITEMS (1) for inline `/purchases/{id}.items` compatibility;
+   * pass MAX_PURCHASE_INVOICE_ITEMS (100) for subcollection `/purchases/{id}/items/{itemId}` invoices.
+   */
+  maxItems?: number;
+}
+
+export interface PurchaseCalculations {
+  items: PurchaseLineItem[];
+  subtotalAmount: number;
+  discountAmount: number;
+  taxableAmount: number;
+  vatRate: number;
+  vatAmount: number;
+  totalAmount: number;
+  // Raw integer halala values for zero-loss financial auditing
+  subtotalHalalas: number;
+  discountHalalas: number;
+  taxableHalalas: number;
+  vatHalalas: number;
+  totalHalalas: number;
+  isValid: boolean;
+  errors: string[];
+}
+
+function parseStrictNumericInput(
+  raw: number | string | undefined | null,
+  options?: { allowUndefinedAsZero?: boolean }
+): { ok: true; value: number } | { ok: false; reason: 'missing' | 'invalid' | 'negative' } {
+  if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+    if (options?.allowUndefinedAsZero) {
+      return { ok: true, value: 0 };
+    }
+    return { ok: false, reason: 'missing' };
+  }
+
+  let num: number;
+  if (typeof raw === 'number') {
+    num = raw;
+  } else if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(trimmed)) {
+      return { ok: false, reason: 'invalid' };
+    }
+    num = Number(trimmed);
+  } else {
+    return { ok: false, reason: 'invalid' };
+  }
+
+  if (!Number.isFinite(num) || Number.isNaN(num)) {
+    return { ok: false, reason: 'invalid' };
+  }
+  if (num < 0) {
+    return { ok: false, reason: 'negative' };
+  }
+  return { ok: true, value: num };
+}
+
+/**
+ * Maximum inline line items and attachment references enforceable atomically
+ * per Firestore `/purchases/{purchaseId}` document write under Firestore's
+ * hard 1,000 runtime expression evaluation ceiling (with full Halala/VAT,
+ * optional metadata, cross-doc attachment `getAfter`, and role/subscription rules).
+ * Multi-line invoices store items in subcollection `purchases/{purchaseId}/items/{itemId}`
+ * (up to MAX_PURCHASE_INVOICE_ITEMS = 100) and multiple attachments in `/attachments/{attachmentId}`.
+ */
+export const MAX_PURCHASE_LINE_ITEMS = 1;
+export const MAX_PURCHASE_ATTACHMENTS = 1;
+export const MAX_PURCHASE_INVOICE_ITEMS = 100;
+export const MAX_PURCHASE_INVOICE_ATTACHMENTS = 20;
+export const MAX_PURCHASE_ATTACHMENT_BYTES = 52_428_800; // 50 MB (matches firestore.rules)
+const MAX_PURCHASE_ITEM_QTY_OR_PRICE = 1_000_000_000;
+const MAX_PURCHASE_TOTAL_AMOUNT = 1_000_000_000_000;
+
+/**
+ * Purchase Accounting Equations executed with Integer Halala Precision:
+ * 1. Line Item Total = roundHalalas(quantity * unitPrice)
+ * 2. Subtotal = sum(Line Item Totals) (or direct subtotalAmount if no line items)
+ *    NOTE: `Purchase.amount` MUST equal `subtotalAmount` (pre-discount base amount).
+ * 3. Taxable Amount = Subtotal - Discount
+ * 4. VAT = integer Halala half-up rounding: floor((taxableHalalas * round(vatRate * 100) + 5000) / 10000)
+ * 5. Total Amount = Subtotal - Discount + VAT
+ */
+export function calculatePurchaseTotals(
+  input: CalculatePurchaseTotalsInput
+): PurchaseCalculations {
+  const errors: string[] = [];
+  const normalizedItems: PurchaseLineItem[] = [];
+  let subtotalHalalas = 0;
+
+  const hasItemsArray = Array.isArray(input.items) && input.items.length > 0;
+  const effectiveMaxItems =
+    input.maxItems !== undefined && Number.isFinite(input.maxItems)
+      ? Math.min(Math.max(1, Math.floor(input.maxItems)), MAX_PURCHASE_INVOICE_ITEMS)
+      : MAX_PURCHASE_LINE_ITEMS;
+
+  if (hasItemsArray) {
+    if (input.items!.length > effectiveMaxItems) {
+      errors.push('items_exceed_max_limit');
+    }
+
+    input.items!.forEach((rawItem, idx) => {
+      const trimmedId = rawItem.id === undefined ? `item_${idx}` : String(rawItem.id).trim();
+      if (trimmedId.length === 0) {
+        errors.push(`item_${idx}_id_required`);
+      } else if (trimmedId.length > 128) {
+        errors.push(`item_${idx}_id_too_long`);
+      }
+
+      const trimmedName = (rawItem.name ?? '').trim();
+      if (trimmedName.length === 0) {
+        errors.push(`item_${idx}_name_required`);
+      } else if (trimmedName.length > 200) {
+        errors.push(`item_${idx}_name_too_long`);
+      }
+
+      const qtyParsed = parseStrictNumericInput(rawItem.quantity);
+      const priceParsed = parseStrictNumericInput(rawItem.unitPrice);
+
+      let validQty = 0;
+      if (!qtyParsed.ok) {
+        errors.push(
+          qtyParsed.reason === 'negative'
+            ? `item_${idx}_quantity_must_be_positive`
+            : `item_${idx}_invalid_quantity`
+        );
+      } else if (qtyParsed.value <= 0) {
+        errors.push(`item_${idx}_quantity_must_be_positive`);
+      } else if (qtyParsed.value > MAX_PURCHASE_ITEM_QTY_OR_PRICE) {
+        errors.push(`item_${idx}_quantity_exceeds_max`);
+      } else {
+        validQty = qtyParsed.value;
+      }
+
+      let validUnitPrice = 0;
+      if (!priceParsed.ok) {
+        errors.push(
+          priceParsed.reason === 'negative'
+            ? `item_${idx}_unit_price_must_be_non_negative`
+            : `item_${idx}_invalid_unit_price`
+        );
+      } else if (priceParsed.value > MAX_PURCHASE_ITEM_QTY_OR_PRICE) {
+        errors.push(`item_${idx}_unit_price_exceeds_max`);
+      } else {
+        validUnitPrice = priceParsed.value;
+        if (Math.abs(validUnitPrice * 100 - Math.round(validUnitPrice * 100)) >= 0.001) {
+          errors.push(`item_${idx}_unit_price_precision_exceeded`);
+        }
+      }
+
+      const lineTotalHalalas =
+        validQty > 0 && validUnitPrice >= 0 ? toHalalas(validQty * validUnitPrice) : 0;
+
+      if (fromHalalas(lineTotalHalalas) > MAX_PURCHASE_TOTAL_AMOUNT) {
+        errors.push(`item_${idx}_total_exceeds_max`);
+      }
+
+      subtotalHalalas += lineTotalHalalas;
+
+      normalizedItems.push({
+        id: trimmedId || `item_${idx}`,
+        name: trimmedName,
+        quantity: validQty,
+        unitPrice: roundCurrency(validUnitPrice),
+        total: fromHalalas(lineTotalHalalas),
+      });
+    });
+  } else if (input.subtotalAmount !== undefined) {
+    const subParsed = parseStrictNumericInput(input.subtotalAmount);
+    if (!subParsed.ok) {
+      errors.push(
+        subParsed.reason === 'negative'
+          ? 'subtotal_must_be_non_negative'
+          : 'invalid_subtotal'
+      );
+    } else {
+      subtotalHalalas = toHalalas(subParsed.value);
+    }
+  } else {
+    errors.push('purchase_items_or_subtotal_required');
+  }
+
+  const discountParsed = parseStrictNumericInput(input.discountAmount, {
+    allowUndefinedAsZero: true,
+  });
+  let discountHalalas = 0;
+  if (!discountParsed.ok) {
+    errors.push(
+      discountParsed.reason === 'negative'
+        ? 'discount_must_be_non_negative'
+        : 'invalid_discount'
+    );
+  } else {
+    if (Math.abs(discountParsed.value * 100 - Math.round(discountParsed.value * 100)) >= 0.001) {
+      errors.push('discount_precision_exceeded');
+    }
+    discountHalalas = toHalalas(discountParsed.value);
+  }
+
+  if (discountHalalas > subtotalHalalas) {
+    errors.push('discount_exceeds_subtotal');
+  }
+
+  const vatRateParsed = parseStrictNumericInput(input.vatRate, {
+    allowUndefinedAsZero: true,
+  });
+  let vatRate = 0;
+  let vatRateBasisPoints = 0;
+  if (!vatRateParsed.ok) {
+    errors.push(
+      vatRateParsed.reason === 'negative'
+        ? 'vat_rate_must_be_non_negative'
+        : 'invalid_vat_rate'
+    );
+  } else if (vatRateParsed.value > 100) {
+    errors.push('vat_rate_exceeds_100');
+  } else {
+    vatRate = vatRateParsed.value;
+    vatRateBasisPoints = Math.round((vatRate + Number.EPSILON) * 100);
+    if (Math.abs(vatRate * 100 - vatRateBasisPoints) >= 0.001) {
+      errors.push('vat_rate_precision_exceeded');
+    }
+  }
+
+  const effectiveDiscountHalalas = Math.min(discountHalalas, subtotalHalalas);
+  const taxableHalalas = Math.max(0, subtotalHalalas - effectiveDiscountHalalas);
+  const vatHalalas = Math.floor((taxableHalalas * vatRateBasisPoints + 5000) / 10000);
+  const totalHalalas = subtotalHalalas - effectiveDiscountHalalas + vatHalalas;
+
+  if (fromHalalas(subtotalHalalas) > MAX_PURCHASE_TOTAL_AMOUNT) {
+    errors.push('subtotal_exceeds_max');
+  }
+  if (fromHalalas(totalHalalas) > MAX_PURCHASE_TOTAL_AMOUNT) {
+    errors.push('total_exceeds_max');
+  }
+
+  return {
+    items: normalizedItems,
+    subtotalAmount: fromHalalas(subtotalHalalas),
+    discountAmount: fromHalalas(discountHalalas),
+    taxableAmount: fromHalalas(taxableHalalas),
+    vatRate,
+    vatAmount: fromHalalas(vatHalalas),
+    totalAmount: fromHalalas(totalHalalas),
+    subtotalHalalas,
+    discountHalalas,
+    taxableHalalas,
+    vatHalalas,
+    totalHalalas,
     isValid: errors.length === 0,
     errors,
   };

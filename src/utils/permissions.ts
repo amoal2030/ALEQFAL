@@ -1,4 +1,5 @@
 import {
+  Supplier,
   SupportedLanguage,
   UserPermissions,
   UserProfile,
@@ -32,6 +33,12 @@ export interface EffectivePermissions extends Required<UserPermissions> {
   canManageUsersAndRoles: boolean;
   hasOrgWideBranchScope: boolean;
   hasSingleBranchRestriction: boolean;
+  // Derived Phase 4.4 supplier/purchase capability flags (client/domain enforcement)
+  canCreateSuppliers: boolean;
+  canEditSuppliers: boolean;
+  canToggleSuppliersStatus: boolean;
+  canDeleteSuppliers: boolean;
+  canSelectActiveSuppliersOnly: boolean;
 }
 
 const ROLE_LABELS: Record<UserRole, Record<SupportedLanguage, string>> = {
@@ -225,6 +232,11 @@ export function resolveEffectivePermissions(
     canManageUsersAndRoles: false,
     hasOrgWideBranchScope: false,
     hasSingleBranchRestriction: true,
+    canCreateSuppliers: false,
+    canEditSuppliers: false,
+    canToggleSuppliersStatus: false,
+    canDeleteSuppliers: false,
+    canSelectActiveSuppliersOnly: false,
   };
 
   if (!profile || profile.isActive !== true) {
@@ -250,6 +262,11 @@ export function resolveEffectivePermissions(
       canManageUsersAndRoles: true,
       hasOrgWideBranchScope: true,
       hasSingleBranchRestriction: false,
+      canCreateSuppliers: true,
+      canEditSuppliers: true,
+      canToggleSuppliersStatus: true,
+      canDeleteSuppliers: true,
+      canSelectActiveSuppliersOnly: false,
     };
   }
 
@@ -265,6 +282,7 @@ export function resolveEffectivePermissions(
       canExportReports: rawPerms.canExportReports === true || canViewFinancialReports,
       canManagePurchases: rawPerms.canManagePurchases === true,
       canManageSuppliers,
+      // Explicitly requires canViewSuppliers or canManageSuppliers; canManagePurchases alone does NOT grant supplier reads
       canViewSuppliers: rawPerms.canViewSuppliers === true || canManageSuppliers,
       canViewFinancialReports,
       canAdminCorrectClosings: false,
@@ -272,6 +290,12 @@ export function resolveEffectivePermissions(
       canManageUsersAndRoles: false,
       hasOrgWideBranchScope: true,
       hasSingleBranchRestriction: false,
+      // Supervisor can create a new supplier ONLY when explicitly permitted; cannot edit, toggle status, or delete
+      canCreateSuppliers: canManageSuppliers,
+      canEditSuppliers: false,
+      canToggleSuppliersStatus: false,
+      canDeleteSuppliers: false,
+      canSelectActiveSuppliersOnly: false,
     };
   }
 
@@ -296,6 +320,12 @@ export function resolveEffectivePermissions(
       canManageUsersAndRoles: false,
       hasOrgWideBranchScope: false,
       hasSingleBranchRestriction: true,
+      // Branch Manager selects from registered active suppliers only; cannot create, edit, toggle, or delete
+      canCreateSuppliers: false,
+      canEditSuppliers: false,
+      canToggleSuppliersStatus: false,
+      canDeleteSuppliers: false,
+      canSelectActiveSuppliersOnly: true,
     };
   }
 
@@ -316,6 +346,11 @@ export function resolveEffectivePermissions(
     canManageUsersAndRoles: false,
     hasOrgWideBranchScope: false,
     hasSingleBranchRestriction: true,
+    canCreateSuppliers: false,
+    canEditSuppliers: false,
+    canToggleSuppliersStatus: false,
+    canDeleteSuppliers: false,
+    canSelectActiveSuppliersOnly: false,
   };
 }
 
@@ -368,3 +403,51 @@ export function validateRoleAssignmentInput(params: {
 
   return { valid: true };
 }
+
+type PermissionProfileInput =
+  | Pick<UserProfile, 'orgId' | 'role' | 'isActive' | 'branchId' | 'branchIds' | 'permissions'>
+  | null
+  | undefined;
+
+export function canUserCreateSupplier(profile: PermissionProfileInput): boolean {
+  return resolveEffectivePermissions(profile).canCreateSuppliers;
+}
+
+export function canUserEditSupplier(profile: PermissionProfileInput): boolean {
+  return resolveEffectivePermissions(profile).canEditSuppliers;
+}
+
+export function canUserToggleSupplierStatus(profile: PermissionProfileInput): boolean {
+  return resolveEffectivePermissions(profile).canToggleSuppliersStatus;
+}
+
+export function canUserDeleteSupplier(profile: PermissionProfileInput): boolean {
+  return resolveEffectivePermissions(profile).canDeleteSuppliers;
+}
+
+export function canUserCreatePurchase(
+  profile: PermissionProfileInput,
+  targetBranchId?: string | null
+): boolean {
+  if (!profile || profile.isActive !== true) return false;
+  const effective = resolveEffectivePermissions(profile);
+  if (!effective.canManagePurchases) return false;
+
+  if (targetBranchId !== undefined) {
+    return canUserAccessBranch(profile, targetBranchId);
+  }
+  return true;
+}
+
+export function canUserSelectSupplierForPurchase(
+  profile: PermissionProfileInput,
+  supplier: Pick<Supplier, 'orgId' | 'isActive'> | null | undefined
+): boolean {
+  if (!profile || profile.isActive !== true || !supplier) return false;
+  if (supplier.isActive !== true) return false;
+  if (!profile.orgId || supplier.orgId !== profile.orgId) return false;
+
+  const effective = resolveEffectivePermissions(profile);
+  return effective.canManagePurchases && effective.canViewSuppliers;
+}
+

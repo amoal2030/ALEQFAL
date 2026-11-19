@@ -288,11 +288,14 @@ export interface Supplier {
   id: string;
   orgId: string;
   name: string;
+  contactPerson?: string;
+  companyName?: string;
   taxNumber?: string;
   phone?: string;
   email?: string;
   address?: string;
   notes?: string;
+  openingBalance?: number;
   isActive: boolean;
   createdBy: string;
   createdAt: string;
@@ -301,6 +304,32 @@ export interface Supplier {
 
 export type PurchasePaymentMethod = 'cash' | 'card' | 'transfer' | 'credit';
 
+export interface PurchaseLineItem {
+  id: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+}
+
+export interface PurchaseSubLineItem extends PurchaseLineItem {
+  purchaseId: string;
+  orgId: string;
+  branchId: string;
+  lineIndex: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface PurchaseAttachmentDraft {
+  localId: string;
+  file: File;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  previewUrl?: string;
+}
+
 export interface Purchase {
   id: string;
   orgId: string;
@@ -308,13 +337,19 @@ export interface Purchase {
   branchName?: string;
   supplierId: string;
   supplierName?: string;
+  taxNumber?: string;
   invoiceNumber?: string;
   date: string; // YYYY-MM-DD
+  items?: PurchaseLineItem[];
   amount: number;
+  subtotalAmount?: number;
+  discountAmount?: number;
+  vatRate?: number;
   vatAmount?: number;
   totalAmount: number;
   paymentMethod: PurchasePaymentMethod;
   notes?: string;
+  attachmentIds?: string[];
   createdBy: string;
   createdByName?: string;
   createdByRole: UserRole;
@@ -366,6 +401,7 @@ export interface AttachmentItem {
   orgId: string;
   branchId: string;
   closingId?: string;
+  purchaseId?: string;
   fileName: string;
   fileSize: number;
   mimeType: string;
@@ -459,6 +495,9 @@ export interface NotificationNavTarget {
   tab?:
     | 'overview'
     | 'closings'
+    | 'purchases'
+    | 'purchase_reports'
+    | 'suppliers'
     | 'reports'
     | 'branches'
     | 'employees'

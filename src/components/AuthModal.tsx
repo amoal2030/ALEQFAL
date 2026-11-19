@@ -137,29 +137,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-sm transition-all animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/65 backdrop-blur-xs transition-all">
       <div
-        className="relative w-full max-w-lg max-h-[92vh] flex flex-col bg-white dark:bg-[#0c1829] rounded-2xl sm:rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden"
+        className="relative w-full max-w-lg max-h-[92vh] flex flex-col bg-white dark:bg-[#0C1829] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden"
         dir={direction}
       >
-        {/* Modal Header */}
-        <div className="shrink-0 p-4 sm:p-6 pb-3 sm:pb-4 border-b border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
-          <div className="flex items-center gap-2.5 sm:gap-3">
-            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#0b192c] border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
+        {/* Modal Header (Dark Navy) */}
+        <div className="shrink-0 px-5 py-4 bg-[#0B192C] text-white border-b border-[#1A3152] flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-blue-600/25 border border-blue-400/30 text-blue-200 flex items-center justify-center shrink-0">
               <Lock className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
             <div>
-              <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white leading-tight">
+              <h3 className="text-base sm:text-lg font-extrabold text-white leading-tight">
                 {t('authModalTitle')}
               </h3>
-              <span className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400">
+              <span className="text-[11px] sm:text-xs text-blue-200/80">
                 {t('brandName')} | {t('brandSub')}
               </span>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center"
+            className="p-2 rounded-xl text-slate-300 hover:text-white hover:bg-white/10 transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center"
             aria-label="إغلاق النافذة"
           >
             <X className="w-5 h-5" />
@@ -168,7 +168,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {/* Tab Switcher */}
         {!isForgotPassword && (
-          <div className="shrink-0 grid grid-cols-2 p-1.5 sm:p-2 bg-slate-100 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 text-xs font-semibold">
+          <div className="shrink-0 grid grid-cols-2 p-1.5 bg-[#F4F7FB] dark:bg-[#091526] border-b border-slate-200 dark:border-slate-800 text-xs font-bold">
             <button
               type="button"
               onClick={() => {
@@ -176,10 +176,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 setErrorMsg(null);
                 setSuccessMsg(null);
               }}
-              className={`py-2 rounded-lg transition-all min-h-[36px] ${
+              className={`py-2 rounded-xl transition-all min-h-[38px] ${
                 activeTab === 'manager' || activeTab === 'register'
-                  ? 'bg-white dark:bg-[#0c1829] text-amber-600 dark:text-amber-400 shadow-sm font-bold'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-[#0B192C] dark:hover:text-white'
               }`}
             >
               {t('authManagerTab')}
@@ -191,10 +191,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 setErrorMsg(null);
                 setSuccessMsg(null);
               }}
-              className={`py-2 rounded-lg transition-all min-h-[36px] ${
+              className={`py-2 rounded-xl transition-all min-h-[38px] ${
                 activeTab === 'employee'
-                  ? 'bg-white dark:bg-[#0c1829] text-amber-600 dark:text-amber-400 shadow-sm font-bold'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-[#0B192C] dark:hover:text-white'
               }`}
             >
               {t('authEmployeeTab')}
@@ -203,15 +203,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         )}
 
         {/* Scrollable Modal Content */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-5">
+        <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-4 sm:space-y-5">
           {/* Messages */}
           {errorMsg && (
-            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs flex items-start gap-2.5">
+            <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300 text-xs flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <div className="space-y-1">
                 <span>{errorMsg}</span>
                 {errorMsg.includes('amoal2030.github.io') && (
-                  <div className="pt-2 mt-2 border-t border-rose-500/20 text-[11px] font-mono text-rose-700 dark:text-rose-300">
+                  <div className="pt-2 mt-2 border-t border-rose-500/20 text-[11px] font-mono-num text-rose-700 dark:text-rose-300">
                     النطاق المطلوب إضافته: <span className="font-bold underline select-all">amoal2030.github.io</span>
                   </div>
                 )}
@@ -219,7 +219,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
           {successMsg && (
-            <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs flex items-start gap-2.5">
+            <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300 text-xs flex items-start gap-2.5">
               <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{successMsg}</span>
             </div>
@@ -232,7 +232,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
                   {t('authEmail')}
                 </label>
                 <div className="relative">
@@ -242,7 +242,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="name@store.com"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15"
                   />
                   <Mail className="w-4 h-4 text-slate-400 absolute end-3 top-3" />
                 </div>
@@ -252,14 +252,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <button
                   type="submit"
                   disabled={loading}
-                  className="flex-1 py-3 rounded-xl font-bold text-xs text-slate-950 bg-amber-400 hover:bg-amber-300 transition-all active:scale-98 disabled:opacity-50"
+                  className="flex-1 py-3 rounded-xl font-bold text-xs text-white bg-blue-600 hover:bg-blue-700 transition-all active:scale-99 disabled:opacity-50"
                 >
                   {loading ? 'جاري الإرسال...' : 'إرسال رابط الاستعادة'}
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsForgotPassword(false)}
-                  className="px-4 py-3 rounded-xl font-medium text-xs text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  className="px-4 py-3 rounded-xl font-semibold text-xs text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700"
                 >
                   إلغاء
                 </button>
@@ -268,8 +268,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           ) : (activeTab === 'manager' || activeTab === 'register') ? (
             /* Manager Google Login & Onboarding */
             <div className="space-y-4">
-              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2.5">
-                <ShieldCheck className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              <div className="p-4 rounded-xl bg-blue-50 dark:bg-blue-950/35 border border-blue-200/80 dark:border-blue-800/70 text-xs text-blue-950 dark:text-blue-200 flex items-start gap-2.5">
+                <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
                 <p className="leading-relaxed">
                   {t('subAuthNoticeNewManager')}
                 </p>
@@ -279,7 +279,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 type="button"
                 onClick={handleGoogleManagerSignIn}
                 disabled={loading}
-                className="w-full flex items-center justify-center gap-3 py-3.5 px-4 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#070e17] hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-900 dark:text-white text-sm font-bold shadow-sm hover:shadow transition-all active:scale-98 disabled:opacity-50"
+                className="w-full flex items-center justify-center gap-3 py-3.5 px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#070E17] hover:bg-blue-50/60 dark:hover:bg-slate-800 text-[#0B192C] dark:text-white text-sm font-bold shadow-xs hover:border-blue-300 transition-all active:scale-99 disabled:opacity-50"
               >
                 <svg className="w-5 h-5 shrink-0" viewBox="0 0 48 48">
                   <path
@@ -309,13 +309,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           ) : (
             /* Employee Login */
             <form onSubmit={handleEmployeeLogin} className="space-y-4">
-              <div className="p-3.5 rounded-xl bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+              <div className="p-3.5 rounded-xl bg-[#F4F7FB] dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
                 <p className="leading-relaxed">{t('authNoticeEmployee')}</p>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
                   {t('authEmail')}
                 </label>
                 <div className="relative">
@@ -325,15 +325,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="cashier@store.com"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15"
                   />
                   <Mail className="w-4 h-4 text-slate-400 absolute end-3 top-3" />
                 </div>
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300">
                     {t('authPassword')}
                   </label>
                   <button
@@ -342,7 +342,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       setIsForgotPassword(true);
                       setErrorMsg(null);
                     }}
-                    className="text-[11px] text-amber-600 dark:text-amber-400 hover:underline"
+                    className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline"
                   >
                     نسيت كلمة المرور؟
                   </button>
@@ -354,7 +354,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15"
                   />
                   <KeyRound className="w-4 h-4 text-slate-400 absolute end-3 top-3" />
                 </div>
@@ -363,7 +363,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3.5 rounded-xl font-bold text-sm text-slate-950 bg-amber-400 hover:bg-amber-300 transition-all active:scale-98 shadow-sm disabled:opacity-50"
+                className="w-full py-3.5 rounded-xl font-bold text-sm text-white bg-blue-600 hover:bg-blue-700 transition-all active:scale-99 shadow-xs disabled:opacity-50"
               >
                 {loading ? 'جاري التحقق والدخول...' : t('authSubmitLogin')}
               </button>

@@ -9,11 +9,19 @@ import { FinancialReports } from './manager/FinancialReports';
 import { AuditLogsView } from './manager/AuditLogsView';
 import { SettingsView } from './manager/SettingsView';
 import { EmployeeDashboard } from './employee/EmployeeDashboard';
+import { PurchaseEntryView } from './purchases/PurchaseEntryView';
+import { PurchaseReportsView } from './manager/PurchaseReportsView';
+import { SuppliersManager } from './suppliers/SuppliersManager';
 import { useTheme } from '../context/ThemeContext';
-import { SupportedLanguage, NotificationNavTarget } from '../types';
+import { AppNotification, SupportedLanguage, NotificationNavTarget } from '../types';
 import { getActiveDriveSession } from '../services/driveService';
 import { AppPageRoute, buildLegalPath } from '../utils/legalRoutes';
 import { getUserRoleLabel, resolveEffectivePermissions } from '../utils/permissions';
+import {
+  ManagerDashboardTab,
+  resolveTenantNotificationRoute,
+  StaffDashboardTab,
+} from '../utils/notifications';
 import { NotificationCenter } from './common/NotificationCenter';
 import {
   Building2,
@@ -34,7 +42,10 @@ import {
   Globe,
   ChevronDown,
   AlertTriangle,
-  Clock
+  Clock,
+  ShoppingBag,
+  Truck,
+  BarChart3
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -68,23 +79,50 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
     !isManager &&
     userProfile?.role === 'supervisor' &&
     effectivePerms.canViewFinancialReports;
-  const hasSupervisorExtraTabs = canSupervisorReviewClosings || canSupervisorViewReports;
+  const canStaffManagePurchases =
+    !isManager &&
+    (userProfile?.role === 'supervisor' || userProfile?.role === 'branch_manager') &&
+    effectivePerms.canManagePurchases;
+  const canSupervisorManageSuppliers =
+    !isManager &&
+    userProfile?.role === 'supervisor' &&
+    effectivePerms.canCreateSuppliers;
+  const hasStaffExtraTabs =
+    canStaffManagePurchases ||
+    canSupervisorManageSuppliers ||
+    canSupervisorReviewClosings ||
+    canSupervisorViewReports;
 
-  // Manager navigation tab state (including new Settings tab)
-  const [managerTab, setManagerTab] = useState<'overview' | 'closings' | 'reports' | 'branches' | 'employees' | 'audit' | 'settings'>('overview');
-  const [staffTab, setStaffTab] = useState<'workspace' | 'closings' | 'reports'>('workspace');
+  // Manager navigation tab state (Purchase Reports replaces Purchase Entry for Manager)
+  const [managerTab, setManagerTab] = useState<ManagerDashboardTab>('overview');
+  const [staffTab, setStaffTab] = useState<StaffDashboardTab>('workspace');
+  const [purchaseNavFocus, setPurchaseNavFocus] = useState<{
+    purchaseId?: string;
+    branchId?: string;
+    nonce: number;
+  } | null>(null);
   const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [hasActiveDriveSession, setHasActiveDriveSession] = useState<boolean>(() =>
     Boolean(getActiveDriveSession(currentOrg?.id))
   );
 
   useEffect(() => {
-    if (staffTab === 'closings' && !canSupervisorReviewClosings) {
+    if (staffTab === 'purchases' && !canStaffManagePurchases) {
+      setStaffTab('workspace');
+    } else if (staffTab === 'suppliers' && !canSupervisorManageSuppliers) {
+      setStaffTab('workspace');
+    } else if (staffTab === 'closings' && !canSupervisorReviewClosings) {
       setStaffTab('workspace');
     } else if (staffTab === 'reports' && !canSupervisorViewReports) {
       setStaffTab('workspace');
     }
-  }, [staffTab, canSupervisorReviewClosings, canSupervisorViewReports]);
+  }, [
+    staffTab,
+    canStaffManagePurchases,
+    canSupervisorManageSuppliers,
+    canSupervisorReviewClosings,
+    canSupervisorViewReports,
+  ]);
 
   useEffect(() => {
     const syncSessionFlag = () => setHasActiveDriveSession(Boolean(getActiveDriveSession(currentOrg?.id)));
@@ -96,30 +134,31 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
   // Count pending reviews for manager badge
   const pendingCount = closings.filter((c) => c.status === 'pending_review').length;
 
-  const handleNotificationNavigate = (target: NotificationNavTarget) => {
-    if (isManager) {
-      if (
-        target.tab === 'overview' ||
-        target.tab === 'closings' ||
-        target.tab === 'reports' ||
-        target.tab === 'branches' ||
-        target.tab === 'employees' ||
-        target.tab === 'audit' ||
-        target.tab === 'settings'
-      ) {
-        setManagerTab(target.tab);
-      } else {
-        setManagerTab('overview');
-      }
+  const handleNotificationNavigate = (
+    target: NotificationNavTarget,
+    notification?: AppNotification
+  ) => {
+    const route = resolveTenantNotificationRoute({
+      userProfile,
+      target,
+      notification,
+    });
+
+    if (route.isPurchaseTarget && (route.entityId || route.branchId)) {
+      setPurchaseNavFocus({
+        ...(route.entityId ? { purchaseId: route.entityId } : {}),
+        ...(route.branchId ? { branchId: route.branchId } : {}),
+        nonce: Date.now(),
+      });
+    }
+
+    if (route.roleGroup === 'manager' && route.managerTab) {
+      setManagerTab(route.managerTab);
       return;
     }
 
-    if (target.tab === 'closings' && canSupervisorReviewClosings) {
-      setStaffTab('closings');
-    } else if (target.tab === 'reports' && canSupervisorViewReports) {
-      setStaffTab('reports');
-    } else {
-      setStaffTab('workspace');
+    if (route.staffTab) {
+      setStaffTab(route.staffTab);
     }
   };
 
@@ -287,6 +326,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
                   >
                     <option value="overview">📊 الرئيسية والإحصائيات</option>
                     <option value="closings">📑 مراجعة الإقفالات {pendingCount > 0 ? `(${pendingCount} معلق)` : ''}</option>
+                    <option value="purchase_reports">🧾 تقارير المشتريات</option>
+                    <option value="suppliers">🚚 إدارة الموردين</option>
                     <option value="reports">📈 التقارير المالية والمجاميع</option>
                     <option value="branches">🏢 إدارة الفروع ({branches.length})</option>
                     <option value="employees">👥 إدارة الموظفين والصلاحيات</option>
@@ -325,6 +366,30 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
                       {pendingCount}
                     </span>
                   )}
+                </button>
+
+                <button
+                  onClick={() => setManagerTab('purchase_reports')}
+                  className={`px-3.5 py-2 rounded-xl transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                    managerTab === 'purchase_reports'
+                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <BarChart3 className="w-3.5 h-3.5" />
+                  <span>تقارير المشتريات</span>
+                </button>
+
+                <button
+                  onClick={() => setManagerTab('suppliers')}
+                  className={`px-3.5 py-2 rounded-xl transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                    managerTab === 'suppliers'
+                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Truck className="w-3.5 h-3.5" />
+                  <span>إدارة الموردين</span>
                 </button>
 
                 <button
@@ -390,8 +455,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
             </div>
           )}
 
-          {/* Optional Supervisor Sub-Navigation (Shown ONLY if manager explicitly opted in extra tabs) */}
-          {!isManager && hasSupervisorExtraTabs && (
+          {/* Staff Sub-Navigation (Shown ONLY for Branch Manager with purchases OR Supervisor with enabled tabs; NEVER for Employee) */}
+          {!isManager && hasStaffExtraTabs && (
             <div className="py-2.5 border-t border-slate-100 dark:border-slate-800/80 no-print flex items-center gap-1.5 overflow-x-auto text-xs font-semibold">
               <button
                 type="button"
@@ -405,6 +470,36 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
                 <Clock className="w-3.5 h-3.5" />
                 <span>تسجيل الورديات</span>
               </button>
+
+              {canStaffManagePurchases && (
+                <button
+                  type="button"
+                  onClick={() => setStaffTab('purchases')}
+                  className={`px-3.5 py-2 rounded-xl transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                    staffTab === 'purchases'
+                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <ShoppingBag className="w-3.5 h-3.5" />
+                  <span>إدخال المشتريات</span>
+                </button>
+              )}
+
+              {canSupervisorManageSuppliers && (
+                <button
+                  type="button"
+                  onClick={() => setStaffTab('suppliers')}
+                  className={`px-3.5 py-2 rounded-xl transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                    staffTab === 'suppliers'
+                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Truck className="w-3.5 h-3.5" />
+                  <span>الموردون</span>
+                </button>
+              )}
 
               {canSupervisorReviewClosings && (
                 <button
@@ -500,6 +595,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
               <ManagerOverview onNavigateTab={(tab) => setManagerTab(tab)} />
             )}
             {managerTab === 'closings' && <ClosingsReview />}
+            {managerTab === 'purchase_reports' && (
+              <PurchaseReportsView navigationFocus={purchaseNavFocus} />
+            )}
+            {managerTab === 'suppliers' && <SuppliersManager />}
             {managerTab === 'reports' && <FinancialReports />}
             {managerTab === 'branches' && <BranchesManager />}
             {managerTab === 'employees' && <EmployeesManager />}
@@ -509,7 +608,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
         ) : (
           /* Staff / Supervisor / Branch Manager View Router */
           <>
-            {staffTab === 'closings' && canSupervisorReviewClosings ? (
+            {staffTab === 'purchases' && canStaffManagePurchases ? (
+              <PurchaseEntryView
+                initialBranchId={purchaseNavFocus?.branchId}
+                onOpenSuppliers={
+                  canSupervisorManageSuppliers ? () => setStaffTab('suppliers') : undefined
+                }
+              />
+            ) : staffTab === 'suppliers' && canSupervisorManageSuppliers ? (
+              <SuppliersManager />
+            ) : staffTab === 'closings' && canSupervisorReviewClosings ? (
               <ClosingsReview />
             ) : staffTab === 'reports' && canSupervisorViewReports ? (
               <FinancialReports />

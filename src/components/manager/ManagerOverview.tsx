@@ -3,6 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { formatCurrency } from '../../utils/accounting';
 import { FinancialCharts } from '../common/Charts';
+import { PageHeader, KpiStatCard, SELECT_CLASS, BTN_PRIMARY } from '../common/UiPrimitives';
 import {
   Coins,
   CreditCard,
@@ -12,12 +13,8 @@ import {
   CheckCircle2,
   Clock,
   RotateCcw,
-  GitBranch,
-  Users,
-  HardDrive,
-  ShieldCheck,
-  Calendar,
-  Sparkles
+  Wallet,
+  Banknote,
 } from 'lucide-react';
 
 interface ManagerOverviewProps {
@@ -25,18 +22,16 @@ interface ManagerOverviewProps {
 }
 
 export const ManagerOverview: React.FC<ManagerOverviewProps> = ({ onNavigateTab }) => {
-  const { closings, branches, employees, currentOrg } = useAuth();
-  const { language, t } = useLanguage();
+  const { closings, branches, currentOrg } = useAuth();
+  const { language } = useLanguage();
 
   const [filterBranchId, setFilterBranchId] = useState<string>('all');
 
-  // Filter closings for stats
   const activeClosings = closings.filter((c) => {
     if (filterBranchId !== 'all' && c.branchId !== filterBranchId) return false;
     return true;
   });
 
-  // Approved and all totals
   const totalSales = activeClosings.reduce((sum, c) => sum + c.totalSales, 0);
   const totalCash = activeClosings.reduce((sum, c) => sum + c.cashSales, 0);
   const totalCard = activeClosings.reduce((sum, c) => sum + c.cardSales, 0);
@@ -44,29 +39,23 @@ export const ManagerOverview: React.FC<ManagerOverviewProps> = ({ onNavigateTab 
   const totalRemainingInBox = activeClosings.reduce((sum, c) => sum + c.remainingInBox, 0);
   const totalNetPeriod = activeClosings.reduce((sum, c) => sum + c.netPeriod, 0);
 
-  // Status counts
   const pendingCount = activeClosings.filter((c) => c.status === 'pending_review').length;
   const approvedCount = activeClosings.filter((c) => c.status === 'approved').length;
   const rejectedCount = activeClosings.filter((c) => c.status === 'rejected').length;
 
-  return (
-    <div className="space-y-8">
-      {/* Top Filter and Stats Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h3 className="text-xl font-bold text-slate-900 dark:text-white">
-            مؤشرات الأداء المالي والإقفالات
-          </h3>
-          <span className="text-xs text-slate-500 dark:text-slate-400">
-            ملخص فوري لجميع صناديق الفروع والمبيعات والمصروفات
-          </span>
-        </div>
+  const currency = currentOrg?.currency || 'SAR';
 
-        <div className="flex items-center gap-3">
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="مؤشرات الأداء المالي والإقفالات"
+        subtitle="ملخص فوري لجميع صناديق الفروع والمبيعات والمصروفات"
+        icon={<TrendingUp className="w-5 h-5" />}
+        actions={
           <select
             value={filterBranchId}
             onChange={(e) => setFilterBranchId(e.target.value)}
-            className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-[#0c1829] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white shadow-sm"
+            className={`${SELECT_CLASS} sm:w-56 font-bold text-xs`}
           >
             <option value="all">جميع الفروع ({branches.length})</option>
             {branches.map((b) => (
@@ -75,168 +64,166 @@ export const ManagerOverview: React.FC<ManagerOverviewProps> = ({ onNavigateTab 
               </option>
             ))}
           </select>
-        </div>
-      </div>
+        }
+      />
 
       {/* 10 Required KPI Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3.5">
-        {/* 1. Total Sales */}
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl p-3 sm:p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute top-0 inset-x-0 h-1 bg-amber-500" />
-          <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1 truncate">
-            إجمالي المبيعات
-          </span>
-          <div className="text-base sm:text-xl font-black text-slate-900 dark:text-white font-mono truncate">
-            {formatCurrency(totalSales, currentOrg?.currency || 'SAR', language)}
-          </div>
-          <span className="text-[9px] sm:text-[10px] text-amber-500 font-medium">نقد + شبكة</span>
-        </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+        <KpiStatCard
+          label="إجمالي المبيعات"
+          value={
+            <span className="font-mono-num text-base sm:text-xl">
+              {formatCurrency(totalSales, currency, language)}
+            </span>
+          }
+          sublabel="نقد + شبكة"
+          icon={<TrendingUp className="w-4 h-4" />}
+          tone="navy"
+        />
 
-        {/* 2. Total Cash */}
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl p-3 sm:p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute top-0 inset-x-0 h-1 bg-amber-400" />
-          <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1 truncate">
-            إجمالي النقد (كاش)
-          </span>
-          <div className="text-base sm:text-xl font-black text-amber-500 font-mono truncate">
-            {formatCurrency(totalCash, currentOrg?.currency || 'SAR', language)}
-          </div>
-          <span className="text-[9px] sm:text-[10px] text-slate-400 font-medium">السيولة المستلمة</span>
-        </div>
+        <KpiStatCard
+          label="إجمالي النقد (كاش)"
+          value={
+            <span className="font-mono-num text-base sm:text-xl text-blue-700 dark:text-blue-300">
+              {formatCurrency(totalCash, currency, language)}
+            </span>
+          }
+          sublabel="السيولة المستلمة"
+          icon={<Coins className="w-4 h-4" />}
+          tone="blue"
+        />
 
-        {/* 3. Total Card */}
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl p-3 sm:p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute top-0 inset-x-0 h-1 bg-sky-400" />
-          <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1 truncate">
-            إجمالي الشبكة (مدى)
-          </span>
-          <div className="text-base sm:text-xl font-black text-sky-400 font-mono truncate">
-            {formatCurrency(totalCard, currentOrg?.currency || 'SAR', language)}
-          </div>
-          <span className="text-[9px] sm:text-[10px] text-slate-400 font-medium">مدفوعات نقاط البيع</span>
-        </div>
+        <KpiStatCard
+          label="إجمالي الشبكة (مدى)"
+          value={
+            <span className="font-mono-num text-base sm:text-xl text-sky-700 dark:text-sky-300">
+              {formatCurrency(totalCard, currency, language)}
+            </span>
+          }
+          sublabel="مدفوعات نقاط البيع"
+          icon={<CreditCard className="w-4 h-4" />}
+          tone="sky"
+        />
 
-        {/* 4. Total Expenses */}
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl p-3 sm:p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute top-0 inset-x-0 h-1 bg-rose-400" />
-          <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1 truncate">
-            إجمالي المشتريات
-          </span>
-          <div className="text-base sm:text-xl font-black text-rose-400 font-mono truncate">
-            {formatCurrency(totalExpenses, currentOrg?.currency || 'SAR', language)}
-          </div>
-          <span className="text-[9px] sm:text-[10px] text-slate-400 font-medium">مصروفات الصناديق</span>
-        </div>
+        <KpiStatCard
+          label="إجمالي المشتريات"
+          value={
+            <span className="font-mono-num text-base sm:text-xl text-rose-600 dark:text-rose-400">
+              {formatCurrency(totalExpenses, currency, language)}
+            </span>
+          }
+          sublabel="مصروفات الصناديق"
+          icon={<ShoppingBag className="w-4 h-4" />}
+          tone="rose"
+        />
 
-        {/* 5. Remaining in Box */}
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl p-3 sm:p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute top-0 inset-x-0 h-1 bg-sky-500" />
-          <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1 truncate">
-            الكاش المتبقي بالصندوق
-          </span>
-          <div className="text-base sm:text-xl font-black text-sky-500 font-mono truncate">
-            {formatCurrency(totalRemainingInBox, currentOrg?.currency || 'SAR', language)}
-          </div>
-          <span className="text-[9px] sm:text-[10px] text-sky-600 dark:text-sky-400 font-medium">
-            النقد - المشتريات
-          </span>
-        </div>
+        <KpiStatCard
+          label="الكاش المتبقي بالصندوق"
+          value={
+            <span className="font-mono-num text-base sm:text-xl text-blue-700 dark:text-blue-300">
+              {formatCurrency(totalRemainingInBox, currency, language)}
+            </span>
+          }
+          sublabel="النقد - المشتريات"
+          icon={<Wallet className="w-4 h-4" />}
+          tone="blue"
+        />
 
-        {/* 6. Net Revenue */}
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl p-3 sm:p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute top-0 inset-x-0 h-1 bg-amber-400" />
-          <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1 truncate">
-            صافي المبيعات
-          </span>
-          <div className="text-base sm:text-xl font-black text-amber-400 font-mono truncate">
-            {formatCurrency(totalNetPeriod, currentOrg?.currency || 'SAR', language)}
-          </div>
-          <span className="text-[9px] sm:text-[10px] text-amber-500 font-medium">المبيعات - المشتريات</span>
-        </div>
+        <KpiStatCard
+          label="صافي المبيعات"
+          value={
+            <span className="font-mono-num text-base sm:text-xl text-emerald-700 dark:text-emerald-300">
+              {formatCurrency(totalNetPeriod, currency, language)}
+            </span>
+          }
+          sublabel="المبيعات - المشتريات"
+          icon={<Banknote className="w-4 h-4" />}
+          tone="emerald"
+        />
 
-        {/* 7. Total Closings */}
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl p-3 sm:p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute top-0 inset-x-0 h-1 bg-slate-400" />
-          <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1 truncate">
-            عدد الإقفالات
-          </span>
-          <div className="text-base sm:text-xl font-black text-slate-900 dark:text-white font-mono">
-            {activeClosings.length}
-          </div>
-          <span className="text-[9px] sm:text-[10px] text-slate-400 font-medium">جميع الورديات</span>
-        </div>
+        <KpiStatCard
+          label="عدد الإقفالات"
+          value={<span className="font-mono-num text-base sm:text-xl">{activeClosings.length}</span>}
+          sublabel="جميع الورديات"
+          icon={<FileSpreadsheet className="w-4 h-4" />}
+          tone="navy"
+        />
 
-        {/* 8. Pending Closings */}
-        <div
+        <button
+          type="button"
           onClick={() => onNavigateTab('closings')}
-          className="bg-white dark:bg-[#0c1829] rounded-2xl p-3 sm:p-5 border border-amber-500/30 shadow-sm relative overflow-hidden group cursor-pointer hover:border-amber-400 transition-colors"
+          className="text-start bg-white dark:bg-[#0C1829] rounded-2xl border border-amber-300 dark:border-amber-500/40 p-4 sm:p-5 shadow-xs hover:border-blue-500 transition-colors"
         >
-          <div className="absolute top-0 inset-x-0 h-1 bg-amber-500 animate-pulse" />
-          <span className="text-[10px] sm:text-[11px] font-medium text-amber-600 dark:text-amber-400 block mb-1 flex items-center justify-between">
-            <span>معلق للمراجعة</span>
-            <Clock className="w-3.5 h-3.5 text-amber-500" />
-          </span>
-          <div className="text-base sm:text-xl font-black text-amber-500 font-mono">
-            {pendingCount}
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-amber-800 dark:text-amber-300 truncate">
+                معلق للمراجعة
+              </p>
+              <div className="text-base sm:text-xl font-extrabold text-amber-700 dark:text-amber-300 mt-1.5 font-mono-num">
+                {pendingCount}
+              </div>
+              <div className="text-[11px] font-bold text-blue-600 dark:text-blue-400 mt-1 underline">
+                فحص واعتماد الآن ←
+              </div>
+            </div>
+            <div className="w-10 h-10 rounded-xl border bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/25 flex items-center justify-center shrink-0">
+              <Clock className="w-4 h-4" />
+            </div>
           </div>
-          <span className="text-[9px] sm:text-[10px] text-amber-600 dark:text-amber-400 font-semibold underline">
-            فحص واعتماد الآن ←
-          </span>
-        </div>
+        </button>
 
-        {/* 9. Approved Closings */}
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl p-3 sm:p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute top-0 inset-x-0 h-1 bg-amber-400" />
-          <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1 flex items-center justify-between">
-            <span>إقفالات معتمدة</span>
-            <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />
-          </span>
-          <div className="text-base sm:text-xl font-black text-amber-400 font-mono">
-            {approvedCount}
-          </div>
-          <span className="text-[9px] sm:text-[10px] text-slate-400 font-medium">مقفلة رسمياً</span>
-        </div>
+        <KpiStatCard
+          label="إقفالات معتمدة"
+          value={
+            <span className="font-mono-num text-base sm:text-xl text-emerald-700 dark:text-emerald-300">
+              {approvedCount}
+            </span>
+          }
+          sublabel="مقفلة رسمياً"
+          icon={<CheckCircle2 className="w-4 h-4" />}
+          tone="emerald"
+        />
 
-        {/* 10. Rejected Closings */}
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl p-3 sm:p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute top-0 inset-x-0 h-1 bg-rose-500" />
-          <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1 flex items-center justify-between">
-            <span>معاد للتعديل</span>
-            <RotateCcw className="w-3.5 h-3.5 text-rose-500" />
-          </span>
-          <div className="text-base sm:text-xl font-black text-rose-400 font-mono">
-            {rejectedCount}
-          </div>
-          <span className="text-[9px] sm:text-[10px] text-rose-500 font-medium">بانتظار تصحيح الموظف</span>
-        </div>
+        <KpiStatCard
+          label="معاد للتعديل"
+          value={
+            <span className="font-mono-num text-base sm:text-xl text-rose-600 dark:text-rose-400">
+              {rejectedCount}
+            </span>
+          }
+          sublabel="بانتظار تصحيح الموظف"
+          icon={<RotateCcw className="w-4 h-4" />}
+          tone="rose"
+        />
       </div>
 
       {/* Visual Charts */}
       <FinancialCharts
         closings={activeClosings}
-        currency={currentOrg?.currency || 'SAR'}
+        currency={currency}
         language={language}
       />
 
       {/* Pending Reviews Alert Banner */}
       {pendingCount > 0 && (
-        <div className="p-5 rounded-2xl bg-gradient-to-r from-[#0b192c] to-[#0f2038] text-white border border-amber-500/40 flex flex-wrap items-center justify-between gap-4 shadow-lg">
+        <div className="p-5 rounded-2xl bg-[#0B192C] text-white border border-[#1E375B] flex flex-wrap items-center justify-between gap-4 shadow-sm">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
+            <div className="w-10 h-10 rounded-xl bg-blue-600/25 border border-blue-400/30 text-blue-300 flex items-center justify-center font-bold shrink-0">
               <Clock className="w-5 h-5" />
             </div>
             <div>
-              <h4 className="text-sm font-bold">
+              <h4 className="text-sm font-extrabold">
                 لديك {pendingCount} إقفال وردية بانتظار المراجعة والاعتماد
               </h4>
-              <p className="text-xs text-slate-300">
+              <p className="text-xs text-slate-300 mt-0.5">
                 قام الموظفون برفع مبيعات النقد والشبكة والمرفقات؛ يمكنك اعتمادها الآن لإدراجها في الكشوفات الرسمية.
               </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={() => onNavigateTab('closings')}
-            className="px-5 py-2.5 rounded-xl font-bold text-xs sm:text-sm text-slate-950 bg-amber-400 hover:bg-amber-300 shadow-md transition-all active:scale-95"
+            className={BTN_PRIMARY}
           >
             الانتقال لجدول الإقفالات
           </button>

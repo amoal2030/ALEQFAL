@@ -64,11 +64,11 @@ export const LegalPage: React.FC<LegalPageProps> = ({
 
   return (
     <div
-      className="min-h-screen flex flex-col bg-slate-50 dark:bg-[#070e17] text-slate-900 dark:text-slate-100 transition-colors"
+      className="min-h-screen flex flex-col bg-[#F4F7FB] dark:bg-[#070E17] text-[#0B192C] dark:text-slate-100 transition-colors"
       dir={legalDir}
     >
       {/* Clean Top Bar for Legal Document Reading */}
-      <header className="sticky top-0 z-40 backdrop-blur-md bg-white/95 dark:bg-[#0b192c]/95 border-b border-slate-200 dark:border-slate-800">
+      <header className="sticky top-0 z-40 backdrop-blur-md bg-white/95 dark:bg-[#0B192C]/95 border-b border-slate-200 dark:border-[#1A3152]">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
           <a
             href={buildLegalPath('home')}
@@ -76,20 +76,20 @@ export const LegalPage: React.FC<LegalPageProps> = ({
               e.preventDefault();
               onNavigatePage('home');
             }}
-            className="flex items-center gap-2.5 text-slate-900 dark:text-white font-bold tracking-tight whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity"
+            className="flex items-center gap-2.5 text-[#0B192C] dark:text-white font-bold tracking-tight whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity"
           >
-            <span className="flex items-center justify-center w-9 h-9 rounded-xl bg-[#0b192c] border border-amber-500/40 text-amber-400">
+            <span className="flex items-center justify-center w-9 h-9 rounded-xl bg-[#0B192C] border border-[#1E3A63] text-white">
               <Lock className="w-4 h-4" />
             </span>
             <span className="text-base sm:text-lg font-extrabold">
-              {t('brandName')} <span className="text-amber-500">| {t('brandSub')}</span>
+              {t('brandName')} <span className="text-blue-600 dark:text-blue-400">| {t('brandSub')}</span>
             </span>
           </a>
 
           {/* Page Switcher (Desktop) */}
           <nav
             aria-label={activeLegalLang === 'en' ? 'Legal Documents' : 'الوثائق القانونية'}
-            className="hidden md:flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800"
+            className="hidden md:flex items-center gap-1 p-1 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-800"
           >
             <a
               href={buildLegalPath('privacy')}
@@ -97,10 +97,10 @@ export const LegalPage: React.FC<LegalPageProps> = ({
                 e.preventDefault();
                 onNavigatePage('privacy');
               }}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
                 page === 'privacy'
-                  ? 'bg-white dark:bg-[#0c1829] text-amber-600 dark:text-amber-400 shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-[#0B192C] dark:hover:text-white'
               }`}
             >
               {uiLabels.privacyTab}
@@ -111,10 +111,10 @@ export const LegalPage: React.FC<LegalPageProps> = ({
                 e.preventDefault();
                 onNavigatePage('terms');
               }}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
                 page === 'terms'
-                  ? 'bg-white dark:bg-[#0c1829] text-amber-600 dark:text-amber-400 shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-[#0B192C] dark:hover:text-white'
               }`}
             >
               {uiLabels.termsTab}
@@ -124,17 +124,17 @@ export const LegalPage: React.FC<LegalPageProps> = ({
           {/* Controls: AR/EN Switcher, Theme, Back */}
           <div className="flex items-center gap-2 shrink-0">
             <div
-              className="flex items-center p-0.5 rounded-lg bg-slate-100 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800"
+              className="flex items-center p-0.5 rounded-lg bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-800"
               role="group"
               aria-label={activeLegalLang === 'en' ? 'Document Language' : 'لغة الوثيقة'}
             >
               <button
                 type="button"
                 onClick={() => setLanguage('ar')}
-                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
                   activeLegalLang === 'ar'
-                    ? 'bg-amber-400 text-slate-950'
-                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-[#0B192C] dark:hover:text-white'
                 }`}
               >
                 العربية
@@ -142,10 +142,10 @@ export const LegalPage: React.FC<LegalPageProps> = ({
               <button
                 type="button"
                 onClick={() => setLanguage('en')}
-                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
                   activeLegalLang === 'en'
-                    ? 'bg-amber-400 text-slate-950'
-                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-[#0B192C] dark:hover:text-white'
                 }`}
               >
                 English
@@ -157,19 +157,19 @@ export const LegalPage: React.FC<LegalPageProps> = ({
               onClick={toggleTheme}
               aria-label={theme === 'dark' ? t('lightMode') : t('darkMode')}
               title={theme === 'dark' ? t('lightMode') : t('darkMode')}
-              className="p-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 transition-colors min-w-[38px] min-h-[38px] flex items-center justify-center"
+              className="p-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 transition-colors min-w-[38px] min-h-[38px] flex items-center justify-center"
             >
               {theme === 'dark' ? (
-                <Sun className="w-4 h-4 text-amber-400" />
+                <Sun className="w-4 h-4 text-sky-300" />
               ) : (
-                <Moon className="w-4 h-4 text-slate-700" />
+                <Moon className="w-4 h-4 text-[#0B192C]" />
               )}
             </button>
 
             <button
               type="button"
               onClick={() => onNavigatePage('home')}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
             >
               <BackIcon className="w-3.5 h-3.5 shrink-0" />
               <span className="hidden sm:inline">{uiLabels.backHome}</span>
@@ -182,16 +182,16 @@ export const LegalPage: React.FC<LegalPageProps> = ({
       {/* Main Legal Document Body */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
         {/* Mobile Document Switcher */}
-        <div className="flex md:hidden items-center gap-1 p-1 mb-6 rounded-xl bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800">
+        <div className="flex md:hidden items-center gap-1 p-1 mb-6 rounded-xl bg-white dark:bg-[#0C1829] border border-slate-200 dark:border-slate-800">
           <a
             href={buildLegalPath('privacy')}
             onClick={(e) => {
               e.preventDefault();
               onNavigatePage('privacy');
             }}
-            className={`flex-1 text-center px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors ${
+            className={`flex-1 text-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors ${
               page === 'privacy'
-                ? 'bg-amber-400 text-slate-950 font-bold'
+                ? 'bg-blue-600 text-white'
                 : 'text-slate-600 dark:text-slate-300'
             }`}
           >
@@ -203,9 +203,9 @@ export const LegalPage: React.FC<LegalPageProps> = ({
               e.preventDefault();
               onNavigatePage('terms');
             }}
-            className={`flex-1 text-center px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors ${
+            className={`flex-1 text-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors ${
               page === 'terms'
-                ? 'bg-amber-400 text-slate-950 font-bold'
+                ? 'bg-blue-600 text-white'
                 : 'text-slate-600 dark:text-slate-300'
             }`}
           >
@@ -216,7 +216,7 @@ export const LegalPage: React.FC<LegalPageProps> = ({
         {/* Hero / Header Block */}
         <section className="pb-8 mb-8 border-b border-slate-200 dark:border-slate-800 space-y-5">
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-            <span className="font-semibold text-amber-600 dark:text-amber-400">
+            <span className="font-bold text-blue-700 dark:text-blue-300">
               {docData.eyebrow}
             </span>
             <span aria-hidden="true">·</span>
@@ -230,7 +230,7 @@ export const LegalPage: React.FC<LegalPageProps> = ({
           </div>
 
           <div className="space-y-3 max-w-3xl">
-            <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white text-balance">
+            <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-[#0B192C] dark:text-white text-balance">
               {docData.title}
             </h1>
             <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
@@ -243,9 +243,9 @@ export const LegalPage: React.FC<LegalPageProps> = ({
             {docData.summaryPoints.map((item) => (
               <div
                 key={item.label}
-                className="p-4 rounded-xl bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 space-y-1.5"
+                className="p-4 rounded-2xl bg-white dark:bg-[#0C1829] border border-slate-200 dark:border-slate-800 shadow-xs space-y-1.5"
               >
-                <div className="text-xs font-bold text-amber-600 dark:text-amber-400">
+                <div className="text-xs font-extrabold text-blue-700 dark:text-blue-300">
                   {item.label}
                 </div>
                 <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-200 leading-relaxed">
@@ -260,12 +260,12 @@ export const LegalPage: React.FC<LegalPageProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           {/* Table of Contents */}
           <aside className="lg:col-span-4 lg:sticky lg:top-24 space-y-4">
-            <div className="p-5 rounded-2xl bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 space-y-3">
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white">
+            <div className="p-5 rounded-2xl bg-white dark:bg-[#0C1829] border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
+              <div className="flex items-center gap-2 text-xs font-extrabold text-[#0B192C] dark:text-white">
                 {page === 'privacy' ? (
-                  <ShieldCheck className="w-4 h-4 text-amber-500 shrink-0" />
+                  <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
                 ) : (
-                  <FileText className="w-4 h-4 text-amber-500 shrink-0" />
+                  <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
                 )}
                 <span>{uiLabels.tocTitle}</span>
               </div>
@@ -274,9 +274,9 @@ export const LegalPage: React.FC<LegalPageProps> = ({
                   <a
                     key={section.id}
                     href={`#${section.id}`}
-                    className="flex items-baseline gap-2.5 px-2.5 py-2 rounded-lg text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/70 hover:text-slate-900 dark:hover:text-amber-400 transition-colors"
+                    className="flex items-baseline gap-2.5 px-2.5 py-2 rounded-lg text-xs text-slate-600 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-slate-800/70 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
                   >
-                    <span className="font-mono text-[11px] font-bold text-amber-600 dark:text-amber-400 shrink-0 tabular-nums">
+                    <span className="font-mono-num text-[11px] font-bold text-blue-600 dark:text-blue-400 shrink-0">
                       {section.number}.
                     </span>
                     <span className="leading-snug">{section.title}</span>
@@ -286,7 +286,7 @@ export const LegalPage: React.FC<LegalPageProps> = ({
             </div>
 
             {/* Cross-link Card */}
-            <div className="p-5 rounded-2xl bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="p-5 rounded-2xl bg-white dark:bg-[#0C1829] border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
               <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                 {uiLabels.otherDocPrompt}
               </p>
@@ -296,7 +296,7 @@ export const LegalPage: React.FC<LegalPageProps> = ({
                   e.preventDefault();
                   onNavigatePage(otherPage);
                 }}
-                className="inline-flex items-center gap-2 text-xs font-bold text-amber-600 dark:text-amber-400 hover:underline"
+                className="inline-flex items-center gap-2 text-xs font-bold text-blue-700 dark:text-blue-300 hover:underline"
               >
                 <Globe className="w-3.5 h-3.5 shrink-0" />
                 <span>{otherPage === 'privacy' ? uiLabels.privacyTab : uiLabels.termsTab}</span>
@@ -305,17 +305,17 @@ export const LegalPage: React.FC<LegalPageProps> = ({
           </aside>
 
           {/* Main Document Article */}
-          <article className="lg:col-span-8 space-y-8">
+          <article className="lg:col-span-8 bg-white dark:bg-[#0C1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-6 sm:p-8 shadow-xs space-y-8">
             {docData.sections.map((section, idx) => (
               <section
                 key={section.id}
                 id={section.id}
                 className={`scroll-mt-24 ${
-                  idx > 0 ? 'pt-8 border-t border-slate-200 dark:border-slate-800' : ''
+                  idx > 0 ? 'pt-8 border-t border-slate-100 dark:border-slate-800' : ''
                 } space-y-4`}
               >
-                <h2 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white flex items-baseline gap-2.5">
-                  <span className="font-mono text-base sm:text-lg text-amber-600 dark:text-amber-400 tabular-nums shrink-0">
+                <h2 className="text-xl sm:text-2xl font-extrabold text-[#0B192C] dark:text-white flex items-baseline gap-2.5">
+                  <span className="font-mono-num text-base sm:text-lg text-blue-600 dark:text-blue-400 shrink-0">
                     {section.number}.
                   </span>
                   <span>{section.title}</span>
@@ -341,7 +341,7 @@ export const LegalPage: React.FC<LegalPageProps> = ({
                       >
                         <span
                           aria-hidden="true"
-                          className="mt-2 w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"
+                          className="mt-2 w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0"
                         />
                         <span>{bullet}</span>
                       </li>
@@ -352,11 +352,11 @@ export const LegalPage: React.FC<LegalPageProps> = ({
             ))}
 
             {/* Bottom Action Bar */}
-            <div className="pt-8 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
+            <div className="pt-8 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
               <button
                 type="button"
                 onClick={() => onNavigatePage('home')}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition-colors"
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors"
               >
                 <BackIcon className="w-4 h-4 shrink-0" />
                 <span>{uiLabels.backHome}</span>
@@ -369,7 +369,7 @@ export const LegalPage: React.FC<LegalPageProps> = ({
                     e.preventDefault();
                     onNavigatePage('home', 'contact');
                   }}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 hover:border-amber-500/40 transition-colors"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold text-[#0B192C] dark:text-slate-200 bg-[#F4F7FB] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-300 transition-colors"
                 >
                   <span>{uiLabels.contactLink}</span>
                 </a>
@@ -381,7 +381,7 @@ export const LegalPage: React.FC<LegalPageProps> = ({
 
       {/* Quiet Legal Footer */}
       <footer
-        className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0b192c] py-6 text-xs text-slate-500 dark:text-slate-400"
+        className="border-t border-slate-200 dark:border-[#1A3152] bg-white dark:bg-[#0B192C] py-6 text-xs text-slate-500 dark:text-slate-400"
         dir={direction}
       >
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3">
@@ -393,8 +393,8 @@ export const LegalPage: React.FC<LegalPageProps> = ({
                 e.preventDefault();
                 onNavigatePage('privacy');
               }}
-              className={`hover:text-amber-500 transition-colors ${
-                page === 'privacy' ? 'text-amber-500 font-bold' : ''
+              className={`hover:text-blue-600 transition-colors ${
+                page === 'privacy' ? 'text-blue-700 dark:text-blue-300 font-bold' : ''
               }`}
             >
               {t('privacyPolicy')}
@@ -406,8 +406,8 @@ export const LegalPage: React.FC<LegalPageProps> = ({
                 e.preventDefault();
                 onNavigatePage('terms');
               }}
-              className={`hover:text-amber-500 transition-colors ${
-                page === 'terms' ? 'text-amber-500 font-bold' : ''
+              className={`hover:text-blue-600 transition-colors ${
+                page === 'terms' ? 'text-blue-700 dark:text-blue-300 font-bold' : ''
               }`}
             >
               {t('termsOfService')}

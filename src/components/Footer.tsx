@@ -19,23 +19,23 @@ export const Footer: React.FC<FooterProps> = ({ onNavigatePage }) => {
   };
 
   return (
-    <footer className="bg-[#0b192c] text-slate-300 border-t border-slate-800">
+    <footer className="bg-[#0B192C] text-slate-300 border-t border-[#1A3152]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8">
           {/* Brand Info */}
           <div className="md:col-span-2 space-y-4">
             <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br from-[#0b192c] to-[#1e293b] border border-amber-500/40 text-amber-400">
+              <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-blue-600 border border-blue-400/30 text-white shadow-xs">
                 <Lock className="w-4 h-4" />
               </div>
               <span className="text-xl font-black text-white">
-                {t('brandName')} <span className="text-amber-400">| {t('brandSub')}</span>
+                {t('brandName')} <span className="text-blue-400">| {t('brandSub')}</span>
               </span>
             </div>
-            <p className="text-xs sm:text-sm text-slate-400 max-w-md leading-relaxed">
+            <p className="text-xs sm:text-sm text-slate-300/80 max-w-md leading-relaxed">
               {t('tagline')}. منظومة محاسبية سحابية متقدمة لإدارة الورديات وإقفال الصناديق والمبيعات اليومية بدقة وانضباط مالي.
             </p>
-            <div className="flex items-center gap-3 text-xs text-amber-400/90 font-medium">
+            <div className="flex items-center gap-2.5 text-xs text-blue-300 font-semibold">
               <ShieldCheck className="w-4 h-4" />
               <span>عزل كامل لقواعد البيانات والحسابات لكل مؤسسة</span>
             </div>
@@ -47,36 +47,36 @@ export const Footer: React.FC<FooterProps> = ({ onNavigatePage }) => {
               <h4 className="text-sm font-bold text-white uppercase tracking-wider">
                 أقسام النظام
               </h4>
-              <ul className="space-y-2 text-xs text-slate-400">
+              <ul className="space-y-2 text-xs text-slate-300/80">
                 <li>
-                  <a href="#features" className="hover:text-amber-400 transition-colors">
+                  <a href="#features" className="hover:text-blue-300 transition-colors">
                     {t('navFeatures')}
                   </a>
                 </li>
                 <li>
-                  <a href="#how-it-works" className="hover:text-amber-400 transition-colors">
+                  <a href="#how-it-works" className="hover:text-blue-300 transition-colors">
                     {t('navHowItWorks')}
                   </a>
                 </li>
                 <li>
-                  <a href="#simulator" className="hover:text-amber-400 transition-colors">
+                  <a href="#simulator" className="hover:text-blue-300 transition-colors">
                     {t('navSimulator')}
                   </a>
                 </li>
                 <li>
-                  <a href="#benefits" className="hover:text-amber-400 transition-colors">
+                  <a href="#benefits" className="hover:text-blue-300 transition-colors">
                     {t('navBenefits')}
                   </a>
                 </li>
                 <li>
-                  <a href="#faq" className="hover:text-amber-400 transition-colors">
+                  <a href="#faq" className="hover:text-blue-300 transition-colors">
                     {t('navFaq')}
                   </a>
                 </li>
               </ul>
             </div>
 
-            <div className="space-y-2.5 pt-2 border-t border-slate-800/80">
+            <div className="space-y-2.5 pt-3 border-t border-[#1A3152]">
               <h4 className="text-xs font-bold text-white uppercase tracking-wider">
                 {t('legalSectionTitle')}
               </h4>
@@ -85,7 +85,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigatePage }) => {
                   <a
                     href={buildLegalPath('privacy')}
                     onClick={(e) => handleLegalClick(e, 'privacy')}
-                    className="hover:text-amber-400 underline-offset-4 hover:underline transition-colors"
+                    className="hover:text-blue-300 underline-offset-4 hover:underline transition-colors"
                   >
                     {t('privacyPolicy')}
                   </a>
@@ -94,7 +94,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigatePage }) => {
                   <a
                     href={buildLegalPath('terms')}
                     onClick={(e) => handleLegalClick(e, 'terms')}
-                    className="hover:text-amber-400 underline-offset-4 hover:underline transition-colors"
+                    className="hover:text-blue-300 underline-offset-4 hover:underline transition-colors"
                   >
                     {t('termsOfService')}
                   </a>
@@ -111,24 +111,24 @@ export const Footer: React.FC<FooterProps> = ({ onNavigatePage }) => {
             <div className="flex flex-col gap-2 text-xs">
               <button
                 onClick={() => setLanguage('ar')}
-                className={`text-start px-2.5 py-1.5 rounded transition-colors ${
-                  language === 'ar' ? 'bg-amber-500/20 text-amber-400 font-bold' : 'hover:text-white'
+                className={`text-start px-3 py-2 rounded-lg transition-colors ${
+                  language === 'ar' ? 'bg-blue-600 text-white font-bold' : 'text-slate-300 hover:bg-white/5 hover:text-white'
                 }`}
               >
                 🇸🇦 العربية (Arabic - RTL)
               </button>
               <button
                 onClick={() => setLanguage('en')}
-                className={`text-start px-2.5 py-1.5 rounded transition-colors ${
-                  language === 'en' ? 'bg-amber-500/20 text-amber-400 font-bold' : 'hover:text-white'
+                className={`text-start px-3 py-2 rounded-lg transition-colors ${
+                  language === 'en' ? 'bg-blue-600 text-white font-bold' : 'text-slate-300 hover:bg-white/5 hover:text-white'
                 }`}
               >
                 🇬🇧 English (English - LTR)
               </button>
               <button
                 onClick={() => setLanguage('ur')}
-                className={`text-start px-2.5 py-1.5 rounded transition-colors ${
-                  language === 'ur' ? 'bg-amber-500/20 text-amber-400 font-bold' : 'hover:text-white'
+                className={`text-start px-3 py-2 rounded-lg transition-colors ${
+                  language === 'ur' ? 'bg-blue-600 text-white font-bold' : 'text-slate-300 hover:bg-white/5 hover:text-white'
                 }`}
               >
                 🇵🇰 اردو (Urdu - RTL)
@@ -138,13 +138,13 @@ export const Footer: React.FC<FooterProps> = ({ onNavigatePage }) => {
         </div>
 
         {/* Bottom Bar */}
-        <div className="pt-8 border-t border-slate-800/80 flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-400">
+        <div className="pt-8 border-t border-[#1A3152] flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-400">
           <div>{t('allRightsReserved')}</div>
           <div className="flex flex-wrap items-center justify-center gap-3">
             <a
               href={buildLegalPath('privacy')}
               onClick={(e) => handleLegalClick(e, 'privacy')}
-              className="text-slate-300 hover:text-amber-400 transition-colors font-medium"
+              className="text-slate-300 hover:text-blue-300 transition-colors font-medium"
             >
               {t('privacyPolicy')}
             </a>
@@ -152,7 +152,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigatePage }) => {
             <a
               href={buildLegalPath('terms')}
               onClick={(e) => handleLegalClick(e, 'terms')}
-              className="text-slate-300 hover:text-amber-400 transition-colors font-medium"
+              className="text-slate-300 hover:text-blue-300 transition-colors font-medium"
             >
               {t('termsOfService')}
             </a>
@@ -163,7 +163,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigatePage }) => {
               href="https://amoal2030.github.io/a1/"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-amber-400 hover:text-amber-300 underline font-semibold transition-colors"
+              className="text-blue-300 hover:text-blue-200 underline font-semibold transition-colors"
               dir="ltr"
             >
               https://amoal2030.github.io/a1/

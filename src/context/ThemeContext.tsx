@@ -18,13 +18,10 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (saved === 'dark' || saved === 'light') {
         return saved;
       }
-      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-        return 'dark';
-      }
     } catch {
       // ignore
     }
-    return 'dark'; // Default to sleek deep navy dark mode
+    return 'light'; // Unified light white & calm blue default with dark navy sidebar
   });
 
   useEffect(() => {

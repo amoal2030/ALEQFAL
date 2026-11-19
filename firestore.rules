@@ -220,6 +220,18 @@ service cloud.firestore {
         get(/databases/$(database)/documents/suppliers/$(supplierId)).data.orgId == targetOrgId;
     }
 
+    function supplierDocIsActiveInOrg(supplierId, targetOrgId) {
+      let s = get(/databases/$(database)/documents/suppliers/$(supplierId)).data;
+      return s.orgId == targetOrgId && s.isActive == true;
+    }
+
+    // Verifies a supplier document exists, belongs to targetOrgId, and is currently active
+    function isActiveSupplierInOrg(supplierId, targetOrgId) {
+      return isValidId(supplierId) &&
+        exists(/databases/$(database)/documents/suppliers/$(supplierId)) &&
+        supplierDocIsActiveInOrg(supplierId, targetOrgId);
+    }
+
     function isValidCurrencyAmount(val) {
       let scaled = val * 100;
       return val is number &&
@@ -1285,20 +1297,44 @@ service cloud.firestore {
         );
     }
 
-    // Suppliers Collection
+    // Suppliers Collection (Phase 4.4: Organization-isolated, soft-deactivated only, zero delete)
     match /suppliers/{supplierId} {
-      function canReadSuppliers(u, data, checkDataOrgSub) {
+      function hasValidSupplierFields(data) {
+        return data.keys().hasAll(['id', 'orgId', 'name', 'isActive', 'createdBy', 'createdAt', 'updatedAt']) &&
+          data.keys().hasOnly([
+            'id', 'orgId', 'name', 'contactPerson', 'companyName',
+            'taxNumber', 'phone', 'email', 'address', 'notes',
+            'openingBalance', 'isActive', 'createdBy', 'createdAt', 'updatedAt'
+          ]) &&
+          data.name is string && data.name.trim().size() >= 2 && data.name.size() <= 120 &&
+          (!('contactPerson' in data) || (data.contactPerson is string && data.contactPerson.size() <= 120)) &&
+          (!('companyName' in data) || (data.companyName is string && data.companyName.size() <= 150)) &&
+          (!('taxNumber' in data) || (data.taxNumber is string && data.taxNumber.size() <= 40)) &&
+          (!('phone' in data) || (data.phone is string && data.phone.size() <= 25)) &&
+          (!('email' in data) || (data.email is string && data.email.size() <= 254)) &&
+          (!('address' in data) || (data.address is string && data.address.size() <= 255)) &&
+          (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000)) &&
+          (!('openingBalance' in data) || isValidCurrencyAmount(data.openingBalance)) &&
+          data.isActive is bool &&
+          (data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt)) &&
+          (data.updatedAt is timestamp || isValidIsoTimestamp(data.updatedAt));
+      }
+
+      function canReadSuppliers(u, data, checkDataOrgSub, isGet) {
         let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
         return u.isActive == true &&
           u.orgId == data.orgId &&
           hasActiveOrgSubscription(orgSubId) && (
             u.role == 'manager' ||
-            u.role == 'branch_manager' ||
+            (
+              u.role == 'branch_manager' &&
+              u.get('permissions', {}).get('canViewSuppliers', true) == true &&
+              (!isGet || data.isActive == true)
+            ) ||
             (
               u.role == 'supervisor' && (
                 userHasPermission(u, 'canManageSuppliers') ||
-                userHasPermission(u, 'canViewSuppliers') ||
-                userHasPermission(u, 'canManagePurchases')
+                userHasPermission(u, 'canViewSuppliers')
               )
             )
           );
@@ -1307,12 +1343,12 @@ service cloud.firestore {
       function canCreateSupplier(supplierId, data) {
         let u = getUserData();
         return u.isActive == true &&
+          isValidId(data.orgId) &&
           u.orgId == data.orgId &&
           hasActiveOrgSubscription(data.orgId) &&
           data.id == supplierId &&
-          data.name is string && data.name.trim().size() >= 2 && data.name.size() <= 120 &&
-          data.isActive is bool &&
-          data.createdBy == request.auth.uid && (
+          data.createdBy == request.auth.uid &&
+          hasValidSupplierFields(data) && (
             u.role == 'manager' ||
             (u.role == 'supervisor' && userHasPermission(u, 'canManageSuppliers'))
           );
@@ -1322,23 +1358,27 @@ service cloud.firestore {
         let u = getUserData();
         return u.isActive == true &&
           u.orgId == prevData.orgId &&
+          u.role == 'manager' &&
           hasActiveOrgSubscription(prevData.orgId) &&
           nextData.id == prevData.id &&
           nextData.orgId == prevData.orgId &&
           nextData.createdBy == prevData.createdBy &&
           nextData.createdAt == prevData.createdAt &&
-          nextData.name is string && nextData.name.trim().size() >= 2 && nextData.name.size() <= 120 &&
-          nextData.isActive is bool &&
-          u.role == 'manager';
+          nextData.diff(prevData).affectedKeys().hasOnly([
+            'name', 'contactPerson', 'companyName', 'taxNumber',
+            'phone', 'email', 'address', 'notes', 'openingBalance',
+            'isActive', 'updatedAt'
+          ]) &&
+          hasValidSupplierFields(nextData);
       }
 
       allow get: if isSignedIn() && isValidId(supplierId) &&
         hasValidUserDoc() &&
-        canReadSuppliers(getUserData(), existing(), true);
+        canReadSuppliers(getUserData(), existing(), true, true);
 
       allow list: if isSignedIn() &&
         hasValidUserDoc() &&
-        canReadSuppliers(getUserData(), existing(), false);
+        canReadSuppliers(getUserData(), existing(), false, false);
 
       allow create: if isSignedIn() && isValidId(supplierId) &&
         hasValidUserDoc() &&
@@ -1348,11 +1388,97 @@ service cloud.firestore {
         hasValidUserDoc() &&
         canUpdateSupplier(incoming(), existing());
 
-      allow delete: if false;
+      allow delete: if isSignedIn() && isValidId(supplierId) &&
+        hasValidUserDoc() &&
+        getUserData().isActive == true &&
+        getUserData().role == 'manager' &&
+        getUserData().orgId == existing().orgId &&
+        hasActiveOrgSubscription(existing().orgId);
     }
 
-    // Purchases Collection
+    // Purchases Collection (Phase 4.4 Security Hardened: explicit item/attachment validation up to proven 1,000-expr safe limits, exact Halala VAT & amount==subtotalAmount)
     match /purchases/{purchaseId} {
+      function hasActiveOrgSubFast(org) {
+        return org.get('isActive', true) == true && (
+          (
+            org.get('subscriptionStatus', '') == 'active' &&
+            org.get('subscriptionPlan', '') in ['trial_7d', '1m', '3m', '6m', '1y'] &&
+            request.time >= org.subscriptionStartAt &&
+            request.time < org.subscriptionEndAt &&
+            (org.get('deactivationDueAt', null) == null || (org.deactivationDueAt is timestamp && request.time < org.deactivationDueAt))
+          ) ||
+          !hasAnySubscriptionField(org)
+        );
+      }
+
+      function isOkItem(it) {
+        return it is map &&
+          it.size() == 5 &&
+          it.id is string && it.id.trim().size() > 0 && it.id.size() <= 128 &&
+          it.name is string && it.name.trim().size() > 0 && it.name.size() <= 200 &&
+          it.quantity is number && it.quantity > 0 &&
+          it.unitPrice is number && it.unitPrice >= 0 && math.abs(it.unitPrice * 100 - math.round(it.unitPrice * 100)) < 0.001 &&
+          it.total is number && it.total >= 0 && math.abs(it.total * 100 - math.round(it.quantity * it.unitPrice * 100.0)) < 0.001;
+      }
+
+      function isOkAtt(aid, pOrg, pBr, pId) {
+        return isValidId(aid) &&
+          getAfter(/databases/$(database)/documents/attachments/$(aid)).data.orgId == pOrg &&
+          getAfter(/databases/$(database)/documents/attachments/$(aid)).data.branchId == pBr &&
+          getAfter(/databases/$(database)/documents/attachments/$(aid)).data.purchaseId == pId;
+      }
+
+      function hasValidPurchaseFields(data) {
+        return data.keys().hasOnly([
+            'id', 'orgId', 'branchId', 'branchName', 'supplierId', 'supplierName',
+            'taxNumber', 'invoiceNumber', 'date', 'items',
+            'amount', 'subtotalAmount', 'discountAmount', 'vatRate', 'vatAmount', 'totalAmount',
+            'paymentMethod', 'notes', 'attachmentIds',
+            'createdBy', 'createdByName', 'createdByRole', 'createdAt', 'updatedAt'
+          ]) &&
+          isValidCalendarDate(data.date) &&
+          data.paymentMethod in ['cash', 'card', 'transfer', 'credit'] &&
+          (!('branchName' in data) || (data.branchName is string && data.branchName.size() <= 120)) &&
+          (!('supplierName' in data) || (data.supplierName is string && data.supplierName.size() <= 120)) &&
+          (!('taxNumber' in data) || (data.taxNumber is string && data.taxNumber.size() <= 40)) &&
+          (!('invoiceNumber' in data) || (data.invoiceNumber is string && data.invoiceNumber.size() <= 80)) &&
+          (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000)) &&
+          (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120)) &&
+          (data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt)) &&
+          (data.updatedAt is timestamp || isValidIsoTimestamp(data.updatedAt)) &&
+          data.amount >= 0 && data.amount <= 1000000000000 &&
+          math.abs(data.amount * 100 - math.round(data.amount * 100)) < 0.001 &&
+          (!('subtotalAmount' in data) || data.subtotalAmount == data.amount) &&
+          (!('discountAmount' in data) || (data.discountAmount >= 0 && data.discountAmount <= data.amount && math.abs(data.discountAmount * 100 - math.round(data.discountAmount * 100)) < 0.001)) &&
+          (
+            'vatRate' in data
+              ? (
+                  data.vatRate >= 0 && data.vatRate <= 100 &&
+                  math.abs(data.vatRate * 100 - math.round(data.vatRate * 100)) < 0.001 &&
+                  math.abs(data.get('vatAmount', 0) * 100 - ((math.round((data.amount - data.get('discountAmount', 0)) * 100) * math.round(data.vatRate * 100) + 5000) / 10000)) < 0.001
+                )
+              : (!('vatAmount' in data) || (data.vatAmount >= 0 && data.vatAmount <= 1000000000000 && math.abs(data.vatAmount * 100 - math.round(data.vatAmount * 100)) < 0.001))
+          ) &&
+          data.totalAmount <= 1000000000000 &&
+          math.abs(data.totalAmount * 100 - (math.round(data.amount * 100) - math.round(data.get('discountAmount', 0) * 100) + math.round(data.get('vatAmount', 0) * 100))) < 0.001 &&
+          (!('items' in data) || (
+            data.items is list &&
+            data.items.size() <= 1 && (
+              data.items.size() == 0 || (
+                isOkItem(data.items[0]) &&
+                math.round(data.items[0].total * 100) == math.round(data.amount * 100)
+              )
+            )
+          )) &&
+          (!('attachmentIds' in data) || (
+            data.attachmentIds is list &&
+            data.attachmentIds.size() <= 1 && (
+              data.attachmentIds.size() == 0 ||
+              isOkAtt(data.attachmentIds[0], data.orgId, data.branchId, data.id)
+            )
+          ));
+      }
+
       function canReadPurchase(u, data, checkDataOrgSub) {
         let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
         return u.isActive == true &&
@@ -1373,19 +1499,15 @@ service cloud.firestore {
           );
       }
 
-      function canCreatePurchase(purchaseId, data) {
-        let u = getUserData();
+      function canCreatePurchase(u, purchaseId, data) {
         return u.isActive == true &&
           u.orgId == data.orgId &&
-          hasActiveOrgSubscription(data.orgId) &&
+          hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(data.orgId)).data) &&
           data.id == purchaseId &&
-          isBranchInOrg(data.branchId, data.orgId) &&
-          isSupplierInOrg(data.supplierId, data.orgId) &&
-          isValidCalendarDate(data.date) &&
-          isValidCurrencyAmount(data.amount) && data.amount >= 0 &&
-          isValidCurrencyAmount(data.totalAmount) && data.totalAmount >= data.amount &&
-          (!('vatAmount' in data) || (isValidCurrencyAmount(data.vatAmount) && data.vatAmount >= 0)) &&
-          data.paymentMethod in ['cash', 'card', 'transfer', 'credit'] &&
+          isValidId(data.branchId) &&
+          get(/databases/$(database)/documents/branches/$(data.branchId)).data.orgId == data.orgId &&
+          isValidId(data.supplierId) &&
+          supplierDocIsActiveInOrg(data.supplierId, data.orgId) &&
           data.createdBy == request.auth.uid &&
           data.createdByRole == u.role && (
             u.role == 'manager' ||
@@ -1395,7 +1517,34 @@ service cloud.firestore {
               u.get('permissions', {}).get('canManagePurchases', true) == true &&
               userHasSingleAssignedBranch(u, data.branchId)
             )
-          );
+          ) &&
+          hasValidPurchaseFields(data);
+      }
+
+      function canUpdatePurchase(u, nextData, prevData) {
+        return u.isActive == true &&
+          u.orgId == prevData.orgId &&
+          u.role == 'manager' &&
+          hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(prevData.orgId)).data) &&
+          nextData.id == prevData.id &&
+          nextData.orgId == prevData.orgId &&
+          nextData.branchId == prevData.branchId &&
+          nextData.createdBy == prevData.createdBy &&
+          nextData.createdByRole == prevData.createdByRole &&
+          nextData.createdAt == prevData.createdAt &&
+          nextData.diff(prevData).affectedKeys().hasOnly([
+            'supplierId', 'supplierName', 'branchName', 'taxNumber', 'invoiceNumber',
+            'date', 'items', 'amount', 'subtotalAmount', 'discountAmount',
+            'vatRate', 'vatAmount', 'totalAmount', 'paymentMethod',
+            'notes', 'attachmentIds', 'updatedAt'
+          ]) &&
+          isValidId(nextData.supplierId) &&
+          (
+            nextData.supplierId == prevData.supplierId
+              ? get(/databases/$(database)/documents/suppliers/$(nextData.supplierId)).data.orgId == prevData.orgId
+              : supplierDocIsActiveInOrg(nextData.supplierId, prevData.orgId)
+          ) &&
+          hasValidPurchaseFields(nextData);
       }
 
       allow get: if isSignedIn() && isValidId(purchaseId) && (
@@ -1409,47 +1558,185 @@ service cloud.firestore {
       );
 
       allow create: if isSignedIn() && isValidId(purchaseId) &&
-        hasValidUserDoc() &&
-        canCreatePurchase(purchaseId, incoming());
+        canCreatePurchase(getUserData(), purchaseId, incoming());
 
       allow update: if isSignedIn() && isValidId(purchaseId) &&
-        isOrgManager(existing().orgId) &&
-        hasActiveOrgSubscription(existing().orgId) &&
-        incoming().id == existing().id &&
-        incoming().orgId == existing().orgId &&
-        incoming().branchId == existing().branchId &&
-        incoming().createdBy == existing().createdBy &&
-        incoming().createdAt == existing().createdAt &&
-        isValidCurrencyAmount(incoming().amount) && incoming().amount >= 0 &&
-        isValidCurrencyAmount(incoming().totalAmount) && incoming().totalAmount >= incoming().amount;
+        canUpdatePurchase(getUserData(), incoming(), existing());
 
       allow delete: if isSuperAdmin() &&
         isValidId(purchaseId) &&
         isBranchEligibleForDbPurge(existing().branchId);
+
+      // Subcollection for multi-line purchase invoice items (up to 100 items: item_0 .. item_99)
+      match /items/{itemId} {
+        function hasValidPurchaseSubItem(pId, iId, data) {
+          return data.keys().hasAll([
+              'id', 'purchaseId', 'orgId', 'branchId', 'lineIndex',
+              'name', 'quantity', 'unitPrice', 'total', 'createdBy', 'createdAt'
+            ]) &&
+            data.keys().hasOnly([
+              'id', 'purchaseId', 'orgId', 'branchId', 'lineIndex',
+              'name', 'quantity', 'unitPrice', 'total', 'createdBy', 'createdAt'
+            ]) &&
+            data.id == iId &&
+            data.purchaseId == pId &&
+            isValidId(data.orgId) &&
+            isValidId(data.branchId) &&
+            data.lineIndex is int &&
+            data.lineIndex >= 0 &&
+            data.lineIndex < 100 &&
+            iId == ('item_' + string(data.lineIndex)) &&
+            data.name is string && data.name.trim().size() > 0 && data.name.size() <= 200 &&
+            data.quantity is number && data.quantity > 0 && data.quantity <= 1000000000 &&
+            data.unitPrice is number && data.unitPrice >= 0 && data.unitPrice <= 1000000000 &&
+            math.abs(data.unitPrice * 100 - math.round(data.unitPrice * 100)) < 0.001 &&
+            data.total is number && data.total >= 0 && data.total <= 1000000000000 &&
+            math.abs(data.total * 100 - math.round(data.quantity * data.unitPrice * 100.0)) < 0.001 &&
+            data.createdBy == request.auth.uid &&
+            (data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt));
+        }
+
+        function canCreatePurchaseSubItem(u, pId, iId, data) {
+          return u.isActive == true &&
+            hasValidPurchaseSubItem(pId, iId, data) &&
+            u.orgId == data.orgId &&
+            hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(data.orgId)).data) &&
+            existsAfter(/databases/$(database)/documents/purchases/$(pId)) &&
+            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.orgId == data.orgId &&
+            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.branchId == data.branchId &&
+            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.createdBy == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.createdByRole == u.role && (
+              u.role == 'manager' ||
+              (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
+              (
+                u.role == 'branch_manager' &&
+                u.get('permissions', {}).get('canManagePurchases', true) == true &&
+                userHasSingleAssignedBranch(u, data.branchId)
+              )
+            );
+        }
+
+        allow get: if isSignedIn() && isValidId(purchaseId) && isValidId(itemId) && (
+          (hasValidUserDoc() && canReadPurchase(getUserData(), existing(), true)) ||
+          (isSuperAdmin() && isBranchGraceExpiredForInspection(existing().branchId))
+        );
+
+        allow list: if isSignedIn() && isValidId(purchaseId) &&
+          exists(/databases/$(database)/documents/purchases/$(purchaseId)) && (
+            (
+              hasValidUserDoc() &&
+              canReadPurchase(
+                getUserData(),
+                get(/databases/$(database)/documents/purchases/$(purchaseId)).data,
+                true
+              )
+            ) ||
+            (
+              isSuperAdmin() &&
+              isBranchGraceExpiredForInspection(
+                get(/databases/$(database)/documents/purchases/$(purchaseId)).data.branchId
+              )
+            )
+          );
+
+        allow create: if isSignedIn() && isValidId(purchaseId) && isValidId(itemId) &&
+          hasValidUserDoc() &&
+          canCreatePurchaseSubItem(getUserData(), purchaseId, itemId, incoming());
+
+        allow update: if false;
+
+        allow delete: if isSuperAdmin() &&
+          isValidId(purchaseId) &&
+          isValidId(itemId) &&
+          isBranchEligibleForDbPurge(existing().branchId);
+      }
     }
 
-    // Attachments Collection (Least Privilege: Staff reads ONLY their own uploads unless manager/permitted supervisor)
+    // Attachments Collection (Phase 4.4: Supports closingId & purchaseId attachments, URL allowlist, mandatory purchaseId existence, anti-Base64 guard, least privilege)
     match /attachments/{attachmentId} {
+      function purchaseRefMatchesOrgBranch(purchaseId, orgId, branchId) {
+        return existsAfter(/databases/$(database)/documents/purchases/$(purchaseId)) &&
+          getAfter(/databases/$(database)/documents/purchases/$(purchaseId)).data.orgId == orgId &&
+          getAfter(/databases/$(database)/documents/purchases/$(purchaseId)).data.branchId == branchId;
+      }
+
+      function isAllowedAttachmentUrl(url, maxLen) {
+        return url is string &&
+          url.size() <= maxLen && (
+            url == '' ||
+            url.matches('^https://(drive\\.google\\.com|docs\\.google\\.com|firebasestorage\\.googleapis\\.com|storage\\.googleapis\\.com)/.*$')
+          );
+      }
+
+      function hasValidAttachmentPayload(attachmentId, data) {
+        return data.keys().hasAll(['id', 'orgId', 'branchId', 'fileName', 'uploadedBy']) &&
+          data.keys().hasOnly([
+            'id', 'orgId', 'branchId', 'closingId', 'purchaseId',
+            'fileName', 'fileSize', 'mimeType', 'fileUrl',
+            'driveFileId', 'driveWebViewLink',
+            'uploadedBy', 'uploadedByName', 'uploadedAt', 'createdAt'
+          ]) &&
+          data.id == attachmentId &&
+          data.uploadedBy == request.auth.uid &&
+          data.fileName is string && data.fileName.trim().size() >= 1 && data.fileName.size() <= 255 &&
+          (!('fileSize' in data) || (data.fileSize is number && data.fileSize >= 0 && data.fileSize <= 52428800)) &&
+          (!('mimeType' in data) || (data.mimeType is string && data.mimeType.size() <= 100)) &&
+          (!('fileUrl' in data) || isAllowedAttachmentUrl(data.fileUrl, 1024)) &&
+          (!('driveFileId' in data) || isValidDriveId(data.driveFileId)) &&
+          (!('driveWebViewLink' in data) || isAllowedAttachmentUrl(data.driveWebViewLink, 512)) &&
+          (!('uploadedByName' in data) || (data.uploadedByName is string && data.uploadedByName.size() <= 120)) &&
+          (!('uploadedAt' in data) || data.uploadedAt is timestamp || isValidIsoTimestamp(data.uploadedAt)) &&
+          (!('createdAt' in data) || data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt)) &&
+          (!('closingId' in data) || isValidId(data.closingId)) &&
+          (!('purchaseId' in data) || (isValidId(data.purchaseId) && !('closingId' in data)));
+      }
+
       function canReadAttachment(u, data, checkDataOrgSub) {
         let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
         return u.isActive == true &&
           u.orgId == data.orgId &&
           hasActiveOrgSubscription(orgSubId) && (
-            u.role == 'manager' ||
-            (u.role == 'supervisor' && (userHasPermission(u, 'canViewAllClosings') || userHasPermission(u, 'canApproveClosings'))) ||
-            data.uploadedBy == request.auth.uid
+            'purchaseId' in data ? (
+              u.role == 'manager' ||
+              (
+                u.role == 'supervisor' && (
+                  userHasPermission(u, 'canManagePurchases') ||
+                  userHasPermission(u, 'canViewFinancialReports') ||
+                  userHasPermission(u, 'canExportReports')
+                )
+              ) ||
+              (u.role == 'branch_manager' && userHasSingleAssignedBranch(u, data.branchId))
+            ) : (
+              u.role == 'manager' ||
+              (u.role == 'supervisor' && (userHasPermission(u, 'canViewAllClosings') || userHasPermission(u, 'canApproveClosings'))) ||
+              data.uploadedBy == request.auth.uid
+            )
           );
       }
 
-      function canCreateAttachment(data) {
+      function canCreateAttachment(attachmentId, data) {
         let u = getUserData();
         return u.isActive == true &&
+          isValidId(data.orgId) &&
           u.orgId == data.orgId &&
           hasActiveOrgSubscription(data.orgId) &&
-          data.uploadedBy == request.auth.uid && (
-            u.role == 'manager' ||
-            (u.role == 'supervisor' && userHasPermission(u, 'canCreateClosing')) ||
-            (u.role in ['branch_manager', 'employee'] && userHasSingleAssignedBranch(u, data.branchId))
+          isBranchInOrg(data.branchId, data.orgId) &&
+          hasValidAttachmentPayload(attachmentId, data) && (
+            'purchaseId' in data ? (
+              purchaseRefMatchesOrgBranch(data.purchaseId, data.orgId, data.branchId) && (
+                u.role == 'manager' ||
+                (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
+                (
+                  u.role == 'branch_manager' &&
+                  u.get('permissions', {}).get('canManagePurchases', true) == true &&
+                  userHasSingleAssignedBranch(u, data.branchId)
+                )
+              )
+            ) : (
+              u.role == 'manager' ||
+              (u.role == 'supervisor' && userHasPermission(u, 'canCreateClosing')) ||
+              (u.role in ['branch_manager', 'employee'] && userHasSingleAssignedBranch(u, data.branchId))
+            )
           );
       }
 
@@ -1465,7 +1752,7 @@ service cloud.firestore {
 
       allow create: if isSignedIn() && isValidId(attachmentId) &&
         hasValidUserDoc() &&
-        canCreateAttachment(incoming());
+        canCreateAttachment(attachmentId, incoming());
 
       // Attachments are strictly immutable once uploaded
       allow update: if false;
@@ -1512,9 +1799,36 @@ service cloud.firestore {
             getAfter(/databases/$(database)/documents/suppliers/$(data.targetId)).data.orgId == u.orgId
           ) ||
           (
+            u.role == 'manager' &&
+            data.action in ['SUPPLIER_UPDATED', 'SUPPLIER_STATUS_TOGGLED'] &&
+            data.targetType == 'supplier' &&
+            existsAfter(/databases/$(database)/documents/suppliers/$(data.targetId)) &&
+            getAfter(/databases/$(database)/documents/suppliers/$(data.targetId)).data.orgId == u.orgId
+          ) ||
+          (
+            u.role == 'manager' &&
+            data.action == 'SUPPLIER_DELETED' &&
+            data.targetType == 'supplier' &&
+            exists(/databases/$(database)/documents/suppliers/$(data.targetId)) &&
+            get(/databases/$(database)/documents/suppliers/$(data.targetId)).data.orgId == u.orgId &&
+            !existsAfter(/databases/$(database)/documents/suppliers/$(data.targetId))
+          ) ||
+          (
             data.action == 'PURCHASE_CREATED' &&
             data.targetType == 'purchase' &&
-            (u.role in ['manager', 'branch_manager'] || (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases'))) &&
+            (
+              u.role == 'manager' ||
+              (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
+              (u.role == 'branch_manager' && u.get('permissions', {}).get('canManagePurchases', true) == true)
+            ) &&
+            existsAfter(/databases/$(database)/documents/purchases/$(data.targetId)) &&
+            getAfter(/databases/$(database)/documents/purchases/$(data.targetId)).data.orgId == u.orgId &&
+            (u.role != 'branch_manager' || userHasSingleAssignedBranch(u, getAfter(/databases/$(database)/documents/purchases/$(data.targetId)).data.branchId))
+          ) ||
+          (
+            u.role == 'manager' &&
+            data.action == 'PURCHASE_UPDATED' &&
+            data.targetType == 'purchase' &&
             existsAfter(/databases/$(database)/documents/purchases/$(data.targetId)) &&
             getAfter(/databases/$(database)/documents/purchases/$(data.targetId)).data.orgId == u.orgId
           ) ||

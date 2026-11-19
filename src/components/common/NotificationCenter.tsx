@@ -35,7 +35,7 @@ import {
 
 interface NotificationCenterProps {
   surface: 'tenant' | 'super_admin';
-  onNavigate?: (target: NotificationNavTarget) => void;
+  onNavigate?: (target: NotificationNavTarget, notification?: AppNotification) => void;
 }
 
 const CATEGORY_FILTER_OPTIONS: Array<{
@@ -187,7 +187,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       }
     }
     if (notification.navTarget && onNavigate) {
-      onNavigate(notification.navTarget);
+      onNavigate(notification.navTarget, notification);
       setOpen(false);
     }
   };
@@ -211,53 +211,53 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
         return {
           label: t('notifCatEmployees'),
           Icon: Users,
-          tone: 'text-sky-600 dark:text-sky-400 bg-sky-500/10 border-sky-500/20',
+          tone: 'text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-500/15 border-sky-200 dark:border-sky-500/25',
         };
       case 'closings':
         return {
           label: t('notifCatClosings'),
           Icon: FileSpreadsheet,
-          tone: 'text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/20',
+          tone: 'text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-500/15 border-blue-200 dark:border-blue-500/25',
         };
       case 'schedule_requests':
         return {
           label: t('notifCatSchedule'),
           Icon: CalendarClock,
-          tone: 'text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 border-indigo-500/20',
+          tone: 'text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-500/15 border-indigo-200 dark:border-indigo-500/25',
         };
       case 'purchases_suppliers':
         return {
           label: t('notifCatPurchases'),
           Icon: ShoppingBag,
-          tone: 'text-teal-600 dark:text-teal-400 bg-teal-500/10 border-teal-500/20',
+          tone: 'text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-500/15 border-teal-200 dark:border-teal-500/25',
         };
       case 'org_branches':
         return {
           label: t('notifCatOrgBranches'),
           Icon: Building2,
-          tone: 'text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/20',
+          tone: 'text-blue-800 dark:text-blue-300 bg-blue-50 dark:bg-blue-500/15 border-blue-200 dark:border-blue-500/25',
         };
       case 'security_admin':
       default:
         return {
           label: t('notifCatSecurity'),
           Icon: ShieldAlert,
-          tone: 'text-rose-600 dark:text-rose-400 bg-rose-500/10 border-rose-500/20',
+          tone: 'text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-500/15 border-rose-200 dark:border-rose-500/25',
         };
     }
   };
 
   const getSeverityPill = (severity: NotificationSeverity) => {
     if (severity === 'critical') {
-      return 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30';
+      return 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-500/30';
     }
     if (severity === 'warning') {
-      return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30';
+      return 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30';
     }
     if (severity === 'success') {
-      return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30';
+      return 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30';
     }
-    return 'bg-slate-200/70 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300/60 dark:border-slate-700';
+    return 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700';
   };
 
   const NavArrow = direction === 'rtl' ? ChevronLeft : ChevronRight;
@@ -270,17 +270,17 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
         aria-label={t('notifTitle')}
         aria-expanded={open}
         aria-haspopup="dialog"
-        className={`relative inline-flex items-center justify-center w-10 h-10 sm:w-11 sm:h-11 rounded-xl border transition-colors ${
+        className={`relative inline-flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 rounded-xl border transition-colors ${
           open
-            ? 'bg-amber-500/15 border-amber-500/50 text-amber-600 dark:text-amber-400'
-            : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:text-amber-500 dark:hover:text-amber-400 bg-slate-50 dark:bg-[#070e17]'
+            ? 'bg-blue-50 border-blue-300 text-blue-700 dark:bg-blue-500/15 dark:border-blue-500/50 dark:text-blue-300'
+            : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-slate-700 bg-slate-50 dark:bg-slate-800/80'
         }`}
         title={t('notifTitle')}
       >
-        <Bell className="w-4 h-4 sm:w-[18px] sm:h-[18px]" />
+        <Bell className="w-4 h-4 sm:w-[17px] sm:h-[17px]" />
         {unreadCount > 0 && (
           <span
-            className="absolute -top-1.5 -end-1.5 min-w-[20px] h-5 px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold font-mono tabular-nums flex items-center justify-center shadow-sm border-2 border-white dark:border-[#0c1829]"
+            className="absolute -top-1.5 -end-1.5 min-w-[19px] h-[19px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold font-mono-num flex items-center justify-center shadow-xs border-2 border-white dark:border-[#0C1829]"
             aria-label={`${unreadCount} ${t('notifUnread')}`}
           >
             {unreadCount > 99 ? '99+' : unreadCount}
@@ -292,21 +292,21 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
         <div
           role="dialog"
           aria-label={t('notifTitle')}
-          className="fixed inset-x-3 top-[4.4rem] sm:absolute sm:inset-x-auto sm:end-0 sm:top-full sm:mt-2 sm:w-[440px] max-h-[82vh] flex flex-col rounded-2xl bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 shadow-2xl z-50 overflow-hidden"
+          className="fixed inset-x-3 top-[4.4rem] sm:absolute sm:inset-x-auto sm:end-0 sm:top-full sm:mt-2 sm:w-[440px] max-h-[82vh] flex flex-col rounded-2xl bg-white dark:bg-[#0C1829] border border-slate-200 dark:border-slate-800 shadow-2xl z-50 overflow-hidden"
         >
           {/* Header */}
-          <div className="px-4 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 bg-slate-50/70 dark:bg-[#091220]">
+          <div className="px-4 py-3.5 border-b border-[#1A3152] flex items-center justify-between gap-2 bg-[#0B192C] text-white">
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-8 h-8 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+              <div className="w-8 h-8 rounded-lg bg-blue-600/25 border border-blue-400/30 text-blue-200 flex items-center justify-center shrink-0">
                 <Bell className="w-4 h-4" />
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <h2 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                  <h2 className="text-sm font-extrabold text-white truncate">
                     {t('notifTitle')}
                   </h2>
                   {unreadCount > 0 && (
-                    <span className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-700 dark:text-rose-300 text-[10px] font-bold font-mono tabular-nums">
+                    <span className="px-2 py-0.5 rounded-md bg-blue-500/25 border border-blue-400/30 text-blue-100 text-[10px] font-bold font-mono-num">
                       {unreadCount} {t('notifUnread')}
                     </span>
                   )}
@@ -322,8 +322,8 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                 aria-label={notificationSoundEnabled ? t('notifSoundOn') : t('notifSoundOff')}
                 className={`p-2 rounded-lg border text-xs transition-colors ${
                   notificationSoundEnabled
-                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#070e17] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
+                    ? 'border-blue-400/40 bg-blue-600/25 text-blue-100'
+                    : 'border-white/15 bg-white/5 text-slate-300 hover:text-white'
                 }`}
               >
                 {notificationSoundEnabled ? (
@@ -354,10 +354,10 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                   }
                   className={`p-2 rounded-lg border text-xs transition-colors ${
                     browserCap.permission === 'granted'
-                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 cursor-default'
+                      ? 'border-emerald-400/40 bg-emerald-500/20 text-emerald-200 cursor-default'
                       : browserCap.permission === 'denied'
-                      ? 'border-slate-200 dark:border-slate-800 text-slate-400 opacity-60 cursor-not-allowed'
-                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-[#070e17] text-slate-600 dark:text-slate-300 hover:border-amber-500/40 hover:text-amber-500'
+                      ? 'border-white/10 text-slate-400 opacity-60 cursor-not-allowed'
+                      : 'border-white/15 bg-white/5 text-slate-200 hover:border-blue-400/40 hover:text-white'
                   }`}
                 >
                   {browserCap.permission === 'denied' ? (
@@ -372,7 +372,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close"
-                className="p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                className="p-2 rounded-lg text-slate-300 hover:text-white hover:bg-white/10 transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -380,16 +380,16 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
           </div>
 
           {/* Filter & Actions Bar */}
-          <div className="px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 space-y-2 bg-white dark:bg-[#0c1829]">
+          <div className="px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 space-y-2 bg-white dark:bg-[#0C1829]">
             <div className="flex items-center justify-between gap-2">
-              <div className="inline-flex items-center rounded-xl bg-slate-100 dark:bg-[#070e17] p-1 border border-slate-200/70 dark:border-slate-800">
+              <div className="inline-flex items-center rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] p-1 border border-slate-200/80 dark:border-slate-800">
                 <button
                   type="button"
                   onClick={() => setReadFilter('all')}
                   className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors ${
                     readFilter === 'all'
-                      ? 'bg-white dark:bg-[#0c1829] text-slate-900 dark:text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                      ? 'bg-white dark:bg-[#0C1829] text-[#0B192C] dark:text-white shadow-xs'
+                      : 'text-slate-500 dark:text-slate-400 hover:text-[#0B192C] dark:hover:text-slate-200'
                   }`}
                 >
                   {t('notifAll')} ({notifications.length})
@@ -399,8 +399,8 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                   onClick={() => setReadFilter('unread')}
                   className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors ${
                     readFilter === 'unread'
-                      ? 'bg-white dark:bg-[#0c1829] text-amber-600 dark:text-amber-400 shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                      ? 'bg-white dark:bg-[#0C1829] text-blue-700 dark:text-blue-300 shadow-xs'
+                      : 'text-slate-500 dark:text-slate-400 hover:text-[#0B192C] dark:hover:text-slate-200'
                   }`}
                 >
                   {t('notifUnread')} ({unreadCount})
@@ -411,7 +411,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                 type="button"
                 onClick={handleMarkAllRead}
                 disabled={unreadCount === 0 || markingAll}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/40 disabled:opacity-40 disabled:pointer-events-none transition-colors"
               >
                 <CheckCheck className="w-3.5 h-3.5" />
                 <span>{t('notifMarkAllRead')}</span>
@@ -427,10 +427,10 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                     key={cat.id}
                     type="button"
                     onClick={() => setCategoryFilter(cat.id)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap border transition-colors ${
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap border transition-colors ${
                       active
-                        ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40'
-                        : 'bg-slate-50 dark:bg-[#070e17] text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-[#F4F7FB] dark:bg-[#070E17] text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:border-blue-300 dark:hover:border-slate-700'
                     }`}
                   >
                     {t(cat.labelKey)}
@@ -478,8 +478,8 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                       canNavigate ? 'cursor-pointer' : ''
                     } ${
                       !isRead
-                        ? 'bg-amber-500/[0.06] dark:bg-amber-500/[0.08] hover:bg-amber-500/[0.11] dark:hover:bg-amber-500/[0.13]'
-                        : 'bg-white dark:bg-[#0c1829] hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                        ? 'bg-blue-50/75 dark:bg-blue-950/30 hover:bg-blue-50 dark:hover:bg-blue-950/45'
+                        : 'bg-white dark:bg-[#0C1829] hover:bg-slate-50 dark:hover:bg-slate-800/40'
                     }`}
                   >
                     <div className="flex items-start gap-3">
@@ -494,14 +494,14 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                           <div className="flex items-center gap-1.5 min-w-0">
                             {!isRead && (
                               <span
-                                className="w-2 h-2 rounded-full bg-amber-500 shrink-0"
+                                className="w-2 h-2 rounded-full bg-blue-600 shrink-0"
                                 aria-label={t('notifNewBadge')}
                               />
                             )}
                             <h3
                               className={`text-xs sm:text-[13px] leading-snug ${
                                 !isRead
-                                  ? 'font-bold text-slate-900 dark:text-white'
+                                  ? 'font-bold text-[#0B192C] dark:text-white'
                                   : 'font-semibold text-slate-700 dark:text-slate-300'
                               }`}
                             >
@@ -510,7 +510,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                           </div>
 
                           <span
-                            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0 ${getSeverityPill(
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-md border shrink-0 ${getSeverityPill(
                               notification.severity
                             )}`}
                           >
@@ -524,7 +524,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
 
                         <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                           <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-                            <span className="font-mono tabular-nums" dir="ltr">
+                            <span className="font-mono-num" dir="ltr">
                               {formatTimestamp(notification.createdAt)}
                             </span>
                             {notification.branchName && (
@@ -543,7 +543,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                                 type="button"
                                 onClick={(e) => void handleMarkOneRead(e, notification.id)}
                                 disabled={markingId === notification.id}
-                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 transition-colors disabled:opacity-50"
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold bg-blue-100 hover:bg-blue-200 text-blue-800 dark:bg-blue-500/20 dark:hover:bg-blue-500/30 dark:text-blue-200 transition-colors disabled:opacity-50"
                               >
                                 <Check className="w-3 h-3" />
                                 <span>{t('notifMarkRead')}</span>
@@ -555,7 +555,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                             )}
 
                             {canNavigate && (
-                              <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+                              <span className="inline-flex items-center gap-0.5 text-[11px] font-bold text-blue-700 dark:text-blue-300">
                                 <span>{t('notifOpenTarget')}</span>
                                 <NavArrow className="w-3.5 h-3.5" />
                               </span>
@@ -574,7 +574,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                 <button
                   type="button"
                   onClick={() => loadMoreNotifications(surface)}
-                  className="px-4 py-2 rounded-xl text-xs font-bold text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 border border-amber-500/25 transition-colors"
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/30 border border-blue-200 dark:border-blue-800 transition-colors"
                 >
                   {t('notifLoadMore')}
                 </button>
@@ -583,7 +583,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
           </div>
 
           {/* Footer: Foreground vs Push explanation + Audit Integrity Notice (Zero Delete) */}
-          <div className="px-4 py-2.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#091220] space-y-1 text-[10px] text-slate-500 dark:text-slate-400">
+          <div className="px-4 py-2.5 border-t border-slate-200 dark:border-slate-800 bg-[#F4F7FB] dark:bg-[#091526] space-y-1 text-[10px] text-slate-500 dark:text-slate-400">
             <p className="leading-relaxed">{t('notifNoDeleteHint')}</p>
             {browserCap.supported && browserCap.permission !== 'granted' && (
               <p className="leading-relaxed text-slate-400">{t('notifBrowserAlertsHint')}</p>
