@@ -583,7 +583,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
           /* Manager View Router */
           <>
             {managerTab === 'overview' && (
-              <ManagerOverview onNavigateTab={(tab) => setManagerTab(tab)} />
+              <ManagerOverview
+                onNavigateTab={(tab) => setManagerTab(tab)}
+                onNavigateNotification={handleNotificationNavigate}
+              />
             )}
             {managerTab === 'closings' && <ClosingsReview />}
             {managerTab === 'purchase_reports' && (
