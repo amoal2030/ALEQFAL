@@ -87,13 +87,38 @@ service cloud.firestore {
       return p is map && p.get(permKey, false) == true;
     }
 
-    // Verifies single-branch assignment while preserving legacy scalar `branchId` user docs
+    // Default-enabled permission reader for branch_manager (safely handles omitted/null permissions map, still fails closed on explicit false or invalid types)
+    function branchManagerHasDefaultPermission(u, permKey) {
+      let p = u.get('permissions', {});
+      return p == null || (p is map && (!(permKey in p) || p[permKey] == null || p[permKey] == true));
+    }
+
+    // Verifies single-branch assignment while preserving legacy scalar `branchId`, single-item `branchIds`, or empty/null `branchIds`
     function userHasSingleAssignedBranch(u, targetBranchId) {
+      let rawBranchId = u.get('branchId', '');
+      let scalarClean = rawBranchId is string ? rawBranchId.trim() : '';
+      let scalarMatch = scalarClean == targetBranchId;
+      let hasBranchIds = 'branchIds' in u && u.branchIds is list && u.branchIds.size() > 0;
       return targetBranchId is string &&
-        targetBranchId.size() > 0 &&
-        u.get('branchId', '') == targetBranchId && (
-          !('branchIds' in u) ||
-          u.branchIds == [targetBranchId]
+        targetBranchId.size() > 0 && (
+          (
+            scalarMatch && (
+              !('branchIds' in u) ||
+              u.branchIds == null ||
+              (
+                u.branchIds is list && (
+                  u.branchIds.size() == 0 ||
+                  (u.branchIds.size() == 1 && u.branchIds[0] is string && u.branchIds[0].trim() == targetBranchId)
+                )
+              )
+            )
+          ) || (
+            scalarClean.size() == 0 &&
+            hasBranchIds &&
+            u.branchIds.size() == 1 &&
+            u.branchIds[0] is string &&
+            u.branchIds[0].trim() == targetBranchId
+          )
         );
     }
 
@@ -1328,7 +1353,7 @@ service cloud.firestore {
             u.role == 'manager' ||
             (
               u.role == 'branch_manager' &&
-              u.get('permissions', {}).get('canViewSuppliers', true) == true &&
+              branchManagerHasDefaultPermission(u, 'canViewSuppliers') &&
               (!isGet || data.isActive == true)
             ) ||
             (
@@ -1403,6 +1428,8 @@ service cloud.firestore {
           (
             org.get('subscriptionStatus', '') == 'active' &&
             org.get('subscriptionPlan', '') in ['trial_7d', '1m', '3m', '6m', '1y'] &&
+            org.get('subscriptionStartAt', null) is timestamp &&
+            org.get('subscriptionEndAt', null) is timestamp &&
             request.time >= org.subscriptionStartAt &&
             request.time < org.subscriptionEndAt &&
             (org.get('deactivationDueAt', null) == null || (org.deactivationDueAt is timestamp && request.time < org.deactivationDueAt))
@@ -1455,7 +1482,7 @@ service cloud.firestore {
               ? (
                   data.vatRate >= 0 && data.vatRate <= 100 &&
                   math.abs(data.vatRate * 100 - math.round(data.vatRate * 100)) < 0.001 &&
-                  math.abs(data.get('vatAmount', 0) * 100 - ((math.round((data.amount - data.get('discountAmount', 0)) * 100) * math.round(data.vatRate * 100) + 5000) / 10000)) < 0.001
+                  math.abs(data.get('vatAmount', 0) * 100 - math.floor((math.round((data.amount - data.get('discountAmount', 0)) * 100) * math.round(data.vatRate * 100) + 5000) / 10000)) < 0.001
                 )
               : (!('vatAmount' in data) || (data.vatAmount >= 0 && data.vatAmount <= 1000000000000 && math.abs(data.vatAmount * 100 - math.round(data.vatAmount * 100)) < 0.001))
           ) &&
@@ -1514,7 +1541,7 @@ service cloud.firestore {
             (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
             (
               u.role == 'branch_manager' &&
-              u.get('permissions', {}).get('canManagePurchases', true) == true &&
+              branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
               userHasSingleAssignedBranch(u, data.branchId)
             )
           ) &&
@@ -1558,6 +1585,7 @@ service cloud.firestore {
       );
 
       allow create: if isSignedIn() && isValidId(purchaseId) &&
+        hasValidUserDoc() &&
         canCreatePurchase(getUserData(), purchaseId, incoming());
 
       allow update: if isSignedIn() && isValidId(purchaseId) &&
@@ -1610,7 +1638,7 @@ service cloud.firestore {
               (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
               (
                 u.role == 'branch_manager' &&
-                u.get('permissions', {}).get('canManagePurchases', true) == true &&
+                branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
                 userHasSingleAssignedBranch(u, data.branchId)
               )
             );
@@ -1728,7 +1756,7 @@ service cloud.firestore {
                 (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
                 (
                   u.role == 'branch_manager' &&
-                  u.get('permissions', {}).get('canManagePurchases', true) == true &&
+                  branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
                   userHasSingleAssignedBranch(u, data.branchId)
                 )
               )
@@ -1819,7 +1847,7 @@ service cloud.firestore {
             (
               u.role == 'manager' ||
               (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
-              (u.role == 'branch_manager' && u.get('permissions', {}).get('canManagePurchases', true) == true)
+              (u.role == 'branch_manager' && branchManagerHasDefaultPermission(u, 'canManagePurchases'))
             ) &&
             existsAfter(/databases/$(database)/documents/purchases/$(data.targetId)) &&
             getAfter(/databases/$(database)/documents/purchases/$(data.targetId)).data.orgId == u.orgId &&
@@ -2235,7 +2263,7 @@ service cloud.firestore {
             actorRole == 'branch_manager' &&
             cat == 'purchases_suppliers' &&
             t in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] &&
-            u.get('permissions', {}).get('canManagePurchases', true) == true &&
+            branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
             data.audienceScope == 'org_supervisor_permission' &&
             data.get('targetType', '') == 'purchase'
           )
@@ -2319,7 +2347,7 @@ service cloud.firestore {
             'branchId' in u &&
             u.branchId is string &&
             u.branchId.size() > 0 &&
-            (!('branchIds' in u) || (u.branchIds is list && u.branchIds.size() == 1 && u.branchIds[0] == u.branchId)) &&
+            (!('branchIds' in u) || u.branchIds == null || (u.branchIds is list && (u.branchIds.size() == 0 || (u.branchIds.size() == 1 && u.branchIds[0] == u.branchId)))) &&
             ('branch_mgr:' + u.orgId + ':' + u.branchId) in data.feedKeys
           ) ||
           (

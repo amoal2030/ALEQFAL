@@ -593,7 +593,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       orgDocRef,
       (docSnap) => {
         if (!docSnap.exists()) return;
-        const updatedOrg = docSnap.data() as Organization;
+        const updatedOrg: Organization = { ...(docSnap.data() as Organization), id: docSnap.id };
         setCurrentOrg(updatedOrg);
         const nextEval = evaluateOrganizationSubscription(updatedOrg);
         setSubscriptionEvaluation(nextEval);
@@ -625,7 +625,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         userDocRef,
         (docSnap) => {
           if (!docSnap.exists()) return;
-          const data = docSnap.data() as UserProfile;
+          const data: UserProfile = { ...(docSnap.data() as UserProfile), uid: currentUser.uid };
           if (data.isActive === false) {
             // Instantly terminate disabled session for BOTH manager & employee
             clearDriveSession();
@@ -735,7 +735,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       branchesQuery,
       (snapshot) => {
         const loaded: Branch[] = [];
-        snapshot.forEach((b) => loaded.push(b.data() as Branch));
+        snapshot.forEach((b) => loaded.push({ ...(b.data() as Branch), id: b.id }));
         setBranches(loaded);
         setCurrentBranch((prev) => {
           if (
@@ -1302,7 +1302,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const q = query(branchesRef, where('orgId', '==', orgId));
     const branchesSnap = await getDocs(q);
     const loadedBranches: Branch[] = [];
-    branchesSnap.forEach((b) => loadedBranches.push(b.data() as Branch));
+    branchesSnap.forEach((b) => loadedBranches.push({ ...(b.data() as Branch), id: b.id }));
     setBranches(loadedBranches);
 
     const assignedBranchId = resolvePrimaryAssignedBranchId(profile);
@@ -1324,7 +1324,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (activeUserUidRef.current !== fbUser.uid) return;
 
       if (userDocSnap.exists()) {
-        const profile = userDocSnap.data() as UserProfile;
+        const profile: UserProfile = { ...(userDocSnap.data() as UserProfile), uid: fbUser.uid };
 
         // Disabled user enforcement (both Manager and Employee)
         if (profile.isActive === false) {
@@ -1357,7 +1357,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const orgSnap = await getDoc(orgDocRef);
           if (activeUserUidRef.current !== fbUser.uid) return;
           if (orgSnap.exists()) {
-            orgData = orgSnap.data() as Organization;
+            orgData = { ...(orgSnap.data() as Organization), id: orgSnap.id };
           }
         }
 
