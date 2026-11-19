@@ -17,7 +17,7 @@ import { TenantAccessNoticeView } from './components/TenantAccessNoticeView';
 import { Dashboard } from './components/Dashboard';
 import { SuperAdminDashboard } from './components/superadmin/SuperAdminDashboard';
 import { LegalPage } from './components/LegalPage';
-import { BrandLogo } from './components/common/BrandLogo';
+import { AppLoadingScreen } from './components/common/AppLoadingScreen';
 import { canRenderTenantDashboard } from './utils/tenantAccess';
 import {
   AppPageRoute,
@@ -156,29 +156,9 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // Global Loading State with Official Auto-Switching Logo
+  // Global Loading State with Unified Dual-Theme Animated Loading Screen
   if (loading || (currentUser && tenantStatus === 'loading')) {
-    return (
-      <div
-        className="min-h-screen flex items-center justify-center bg-[#F5F8FF] dark:bg-[#0B1B32] text-[#0B1B32] dark:text-white transition-colors"
-        dir={direction}
-      >
-        <div className="text-center space-y-5 px-4">
-          <div className="flex justify-center">
-            <BrandLogo size="xl" />
-          </div>
-          <div className="flex flex-col items-center gap-2">
-            <div className="w-8 h-8 rounded-full border-2 border-[#1764FF]/25 border-t-[#1764FF] animate-spin" />
-            <h2 className="text-lg font-extrabold text-[#0B1B32] dark:text-white">
-              {t('brandName')} | {t('brandSub')}
-            </h2>
-            <p className="text-xs text-[#526785] dark:text-slate-300">
-              {t('dashConnectingCloud')}
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+    return <AppLoadingScreen />;
   }
 
   // Safe In-App Notification Banner

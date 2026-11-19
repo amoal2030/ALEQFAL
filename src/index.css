@@ -102,3 +102,145 @@
     display: block !important;
   }
 }
+
+/* ============================================================
+   AL EQFAL — Unified Main Loading Screen Animations
+   ============================================================ */
+@keyframes alLoaderOrbitSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes alLoaderOrbitReverse {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes alLoaderLogoFloat {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(0, -5px, 0) scale(1.035);
+  }
+}
+
+@keyframes alLoaderHaloDriftA {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.72;
+  }
+  50% {
+    transform: translate3d(26px, -22px, 0) scale(1.08);
+    opacity: 0.95;
+  }
+}
+
+@keyframes alLoaderHaloDriftB {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.68;
+  }
+  50% {
+    transform: translate3d(-24px, 20px, 0) scale(1.1);
+    opacity: 0.92;
+  }
+}
+
+@keyframes alLoaderGlassPulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.92;
+  }
+  50% {
+    transform: scale(1.028);
+    opacity: 1;
+  }
+}
+
+@keyframes alLoaderDotPulse {
+  0%, 80%, 100% {
+    opacity: 0.28;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2.5px);
+  }
+}
+
+.al-loader-comet-group {
+  transform-box: view-box;
+  transform-origin: 130px 130px;
+  animation: alLoaderOrbitSpin 2.2s linear infinite;
+  will-change: transform;
+}
+
+.al-loader-dashed-orbit {
+  transform-box: view-box;
+  transform-origin: 130px 130px;
+  animation: alLoaderOrbitReverse 26s linear infinite;
+  will-change: transform;
+}
+
+.al-loader-inner-orbit {
+  transform-box: view-box;
+  transform-origin: 130px 130px;
+  animation: alLoaderOrbitSpin 16s linear infinite;
+  will-change: transform;
+}
+
+.al-loader-logo-float {
+  animation: alLoaderLogoFloat 3.4s ease-in-out infinite;
+  will-change: transform;
+}
+
+.al-loader-halo-a {
+  animation: alLoaderHaloDriftA 9s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.al-loader-halo-b {
+  animation: alLoaderHaloDriftB 11s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.al-loader-glass-pulse {
+  animation: alLoaderGlassPulse 3.4s ease-in-out infinite;
+}
+
+.al-loader-dot {
+  display: inline-block;
+  animation: alLoaderDotPulse 1.35s ease-in-out infinite;
+}
+
+.al-loader-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.al-loader-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .al-loader-comet-group,
+  .al-loader-dashed-orbit,
+  .al-loader-inner-orbit,
+  .al-loader-logo-float,
+  .al-loader-halo-a,
+  .al-loader-halo-b,
+  .al-loader-glass-pulse,
+  .al-loader-dot {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
