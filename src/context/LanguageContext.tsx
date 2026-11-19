@@ -9,6 +9,8 @@ interface LanguageContextType {
   direction: 'rtl' | 'ltr';
   setLanguage: (lang: SupportedLanguage) => void;
   t: (key: keyof TranslationsShape) => any;
+  /** Inline trilingual helper that preserves exact Arabic copy while rendering natural English/Urdu */
+  tr: (ar: string, en: string, ur: string) => string;
   translationsObj: TranslationsShape;
 }
 
@@ -51,6 +53,12 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return currentDict[key] ?? translations.ar[key] ?? key;
   };
 
+  const tr = (ar: string, en: string, ur: string): string => {
+    if (language === 'en') return en;
+    if (language === 'ur') return ur;
+    return ar;
+  };
+
   return (
     <LanguageContext.Provider
       value={{
@@ -58,6 +66,7 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         direction,
         setLanguage,
         t,
+        tr,
         translationsObj: currentDict,
       }}
     >

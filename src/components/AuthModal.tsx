@@ -1,17 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
+import { BrandLogo } from './common/BrandLogo';
 import {
   X,
-  Lock,
-  Building2,
   Mail,
   KeyRound,
   ShieldCheck,
   AlertCircle,
   CheckCircle2,
-  HelpCircle,
-  ArrowRight
 } from 'lucide-react';
 
 interface AuthModalProps {
@@ -27,7 +24,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   onSuccess,
 }) => {
-  const { t, direction } = useLanguage();
+  const { t, direction, tr } = useLanguage();
   const { loginWithGoogle, loginWithEmailPassword, resetPassword } = useAuth();
 
   const [activeTab, setActiveTab] = useState<'manager' | 'employee' | 'register'>(initialTab);
@@ -49,36 +46,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Localized error message mapper
   const getFirebaseErrorMessage = (err: any): string => {
     const code = err?.code || '';
     switch (code) {
       case 'auth/unauthorized-domain':
-        return 'النطاق (amoal2030.github.io) غير مضاف إلى النطاقات المعتمدة (Authorized domains) في Firebase Authentication. يلزم إضافته من Firebase Console لتفعيل تسجيل الدخول على GitHub Pages.';
+        return t('authErrUnauthorizedDomain');
       case 'auth/popup-blocked':
-        return 'قام المتصفح بحظر النافذة المنبثقة. يرجى السماح بالنوافذ المنبثقة في إعدادات متصفحك أو إعادة المحاولة.';
+        return t('authErrPopupBlocked');
       case 'auth/operation-not-allowed':
-        return 'طريقة تسجيل الدخول (Google أو البريد) غير مفعلة في Firebase Console. يرجى تفعيلها من Sign-in method.';
+        return t('authErrOperationNotAllowed');
       case 'auth/too-many-requests':
-        return 'تم حظر المحاولات مؤقتاً لكثرة الطلبات. يرجى الانتظار دقيقة واحدة ثم المحاولة.';
+        return t('authErrTooManyRequests');
       case 'auth/user-disabled':
-        return 'تم تعطيل هذا الحساب من قِبل إدارة المنظومة.';
+        return t('authErrUserDisabled');
       case 'auth/user-not-found':
       case 'auth/wrong-password':
       case 'auth/invalid-credential':
-        return 'بيانات الدخول غير صحيحة، يرجى التحقق من البريد الإلكتروني وكلمة المرور.';
+        return t('authErrInvalidCredentials');
       case 'auth/email-already-in-use':
-        return 'البريد الإلكتروني مسجل مسبقاً في النظام.';
+        return t('authErrEmailInUse');
       case 'auth/invalid-email':
-        return 'صيغة البريد الإلكتروني غير صالحة.';
+        return t('authErrInvalidEmail');
       case 'auth/weak-password':
-        return 'كلمة المرور ضعيفة جداً، يرجى استخدام 6 خانات على الأقل.';
+        return t('authErrWeakPassword');
       case 'auth/popup-closed-by-user':
-        return 'تم إغلاق نافذة تسجيل الدخول قبل استكمال المصادقة. يرجى المحاولة مجدداً.';
+        return t('authErrPopupClosed');
       case 'auth/network-request-failed':
-        return 'تعذر الاتصال بالخادم السحابي. يرجى التحقق من اتصالك بالإنترنت.';
+        return t('authErrNetwork');
       default:
-        return err?.message || 'حدث خطأ غير متوقع أثناء تسجيل الدخول.';
+        return err?.message || t('authErrGeneric');
     }
   };
 
@@ -117,7 +113,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email) {
-      setErrorMsg('يرجى إدخال البريد الإلكتروني أولاً');
+      setErrorMsg(t('authEnterEmailFirst'));
       return;
     }
     setLoading(true);
@@ -125,7 +121,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setSuccessMsg(null);
     try {
       await resetPassword(email);
-      setSuccessMsg('تم إرسال رابط استعادة كلمة المرور إلى بريدك الإلكتروني بنجاح.');
+      setSuccessMsg(t('authResetSent'));
       setTimeout(() => {
         setIsForgotPassword(false);
       }, 4000);
@@ -137,30 +133,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/65 backdrop-blur-xs transition-all">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-[#0B1B32]/70 backdrop-blur-xs transition-all">
       <div
-        className="relative w-full max-w-lg max-h-[92vh] flex flex-col bg-white dark:bg-[#0C1829] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden"
+        className="relative w-full max-w-lg max-h-[92vh] flex flex-col bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6F8] dark:border-[#1F3B66] shadow-2xl overflow-hidden"
         dir={direction}
       >
-        {/* Modal Header (Dark Navy) */}
-        <div className="shrink-0 px-5 py-4 bg-[#0B192C] text-white border-b border-[#1A3152] flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-blue-600/25 border border-blue-400/30 text-blue-200 flex items-center justify-center shrink-0">
-              <Lock className="w-4 h-4 sm:w-5 sm:h-5" />
-            </div>
-            <div>
-              <h3 className="text-base sm:text-lg font-extrabold text-white leading-tight">
+        {/* Modal Header (Theme-matched with Official Auto-Switching Logo) */}
+        <div className="shrink-0 px-5 py-4 bg-[#F5F8FF] dark:bg-[#0B1B32] text-[#0B1B32] dark:text-white border-b border-[#E2EAFA] dark:border-[#1E3A63] flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <BrandLogo size="sm" />
+            <div className="min-w-0">
+              <h3 className="text-base sm:text-lg font-extrabold text-[#0B1B32] dark:text-white leading-tight truncate">
                 {t('authModalTitle')}
               </h3>
-              <span className="text-[11px] sm:text-xs text-blue-200/80">
+              <span className="text-[11px] sm:text-xs font-semibold text-[#1764FF] dark:text-[#7EB0FF]">
                 {t('brandName')} | {t('brandSub')}
               </span>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-2 rounded-xl text-slate-300 hover:text-white hover:bg-white/10 transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center"
-            aria-label="إغلاق النافذة"
+            className="p-2 rounded-xl text-[#526785] dark:text-slate-300 hover:text-[#0B1B32] dark:hover:text-white hover:bg-[#EAF1FF] dark:hover:bg-white/10 transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center shrink-0"
+            aria-label={t('authClose')}
           >
             <X className="w-5 h-5" />
           </button>
@@ -168,7 +163,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {/* Tab Switcher */}
         {!isForgotPassword && (
-          <div className="shrink-0 grid grid-cols-2 p-1.5 bg-[#F4F7FB] dark:bg-[#091526] border-b border-slate-200 dark:border-slate-800 text-xs font-bold">
+          <div className="shrink-0 grid grid-cols-2 p-1.5 bg-[#F5F8FF] dark:bg-[#0E203A] border-b border-[#E2EAFA] dark:border-[#1E3A63] text-xs font-bold gap-1.5">
             <button
               type="button"
               onClick={() => {
@@ -176,10 +171,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 setErrorMsg(null);
                 setSuccessMsg(null);
               }}
-              className={`py-2 rounded-xl transition-all min-h-[38px] ${
+              className={`py-2.5 rounded-xl transition-all min-h-[38px] ${
                 activeTab === 'manager' || activeTab === 'register'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-[#0B192C] dark:hover:text-white'
+                  ? 'bg-[#1764FF] text-white shadow-xs'
+                  : 'text-[#526785] dark:text-slate-300 hover:text-[#0B1B32] dark:hover:text-white'
               }`}
             >
               {t('authManagerTab')}
@@ -191,10 +186,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 setErrorMsg(null);
                 setSuccessMsg(null);
               }}
-              className={`py-2 rounded-xl transition-all min-h-[38px] ${
+              className={`py-2.5 rounded-xl transition-all min-h-[38px] ${
                 activeTab === 'employee'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-[#0B192C] dark:hover:text-white'
+                  ? 'bg-[#1764FF] text-white shadow-xs'
+                  : 'text-[#526785] dark:text-slate-300 hover:text-[#0B1B32] dark:hover:text-white'
               }`}
             >
               {t('authEmployeeTab')}
@@ -204,35 +199,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {/* Scrollable Modal Content */}
         <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-4 sm:space-y-5">
-          {/* Messages */}
           {errorMsg && (
-            <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300 text-xs flex items-start gap-2.5">
+            <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/15 border border-rose-200 dark:border-rose-500/35 text-rose-700 dark:text-rose-200 text-xs flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <div className="space-y-1">
                 <span>{errorMsg}</span>
                 {errorMsg.includes('amoal2030.github.io') && (
-                  <div className="pt-2 mt-2 border-t border-rose-500/20 text-[11px] font-mono-num text-rose-700 dark:text-rose-300">
-                    النطاق المطلوب إضافته: <span className="font-bold underline select-all">amoal2030.github.io</span>
+                  <div className="pt-2 mt-2 border-t border-rose-500/20 text-[11px] font-mono-num">
+                    {tr('النطاق المطلوب إضافته:', 'Required domain:', 'مطلوبہ ڈومین:')}{' '}
+                    <span className="font-bold underline select-all">amoal2030.github.io</span>
                   </div>
                 )}
               </div>
             </div>
           )}
           {successMsg && (
-            <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300 text-xs flex items-start gap-2.5">
+            <div className="p-3.5 rounded-xl bg-[#08C99B]/12 dark:bg-[#08C99B]/18 border border-[#08C99B]/35 text-[#048264] dark:text-[#3CE0B9] text-xs flex items-start gap-2.5">
               <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{successMsg}</span>
             </div>
           )}
+
           {isForgotPassword ? (
-            /* Forgot Password Form */
             <form onSubmit={handleResetPassword} className="space-y-4">
-              <div className="text-xs text-slate-600 dark:text-slate-300">
-                أدخل بريدك الإلكتروني المسجل وسنرسل لك رابطاً لإعادة تعيين كلمة المرور فوراً عبر Firebase Auth.
+              <div className="text-xs text-[#526785] dark:text-slate-300 leading-relaxed">
+                {t('authForgotDesc')}
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
+                <label className="block text-xs font-bold text-[#0B1B32] dark:text-slate-200 mb-1.5">
                   {t('authEmail')}
                 </label>
                 <div className="relative">
@@ -242,9 +237,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="name@store.com"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] text-sm text-[#0B1B32] dark:text-white focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20"
                   />
-                  <Mail className="w-4 h-4 text-slate-400 absolute end-3 top-3" />
+                  <Mail className="w-4 h-4 text-[#647B9C] dark:text-slate-400 absolute end-3 top-3" />
                 </div>
               </div>
 
@@ -252,36 +247,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <button
                   type="submit"
                   disabled={loading}
-                  className="flex-1 py-3 rounded-xl font-bold text-xs text-white bg-blue-600 hover:bg-blue-700 transition-all active:scale-99 disabled:opacity-50"
+                  className="flex-1 py-3 rounded-xl font-bold text-xs text-white bg-[#1764FF] hover:bg-[#1052D8] transition-all active:scale-99 disabled:opacity-50"
                 >
-                  {loading ? 'جاري الإرسال...' : 'إرسال رابط الاستعادة'}
+                  {loading ? t('authSending') : t('authSendResetLink')}
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsForgotPassword(false)}
-                  className="px-4 py-3 rounded-xl font-semibold text-xs text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700"
+                  className="px-4 py-3 rounded-xl font-semibold text-xs text-[#0B1B32] dark:text-slate-200 bg-[#F5F8FF] dark:bg-[#162D50] border border-[#DCE6F8] dark:border-[#24426E] hover:bg-[#EAF1FF] dark:hover:bg-[#1D3963]"
                 >
-                  إلغاء
+                  {t('authCancel')}
                 </button>
               </div>
             </form>
-          ) : (activeTab === 'manager' || activeTab === 'register') ? (
-            /* Manager Google Login & Onboarding */
+          ) : activeTab === 'manager' || activeTab === 'register' ? (
             <div className="space-y-4">
-              <div className="p-4 rounded-xl bg-blue-50 dark:bg-blue-950/35 border border-blue-200/80 dark:border-blue-800/70 text-xs text-blue-950 dark:text-blue-200 flex items-start gap-2.5">
-                <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-                <p className="leading-relaxed">
-                  {t('subAuthNoticeNewManager')}
-                </p>
+              <div className="p-4 rounded-xl bg-[#1764FF]/8 dark:bg-[#1764FF]/15 border border-[#1764FF]/20 dark:border-[#1764FF]/35 text-xs text-[#0B1B32] dark:text-blue-100 flex items-start gap-2.5">
+                <ShieldCheck className="w-4 h-4 text-[#1764FF] dark:text-[#7EB0FF] shrink-0 mt-0.5" />
+                <p className="leading-relaxed">{t('subAuthNoticeNewManager')}</p>
               </div>
 
               <button
                 type="button"
                 onClick={handleGoogleManagerSignIn}
                 disabled={loading}
-                className="w-full flex items-center justify-center gap-3 py-3.5 px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#070E17] hover:bg-blue-50/60 dark:hover:bg-slate-800 text-[#0B192C] dark:text-white text-sm font-bold shadow-xs hover:border-blue-300 transition-all active:scale-99 disabled:opacity-50"
+                className="w-full flex items-center justify-center gap-3 py-3.5 px-4 rounded-xl border border-[#DCE6F8] dark:border-[#24426E] bg-white dark:bg-[#0E203A] hover:bg-[#F5F8FF] dark:hover:bg-[#162D50] text-[#0B1B32] dark:text-white text-sm font-bold shadow-xs hover:border-[#1764FF] transition-all active:scale-99 disabled:opacity-50"
               >
-                <svg className="w-5 h-5 shrink-0" viewBox="0 0 48 48">
+                <svg className="w-5 h-5 shrink-0" viewBox="0 0 48 48" aria-hidden="true">
                   <path
                     fill="#EA4335"
                     d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
@@ -299,23 +291,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
                   />
                 </svg>
-                <span>{loading ? 'جاري الاتصال بـ Firebase...' : t('authGoogleSignIn')}</span>
+                <span>{loading ? t('authConnecting') : t('authGoogleSignIn')}</span>
               </button>
 
-              <div className="text-center text-xs text-slate-500 dark:text-slate-400">
+              <div className="text-center text-xs text-[#526785] dark:text-slate-300 leading-relaxed">
                 {t('authNoticeManager')}
               </div>
             </div>
           ) : (
-            /* Employee Login */
             <form onSubmit={handleEmployeeLogin} className="space-y-4">
-              <div className="p-3.5 rounded-xl bg-[#F4F7FB] dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+              <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] text-xs text-[#526785] dark:text-slate-300 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-[#1764FF] dark:text-[#7EB0FF] shrink-0 mt-0.5" />
                 <p className="leading-relaxed">{t('authNoticeEmployee')}</p>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
+                <label className="block text-xs font-bold text-[#0B1B32] dark:text-slate-200 mb-1.5">
                   {t('authEmail')}
                 </label>
                 <div className="relative">
@@ -325,15 +316,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="cashier@store.com"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] text-sm text-[#0B1B32] dark:text-white focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20"
                   />
-                  <Mail className="w-4 h-4 text-slate-400 absolute end-3 top-3" />
+                  <Mail className="w-4 h-4 text-[#647B9C] dark:text-slate-400 absolute end-3 top-3" />
                 </div>
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300">
+                  <label className="block text-xs font-bold text-[#0B1B32] dark:text-slate-200">
                     {t('authPassword')}
                   </label>
                   <button
@@ -342,9 +333,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       setIsForgotPassword(true);
                       setErrorMsg(null);
                     }}
-                    className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline"
+                    className="text-[11px] font-bold text-[#1764FF] dark:text-[#7EB0FF] hover:underline"
                   >
-                    نسيت كلمة المرور؟
+                    {t('authForgotPassword')}
                   </button>
                 </div>
                 <div className="relative">
@@ -354,18 +345,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] text-sm text-[#0B1B32] dark:text-white focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20"
                   />
-                  <KeyRound className="w-4 h-4 text-slate-400 absolute end-3 top-3" />
+                  <KeyRound className="w-4 h-4 text-[#647B9C] dark:text-slate-400 absolute end-3 top-3" />
                 </div>
               </div>
 
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3.5 rounded-xl font-bold text-sm text-white bg-blue-600 hover:bg-blue-700 transition-all active:scale-99 shadow-xs disabled:opacity-50"
+                className="w-full py-3.5 rounded-xl font-bold text-sm text-white bg-[#1764FF] hover:bg-[#1052D8] transition-all active:scale-99 shadow-xs disabled:opacity-50"
               >
-                {loading ? 'جاري التحقق والدخول...' : t('authSubmitLogin')}
+                {loading ? t('authVerifying') : t('authSubmitLogin')}
               </button>
             </form>
           )}

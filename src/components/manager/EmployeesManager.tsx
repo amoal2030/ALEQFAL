@@ -38,55 +38,71 @@ type StatusFilterValue = 'all' | 'active' | 'disabled' | 'archived';
 
 const SUPERVISOR_PERMISSION_META: Record<
   SupervisorOptionalPermissionKey,
-  { labelAr: string; labelEn: string; descAr: string; descEn: string }
+  { labelAr: string; labelEn: string; labelUr: string; descAr: string; descEn: string; descUr: string }
 > = {
   canCreateClosing: {
     labelAr: 'إنشاء وإرسال إقفالات الورديات',
     labelEn: 'Create & submit shift closings',
+    labelUr: 'شفٹ کلوزنگ بنانا اور جمع کرانا',
     descAr: 'يسمح له بتسجيل إقفال وردية على أي فرع داخل المؤسسة.',
     descEn: 'Allows recording shift closings on any organization branch.',
+    descUr: 'ادارے کی کسی بھی برانچ پر شفٹ کلوزنگ درج کرنے کی اجازت دیتا ہے۔',
   },
   canViewAllClosings: {
     labelAr: 'عرض إقفالات جميع الفروع',
     labelEn: 'View all branches closings',
+    labelUr: 'تمام برانچز کی کلوزنگ دیکھنا',
     descAr: 'يتيح الاطلاع على سجلات الإقفالات عبر كافة فروع المؤسسة.',
     descEn: 'Allows viewing shift closing records across all branches.',
+    descUr: 'ادارے کی تمام برانچز کے کلوزنگ ریکارڈز دیکھنے کی اجازت دیتا ہے۔',
   },
   canApproveClosings: {
     labelAr: 'اعتماد وإرجاع الإقفالات',
     labelEn: 'Approve & return closings',
+    labelUr: 'کلوزنگ منظور اور واپس کرنا',
     descAr: 'يتيح اعتماد أو إعادة الإقفالات المرسلة للمراجعة (دون التصحيح الإداري للمعتمد).',
     descEn: 'Allows approving or returning pending closings (without admin corrections).',
+    descUr: 'زیر التواء کلوزنگ منظور یا واپس کرنے کی اجازت (منظور شدہ پر انتظامی تصحیح کے بغیر)۔',
   },
   canViewFinancialReports: {
     labelAr: 'الاطلاع على التقارير المالية',
     labelEn: 'View financial reports',
+    labelUr: 'مالی رپورٹس دیکھنا',
     descAr: 'يفتح تبويب التقارير المالية وإجماليات المبيعات والصناديق.',
     descEn: 'Grants access to financial reports and summaries.',
+    descUr: 'مالی رپورٹس، کل فروخت اور کیش بکس کے خلاصے تک رسائی دیتا ہے۔',
   },
   canExportReports: {
     labelAr: 'تصدير وطباعة التقارير (CSV / Excel)',
     labelEn: 'Export & print reports',
+    labelUr: 'رپورٹس ایکسپورٹ اور پرنٹ کرنا (CSV / Excel)',
     descAr: 'يتيح تصدير التقارير المالية وطباعتها عند تفعيل التقارير.',
     descEn: 'Allows downloading CSV/Excel reports and printing.',
+    descUr: 'رپورٹس فعال ہونے پر CSV/Excel ڈاؤن لوڈ اور پرنٹ کرنے کی اجازت دیتا ہے۔',
   },
   canManagePurchases: {
     labelAr: 'إدارة المشتريات عبر جميع الفروع',
     labelEn: 'Manage org-wide purchases',
+    labelUr: 'تمام برانچز کی خریداری کا انتظام',
     descAr: 'صلاحية تسجيل المشتريات على كافة فروع المؤسسة في قواعد الأمان.',
     descEn: 'Authorizes recording purchases across all organization branches.',
+    descUr: 'ادارے کی تمام برانچز پر خریداری درج کرنے کا اختیار دیتا ہے۔',
   },
   canViewSuppliers: {
     labelAr: 'عرض الموردين المسجلين',
     labelEn: 'View registered suppliers',
+    labelUr: 'رجسٹرڈ سپلائرز دیکھنا',
     descAr: 'الاطلاع على قائمة الموردين المعتمدة في المؤسسة.',
     descEn: 'View pre-registered organization suppliers.',
+    descUr: 'ادارے کے منظور شدہ سپلائرز کی فہرست دیکھنا۔',
   },
   canManageSuppliers: {
     labelAr: 'إضافة مورد جديد فقط',
     labelEn: 'Add new suppliers only',
+    labelUr: 'صرف نیا سپلائر شامل کرنا',
     descAr: 'يسمح بإضافة موردين جدد فقط (لا يسمح بتعديل أو حذف الموردين).',
     descEn: 'Permits adding new suppliers only (editing/deleting remains blocked).',
+    descUr: 'صرف نئے سپلائرز شامل کرنے کی اجازت (ترمیم یا حذف ممنوع ہے)۔',
   },
 };
 
@@ -139,9 +155,8 @@ export const EmployeesManager: React.FC = () => {
     toggleEmployeeStatus,
     updateEmployeeBranch,
   } = useAuth();
-  const { t, language } = useLanguage();
-
-  const isEn = language === 'en';
+  const { t, tr, language } = useLanguage();
+  const dateLocale = language === 'ar' ? 'ar-SA' : language === 'ur' ? 'ur-PK' : 'en-US';
 
   const activeBranches = useMemo(
     () => branches.filter((b) => b.lifecycleStatus !== 'purged_from_db'),
@@ -450,27 +465,27 @@ export const EmployeesManager: React.FC = () => {
   const renderRoleBadge = (role: UserRole) => {
     if (role === 'manager') {
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-[#1764FF]/12 text-[#1764FF] dark:text-[#6CA2FF] border border-[#1764FF]/30">
           {getUserRoleLabel(role, language)}
         </span>
       );
     }
     if (role === 'supervisor') {
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border border-indigo-500/30">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-500/12 text-indigo-600 dark:text-indigo-300 border border-indigo-500/30">
           {getUserRoleLabel(role, language)}
         </span>
       );
     }
     if (role === 'branch_manager') {
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-[#08C99B]/12 text-[#048264] dark:text-[#08C99B] border border-[#08C99B]/30">
           {getUserRoleLabel(role, language)}
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-sky-500/15 text-sky-600 dark:text-sky-300 border border-sky-500/30">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-sky-500/12 text-sky-600 dark:text-sky-300 border border-sky-500/30">
         {getUserRoleLabel(role, language)}
       </span>
     );
@@ -479,7 +494,7 @@ export const EmployeesManager: React.FC = () => {
   const renderStatusBadge = (emp: UserProfile) => {
     if (emp.isArchived) {
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-slate-700">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-slate-200 dark:bg-[#0E203A] text-slate-600 dark:text-slate-300 border border-[#DCE6FA] dark:border-[#1F3B66]">
           <Archive className="w-3 h-3" />
           <span>{t('empStatusArchived')}</span>
         </span>
@@ -487,14 +502,14 @@ export const EmployeesManager: React.FC = () => {
     }
     if (emp.isActive === false) {
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-rose-500/12 text-rose-600 dark:text-rose-400 border border-rose-500/30">
           <UserX className="w-3 h-3" />
           <span>{t('empStatusDisabled')}</span>
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-[#08C99B]/12 text-[#048264] dark:text-[#08C99B] border border-[#08C99B]/30">
         <UserCheck className="w-3 h-3" />
         <span>{t('empStatusActive')}</span>
       </span>
@@ -514,8 +529,8 @@ export const EmployeesManager: React.FC = () => {
       {/* Header Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <Users className="w-5 h-5 text-amber-500" />
+          <h3 className="text-lg font-bold text-[#0B1B32] dark:text-white flex items-center gap-2">
+            <Users className="w-5 h-5 text-[#1764FF] dark:text-[#6CA2FF]" />
             <span>
               {t('empManageTitle')} ({staffList.length})
             </span>
@@ -531,7 +546,7 @@ export const EmployeesManager: React.FC = () => {
             resetCreateForm();
             setCreateOpen(true);
           }}
-          className="px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm text-slate-950 bg-amber-400 hover:bg-amber-300 transition-all flex items-center gap-2 shadow-sm shrink-0"
+          className="px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm text-white bg-[#1764FF] hover:bg-[#1052D8] transition-all flex items-center gap-2 shadow-sm shrink-0"
         >
           <Plus className="w-4 h-4" />
           <span>{t('empAddButton')}</span>
@@ -543,7 +558,7 @@ export const EmployeesManager: React.FC = () => {
         <div
           className={`p-3.5 rounded-xl border text-xs flex items-center justify-between gap-3 ${
             actionFeedback.type === 'success'
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+              ? 'bg-[#08C99B]/10 border-[#08C99B]/30 text-[#048264] dark:text-[#08C99B]'
               : 'bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-300'
           }`}
         >
@@ -567,33 +582,33 @@ export const EmployeesManager: React.FC = () => {
 
       {/* KPI Summary Strip */}
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+        <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-4 shadow-sm">
           <div className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold mb-1">
-            إجمالي أعضاء الطاقم
+            {tr('إجمالي أعضاء الطاقم', 'Total Staff Members', 'کل عملے کے ارکان')}
           </div>
-          <div className="text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+          <div className="text-2xl font-bold font-mono tabular-nums text-[#0B1B32] dark:text-white">
             {stats.totalStaff}
           </div>
         </div>
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+        <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-4 shadow-sm">
           <div className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold mb-1">
-            الحسابات النشطة
+            {tr('الحسابات النشطة', 'Active Accounts', 'فعال اکاؤنٹس')}
           </div>
-          <div className="text-2xl font-bold font-mono tabular-nums text-amber-500">
+          <div className="text-2xl font-bold font-mono tabular-nums text-[#048264] dark:text-[#08C99B]">
             {stats.activeCount}
           </div>
         </div>
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+        <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-4 shadow-sm">
           <div className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold mb-1">
-            المسؤولون ومسؤولو الفروع
+            {tr('المسؤولون ومسؤولو الفروع', 'Supervisors & Branch Managers', 'سپروائزرز اور برانچ مینیجرز')}
           </div>
-          <div className="text-2xl font-bold font-mono tabular-nums text-sky-500">
+          <div className="text-2xl font-bold font-mono tabular-nums text-[#1764FF] dark:text-[#6CA2FF]">
             {stats.supervisorsCount + stats.branchManagersCount}
           </div>
         </div>
-        <div className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+        <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-4 shadow-sm">
           <div className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold mb-1">
-            معطل / مؤرشف
+            {tr('معطل / مؤرشف', 'Disabled / Archived', 'معطل / آرکائیو شدہ')}
           </div>
           <div className="text-2xl font-bold font-mono tabular-nums text-rose-500">
             {stats.inactiveOrArchivedCount}
@@ -602,7 +617,7 @@ export const EmployeesManager: React.FC = () => {
       </section>
 
       {/* Search & Filters */}
-      <section className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-3 shadow-sm">
+      <section className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-4 space-y-3 shadow-sm">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="relative">
             <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -611,14 +626,14 @@ export const EmployeesManager: React.FC = () => {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={t('empSearchPlaceholder')}
-              className="w-full ps-9 pe-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:border-amber-500"
+              className="w-full ps-9 pe-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
             />
           </div>
 
           <select
             value={roleFilter}
             onChange={(e) => setRoleFilter(e.target.value as 'all' | UserRole)}
-            className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+            className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
           >
             <option value="all">{t('empAllRoles')}</option>
             <option value="supervisor">{getUserRoleLabel('supervisor', language)}</option>
@@ -629,7 +644,7 @@ export const EmployeesManager: React.FC = () => {
           <select
             value={branchFilter}
             onChange={(e) => setBranchFilter(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+            className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
           >
             <option value="all">{t('empAllBranches')}</option>
             <option value="__org_wide__">{t('empOrgWideScope')}</option>
@@ -644,7 +659,7 @@ export const EmployeesManager: React.FC = () => {
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as StatusFilterValue)}
-              className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+              className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
             >
               <option value="all">{t('empAllStatuses')}</option>
               <option value="active">{t('empStatusActive')}</option>
@@ -661,7 +676,7 @@ export const EmployeesManager: React.FC = () => {
                   setBranchFilter('all');
                   setStatusFilter('all');
                 }}
-                className="px-3 py-2 rounded-xl text-xs font-semibold text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 border border-amber-500/30 whitespace-nowrap shrink-0"
+                className="px-3 py-2 rounded-xl text-xs font-semibold text-[#1764FF] dark:text-[#6CA2FF] hover:bg-[#1764FF]/10 border border-[#1764FF]/30 whitespace-nowrap shrink-0"
               >
                 {t('empResetFilters')}
               </button>
@@ -673,10 +688,10 @@ export const EmployeesManager: React.FC = () => {
       {/* Mobile Cards View (< 768px) */}
       <div className="block md:hidden space-y-3">
         {/* Pinned Organization Manager Card */}
-        <div className="p-4 rounded-2xl bg-amber-500/5 border border-amber-500/30 space-y-2">
+        <div className="p-4 rounded-2xl bg-[#1764FF]/8 border border-[#1764FF]/30 space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <div className="font-bold text-sm text-slate-900 dark:text-white">
-              {userProfile?.displayName} (أنت)
+            <div className="font-bold text-sm text-[#0B1B32] dark:text-white">
+              {userProfile?.displayName} ({tr('أنت', 'You', 'آپ')})
             </div>
             {renderRoleBadge('manager')}
           </div>
@@ -685,18 +700,18 @@ export const EmployeesManager: React.FC = () => {
           </div>
           <div className="text-xs text-slate-600 dark:text-slate-300 flex items-center justify-between pt-1">
             <span>{t('empOrgWideScope')}</span>
-            <span className="text-amber-500 font-semibold">{t('empStatusActive')}</span>
+            <span className="text-[#048264] dark:text-[#08C99B] font-semibold">{t('empStatusActive')}</span>
           </div>
         </div>
 
         {filteredStaff.map((emp) => (
           <div
             key={emp.uid}
-            className="p-4 rounded-2xl bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 shadow-sm space-y-3"
+            className="p-4 rounded-2xl bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] shadow-sm space-y-3"
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <div className="font-bold text-sm text-slate-900 dark:text-white truncate">
+                <div className="font-bold text-sm text-[#0B1B32] dark:text-white truncate">
                   {emp.displayName}
                 </div>
                 <div
@@ -712,18 +727,18 @@ export const EmployeesManager: React.FC = () => {
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               {renderRoleBadge(emp.role)}
               <span className="text-slate-600 dark:text-slate-300 flex items-center gap-1">
-                <GitBranch className="w-3.5 h-3.5 text-amber-500" />
+                <GitBranch className="w-3.5 h-3.5 text-[#1764FF] dark:text-[#6CA2FF]" />
                 <span>{getBranchName(emp)}</span>
               </span>
             </div>
 
-            <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2 pt-2 border-t border-[#E6EEFC] dark:border-[#1F3B66]">
               <button
                 type="button"
                 onClick={() => setSelectedUid(emp.uid)}
-                className="flex-1 py-2 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-900 dark:text-white flex items-center justify-center gap-1.5"
+                className="flex-1 py-2 rounded-xl text-xs font-bold bg-[#F5F8FF] dark:bg-[#0E203A] hover:bg-[#1764FF]/10 border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white flex items-center justify-center gap-1.5"
               >
-                <Edit3 className="w-3.5 h-3.5 text-amber-500" />
+                <Edit3 className="w-3.5 h-3.5 text-[#1764FF] dark:text-[#6CA2FF]" />
                 <span>{t('empDetailsAction')}</span>
               </button>
               {emp.isActive ? (
@@ -732,17 +747,17 @@ export const EmployeesManager: React.FC = () => {
                   onClick={() =>
                     setConfirmAction({ type: 'disable', employee: emp, reason: '' })
                   }
-                  className="px-3 py-2 rounded-xl text-xs font-semibold text-rose-500 border border-rose-500/30 hover:bg-rose-500/10"
+                  className="px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 dark:text-rose-400 border border-rose-500/30 hover:bg-rose-500/10"
                 >
-                  تعطيل
+                  {tr('تعطيل', 'Disable', 'معطل کریں')}
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={() => toggleEmployeeStatus(emp.uid, true)}
-                  className="px-3 py-2 rounded-xl text-xs font-semibold text-amber-500 border border-amber-500/30 hover:bg-amber-500/10"
+                  className="px-3 py-2 rounded-xl text-xs font-semibold text-[#048264] dark:text-[#08C99B] border border-[#08C99B]/35 hover:bg-[#08C99B]/10"
                 >
-                  تنشيط
+                  {tr('تنشيط', 'Activate', 'فعال کریں')}
                 </button>
               )}
             </div>
@@ -751,26 +766,28 @@ export const EmployeesManager: React.FC = () => {
       </div>
 
       {/* Desktop Table View (>= 768px) */}
-      <div className="hidden md:block bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-x-auto">
+      <div className="hidden md:block bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] shadow-sm overflow-x-auto">
         <table className="w-full text-start text-xs sm:text-sm">
-          <thead className="bg-slate-50 dark:bg-slate-900/60 text-slate-500 dark:text-slate-400 text-[11px] font-bold uppercase tracking-wider border-b border-slate-200 dark:border-slate-800">
+          <thead className="bg-[#F5F8FF] dark:bg-[#0E203A] text-slate-600 dark:text-slate-300 text-[11px] font-bold uppercase tracking-wider border-b border-[#DCE6FA] dark:border-[#1F3B66]">
             <tr>
-              <th className="p-4 text-start">الاسم والهاتف</th>
-              <th className="p-4 text-start">البريد الإلكتروني</th>
-              <th className="p-4 text-start">الدور</th>
-              <th className="p-4 text-start">الفرع / النطاق</th>
-              <th className="p-4 text-start">الحالة</th>
-              <th className="p-4 text-start">الإجراءات</th>
+              <th className="p-4 text-start">{tr('الاسم والهاتف', 'Name & Phone', 'نام اور فون')}</th>
+              <th className="p-4 text-start">{tr('البريد الإلكتروني', 'Email', 'ای میل')}</th>
+              <th className="p-4 text-start">{tr('الدور', 'Role', 'کردار')}</th>
+              <th className="p-4 text-start">{tr('الفرع / النطاق', 'Branch / Scope', 'برانچ / دائرہ')}</th>
+              <th className="p-4 text-start">{tr('الحالة', 'Status', 'حیثیت')}</th>
+              <th className="p-4 text-start">{tr('الإجراءات', 'Actions', 'اقدامات')}</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+          <tbody className="divide-y divide-[#E6EEFC] dark:divide-[#1F3B66]">
             {/* Pinned Organization Manager Row */}
-            <tr className="bg-amber-500/5">
-              <td className="p-4 font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-500 flex items-center justify-center font-bold text-xs shrink-0">
+            <tr className="bg-[#1764FF]/5 dark:bg-[#1764FF]/10">
+              <td className="p-4 font-bold text-[#0B1B32] dark:text-white flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-[#1764FF]/15 text-[#1764FF] dark:text-[#6CA2FF] flex items-center justify-center font-bold text-xs shrink-0">
                   ★
                 </div>
-                <span>{userProfile?.displayName} (أنت)</span>
+                <span>
+                  {userProfile?.displayName} ({tr('أنت', 'You', 'آپ')})
+                </span>
               </td>
               <td className="p-4 font-mono text-xs text-slate-500 dark:text-slate-400" dir="ltr">
                 {userProfile?.email}
@@ -780,9 +797,13 @@ export const EmployeesManager: React.FC = () => {
                 {t('empOrgWideScope')}
               </td>
               <td className="p-4">
-                <span className="text-xs font-semibold text-amber-500">نشط دائماً</span>
+                <span className="text-xs font-semibold text-[#048264] dark:text-[#08C99B]">
+                  {tr('نشط دائماً', 'Always Active', 'ہمیشہ فعال')}
+                </span>
               </td>
-              <td className="p-4 text-xs text-slate-400">مالك المؤسسة</td>
+              <td className="p-4 text-xs text-slate-500 dark:text-slate-400">
+                {tr('مالك المؤسسة', 'Organization Owner', 'ادارے کا مالک')}
+              </td>
             </tr>
 
             {filteredStaff.map((emp) => {
@@ -790,14 +811,14 @@ export const EmployeesManager: React.FC = () => {
               return (
                 <tr
                   key={emp.uid}
-                  className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
+                  className="hover:bg-[#F5F8FF]/70 dark:hover:bg-[#173056]/40 transition-colors"
                 >
                   <td className="p-4">
-                    <div className="font-bold text-slate-900 dark:text-white">
+                    <div className="font-bold text-[#0B1B32] dark:text-white">
                       {emp.displayName}
                     </div>
                     {emp.phone && (
-                      <div className="text-[11px] font-mono text-slate-400 mt-0.5" dir="ltr">
+                      <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-0.5" dir="ltr">
                         {emp.phone}
                       </div>
                     )}
@@ -822,12 +843,14 @@ export const EmployeesManager: React.FC = () => {
                               (err: any) =>
                                 setActionFeedback({
                                   type: 'error',
-                                  message: err?.message || 'فشل تغيير الفرع.',
+                                  message:
+                                    err?.message ||
+                                    tr('فشل تغيير الفرع.', 'Failed to change branch.', 'برانچ تبدیل کرنے میں ناکامی۔'),
                                 })
                             );
                           }
                         }}
-                        className="px-2.5 py-1.5 rounded-lg text-xs bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-50"
+                        className="px-2.5 py-1.5 rounded-lg text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-slate-700 dark:text-slate-200 disabled:opacity-50"
                       >
                         {activeBranches.map((b) => (
                           <option key={b.id} value={b.id}>
@@ -843,9 +866,9 @@ export const EmployeesManager: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => setSelectedUid(emp.uid)}
-                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-white transition-colors inline-flex items-center gap-1"
+                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#F5F8FF] dark:bg-[#0E203A] hover:bg-[#1764FF]/10 border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white transition-colors inline-flex items-center gap-1"
                       >
-                        <Edit3 className="w-3.5 h-3.5 text-amber-500" />
+                        <Edit3 className="w-3.5 h-3.5 text-[#1764FF] dark:text-[#6CA2FF]" />
                         <span>{t('empDetailsAction')}</span>
                       </button>
 
@@ -855,9 +878,9 @@ export const EmployeesManager: React.FC = () => {
                           onClick={() =>
                             setConfirmAction({ type: 'disable', employee: emp, reason: '' })
                           }
-                          className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-rose-500 hover:bg-rose-500/10 border border-rose-500/20 transition-colors"
+                          className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 border border-rose-500/25 transition-colors"
                         >
-                          تعطيل
+                          {tr('تعطيل', 'Disable', 'معطل کریں')}
                         </button>
                       ) : (
                         <button
@@ -866,13 +889,15 @@ export const EmployeesManager: React.FC = () => {
                             toggleEmployeeStatus(emp.uid, true).catch((err: any) =>
                               setActionFeedback({
                                 type: 'error',
-                                message: err?.message || 'فشل التنشيط.',
+                                message:
+                                  err?.message ||
+                                  tr('فشل التنشيط.', 'Failed to activate account.', 'اکاؤنٹ فعال کرنے میں ناکامی۔'),
                               })
                             )
                           }
-                          className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-amber-500 hover:bg-amber-500/10 border border-amber-500/20 transition-colors"
+                          className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-[#048264] dark:text-[#08C99B] hover:bg-[#08C99B]/10 border border-[#08C99B]/30 transition-colors"
                         >
-                          إعادة التنشيط
+                          {tr('إعادة التنشيط', 'Reactivate', 'دوبارہ فعال کریں')}
                         </button>
                       )}
                     </div>
@@ -884,27 +909,35 @@ export const EmployeesManager: React.FC = () => {
         </table>
 
         {filteredStaff.length === 0 && (
-          <div className="py-10 text-center text-xs text-slate-400">
+          <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400">
             {staffList.length === 0
-              ? 'لم تقم بإضافة أي موظفين أو مسؤولي فروع أو مسؤولين بعد. اضغط على "إضافة موظف جديد" للبدء.'
-              : 'لا توجد نتائج مطابقة للبحث أو الفلاتر الحالية.'}
+              ? tr(
+                  'لم تقم بإضافة أي موظفين أو مسؤولي فروع أو مسؤولين بعد. اضغط على "إضافة موظف جديد" للبدء.',
+                  'You have not added any employees, branch managers, or supervisors yet. Click "Add Staff Member" to get started.',
+                  'آپ نے ابھی تک کوئی ملازم، برانچ مینیجر یا سپروائزر شامل نہیں کیا۔ شروع کرنے کے لیے "نیا عملہ شامل کریں" پر کلک کریں۔'
+                )
+              : tr(
+                  'لا توجد نتائج مطابقة للبحث أو الفلاتر الحالية.',
+                  'No staff members match the current search or filters.',
+                  'موجودہ تلاش یا فلٹرز کے مطابق کوئی رکن نہیں ملا۔'
+                )}
           </div>
         )}
       </div>
 
       {/* Add Staff Modal */}
       {createOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm">
-          <div className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl w-full max-w-xl max-h-[92vh] overflow-y-auto p-6 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-              <h4 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <Users className="w-4 h-4 text-amber-500" />
-                <span>إضافة عضو جديد للطاقم</span>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0B1B32]/75 backdrop-blur-sm">
+          <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] shadow-2xl w-full max-w-xl max-h-[92vh] overflow-y-auto p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[#E6EEFC] dark:border-[#1F3B66]">
+              <h4 className="text-base font-bold text-[#0B1B32] dark:text-white flex items-center gap-2">
+                <Users className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF]" />
+                <span>{tr('إضافة عضو جديد للطاقم', 'Add New Staff Member', 'عملے کا نیا رکن شامل کریں')}</span>
               </h4>
               <button
                 type="button"
                 onClick={() => setCreateOpen(false)}
-                className="text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                className="text-slate-400 hover:text-[#0B1B32] dark:hover:text-white"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -918,7 +951,7 @@ export const EmployeesManager: React.FC = () => {
             )}
 
             {createSuccess && (
-              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs flex items-center gap-2">
+              <div className="p-3 rounded-xl bg-[#08C99B]/10 border border-[#08C99B]/30 text-[#048264] dark:text-[#08C99B] text-xs flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
                 <span>{createSuccess}</span>
               </div>
@@ -928,28 +961,28 @@ export const EmployeesManager: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    الاسم الكامل *
+                    {tr('الاسم الكامل *', 'Full Name *', 'پورا نام *')}
                   </label>
                   <input
                     type="text"
                     required
                     value={createName}
                     onChange={(e) => setCreateName(e.target.value)}
-                    placeholder="مثال: خالد المحاسب"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500"
+                    placeholder={tr('مثال: خالد المحاسب', 'e.g., Khalid Al-Harbi', 'مثال: خالد اکاؤنٹنٹ')}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
                   />
                 </div>
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    رقم الهاتف (اختياري)
+                    {tr('رقم الهاتف (اختياري)', 'Phone Number (Optional)', 'فون نمبر (اختیاری)')}
                   </label>
                   <input
                     type="text"
                     value={createPhone}
                     onChange={(e) => setCreatePhone(e.target.value)}
                     placeholder="05xxxxxxxx"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
                   />
                 </div>
               </div>
@@ -957,7 +990,7 @@ export const EmployeesManager: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    البريد الإلكتروني لتسجيل الدخول *
+                    {tr('البريد الإلكتروني لتسجيل الدخول *', 'Sign-In Email *', 'لاگ ان ای میل *')}
                   </label>
                   <div className="relative">
                     <input
@@ -967,7 +1000,7 @@ export const EmployeesManager: React.FC = () => {
                       onChange={(e) => setCreateEmail(e.target.value)}
                       placeholder="staff@company.com"
                       dir="ltr"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
                     />
                     <Mail className="w-4 h-4 text-slate-400 absolute end-3 top-3 pointer-events-none" />
                   </div>
@@ -975,7 +1008,7 @@ export const EmployeesManager: React.FC = () => {
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    كلمة المرور الأولية (6 خانات فأكثر) *
+                    {tr('كلمة المرور الأولية (6 خانات فأكثر) *', 'Initial Password (6+ chars) *', 'ابتدائی پاس ورڈ (کم از کم 6 حروف) *')}
                   </label>
                   <div className="relative">
                     <input
@@ -985,7 +1018,7 @@ export const EmployeesManager: React.FC = () => {
                       value={createPassword}
                       onChange={(e) => setCreatePassword(e.target.value)}
                       placeholder="••••••••"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:border-amber-500"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
                     />
                     <KeyRound className="w-4 h-4 text-slate-400 absolute end-3 top-3 pointer-events-none" />
                   </div>
@@ -995,7 +1028,7 @@ export const EmployeesManager: React.FC = () => {
               {/* Role Picker */}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  الدور الوظيفي *
+                  {tr('الدور الوظيفي *', 'Assigned Role *', 'کردار منتخب کریں *')}
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   {(
@@ -1003,17 +1036,29 @@ export const EmployeesManager: React.FC = () => {
                       {
                         role: 'employee',
                         title: getUserRoleLabel('employee', language),
-                        hint: 'تسجيل الإقفالات في فرع واحد فقط',
+                        hint: tr(
+                          'تسجيل الإقفالات في فرع واحد فقط',
+                          'Record shift closings for one branch only',
+                          'صرف ایک برانچ میں شفٹ کلوزنگ درج کرنا'
+                        ),
                       },
                       {
                         role: 'branch_manager',
                         title: getUserRoleLabel('branch_manager', language),
-                        hint: 'إقفالات + مشتريات فرع واحد وعرض الموردين',
+                        hint: tr(
+                          'إقفالات + مشتريات فرع واحد وعرض الموردين',
+                          'Closings + purchases for one branch & view suppliers',
+                          'ایک برانچ کی کلوزنگ + خریداری اور سپلائرز دیکھنا'
+                        ),
                       },
                       {
                         role: 'supervisor',
                         title: getUserRoleLabel('supervisor', language),
-                        hint: 'على مستوى المؤسسة بصلاحيات تفعّلها أنت',
+                        hint: tr(
+                          'على مستوى المؤسسة بصلاحيات تفعّلها أنت',
+                          'Org-wide scope with custom permissions you enable',
+                          'ادارہ جاتی سطح پر آپ کی فعال کردہ اجازتوں کے ساتھ'
+                        ),
                       },
                     ] as const
                   ).map((item) => (
@@ -1023,8 +1068,8 @@ export const EmployeesManager: React.FC = () => {
                       onClick={() => setCreateRole(item.role)}
                       className={`p-3 rounded-xl border text-start transition-all ${
                         createRole === item.role
-                          ? 'bg-amber-500/15 border-amber-500 text-slate-900 dark:text-white'
-                          : 'bg-slate-50 dark:bg-[#070e17] border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:border-slate-400'
+                          ? 'bg-[#1764FF]/10 border-[#1764FF] text-[#0B1B32] dark:text-white'
+                          : 'bg-[#F5F8FF] dark:bg-[#0E203A] border-[#DCE6FA] dark:border-[#1F3B66] text-slate-600 dark:text-slate-300 hover:border-[#1764FF]/50'
                       }`}
                     >
                       <div className="text-xs font-bold">{item.title}</div>
@@ -1038,13 +1083,13 @@ export const EmployeesManager: React.FC = () => {
               {createRole !== 'supervisor' && (
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    الفرع المخصص (فرع واحد فقط) *
+                    {tr('الفرع المخصص (فرع واحد فقط) *', 'Assigned Branch (Single Branch Only) *', 'مختص برانچ (صرف ایک برانچ) *')}
                   </label>
                   <select
                     required
                     value={createBranchId}
                     onChange={(e) => setCreateBranchId(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
                   >
                     {activeBranches.map((b) => (
                       <option key={b.id} value={b.id}>
@@ -1057,11 +1102,17 @@ export const EmployeesManager: React.FC = () => {
 
               {/* Supervisor Optional Permissions (All OFF by default) */}
               {createRole === 'supervisor' && (
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800 space-y-3">
+                <div className="p-4 rounded-2xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-3">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                      <SlidersHorizontal className="w-3.5 h-3.5 text-amber-500" />
-                      <span>صلاحيات المسؤول الاختيارية (معطلة افتراضياً)</span>
+                    <span className="text-xs font-bold text-[#0B1B32] dark:text-white flex items-center gap-1.5">
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-[#1764FF] dark:text-[#6CA2FF]" />
+                      <span>
+                        {tr(
+                          'صلاحيات المسؤول الاختيارية (معطلة افتراضياً)',
+                          'Optional Supervisor Permissions (OFF by default)',
+                          'سپروائزر کے اختیاری اختیارات (بائی ڈیفالٹ بند)'
+                        )}
+                      </span>
                     </span>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
@@ -1073,22 +1124,22 @@ export const EmployeesManager: React.FC = () => {
                           key={permKey}
                           className={`p-2.5 rounded-xl border text-xs flex items-start gap-2.5 cursor-pointer transition-colors ${
                             checked
-                              ? 'bg-amber-500/10 border-amber-500/40 text-slate-900 dark:text-white'
-                              : 'bg-white dark:bg-[#0c1829] border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300'
+                              ? 'bg-[#1764FF]/10 border-[#1764FF]/40 text-[#0B1B32] dark:text-white'
+                              : 'bg-white dark:bg-[#122543] border-[#DCE6FA] dark:border-[#1F3B66] text-slate-600 dark:text-slate-300'
                           }`}
                         >
                           <input
                             type="checkbox"
                             checked={checked}
                             onChange={() => handleToggleSupPerm(setCreateSupPerms, permKey)}
-                            className="mt-0.5 rounded border-slate-400 text-amber-500 focus:ring-amber-500"
+                            className="mt-0.5 rounded border-slate-400 text-[#1764FF] focus:ring-[#1764FF]"
                           />
                           <div>
                             <div className="font-bold">
-                              {isEn ? meta.labelEn : meta.labelAr}
+                              {tr(meta.labelAr, meta.labelEn, meta.labelUr)}
                             </div>
                             <div className="text-[11px] opacity-75 leading-snug">
-                              {isEn ? meta.descEn : meta.descAr}
+                              {tr(meta.descAr, meta.descEn, meta.descUr)}
                             </div>
                           </div>
                         </label>
@@ -1098,16 +1149,22 @@ export const EmployeesManager: React.FC = () => {
                 </div>
               )}
 
-              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-700 dark:text-amber-300">
-                ملاحظة أمنية: يتم إنشاء الحساب عبر جلسة معزولة دون تسجيل خروجك، ولا تُحفظ كلمة المرور الأولية في قاعدة البيانات أو السجلات.
+              <div className="p-3 rounded-xl bg-[#1764FF]/8 border border-[#1764FF]/20 text-[11px] text-[#0B1B32] dark:text-slate-200">
+                {tr(
+                  'ملاحظة أمنية: يتم إنشاء الحساب عبر جلسة معزولة دون تسجيل خروجك، ولا تُحفظ كلمة المرور الأولية في قاعدة البيانات أو السجلات.',
+                  'Security note: Accounts are provisioned in an isolated auth session without signing you out, and initial passwords are never stored in Firestore or logs.',
+                  'سکیورٹی نوٹ: اکاؤنٹ آپ کو لاگ آؤٹ کیے بغیر ایک الگ سیشن میں بنایا جاتا ہے، اور ابتدائی پاس ورڈ کبھی ڈیٹابیس یا لاگز میں محفوظ نہیں ہوتا۔'
+                )}
               </div>
 
               <button
                 type="submit"
                 disabled={createLoading}
-                className="w-full py-3 rounded-xl font-bold text-xs text-slate-950 bg-amber-400 hover:bg-amber-300 transition-all disabled:opacity-50 shadow-sm"
+                className="w-full py-3 rounded-xl font-bold text-xs text-white bg-[#1764FF] hover:bg-[#1052D8] transition-all disabled:opacity-50 shadow-sm"
               >
-                {createLoading ? 'جاري إنشاء الحساب...' : 'تأكيد إنشاء الحساب'}
+                {createLoading
+                  ? tr('جاري إنشاء الحساب...', 'Creating account...', 'اکاؤنٹ بنایا جا رہا ہے...')
+                  : tr('تأكيد إنشاء الحساب', 'Confirm Create Account', 'اکاؤنٹ بنانے کی تصدیق کریں')}
               </button>
             </form>
           </div>
@@ -1116,10 +1173,10 @@ export const EmployeesManager: React.FC = () => {
 
       {/* Employee Details, Edit & Activity Drawer/Modal */}
       {selectedEmployee && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm">
-          <div className="bg-white dark:bg-[#0c1829] rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0B1B32]/75 backdrop-blur-sm">
+          <div className="bg-white dark:bg-[#122543] rounded-3xl border border-[#DCE6FA] dark:border-[#1F3B66] shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto">
             {/* Drawer Header */}
-            <div className="p-5 sm:p-6 bg-[#0b192c] text-white flex items-center justify-between gap-3 border-b border-amber-500/20 sticky top-0 z-10">
+            <div className="p-5 sm:p-6 bg-[#0B1B32] text-white flex items-center justify-between gap-3 border-b border-[#1F3B66] sticky top-0 z-10">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h4 className="text-base font-bold truncate">{selectedEmployee.displayName}</h4>
@@ -1142,28 +1199,34 @@ export const EmployeesManager: React.FC = () => {
             <div className="p-5 sm:p-6 space-y-6">
               {/* Edit Profile, Role & Permissions Form */}
               <form onSubmit={handleSaveDetails} className="space-y-4">
-                <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                  <Edit3 className="w-4 h-4 text-amber-500" />
-                  <span>تعديل البيانات الأساسية والدور والفرع</span>
+                <div className="text-xs font-bold text-[#0B1B32] dark:text-white flex items-center gap-1.5">
+                  <Edit3 className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF]" />
+                  <span>
+                    {tr(
+                      'تعديل البيانات الأساسية والدور والفرع',
+                      'Edit Basic Profile, Role & Branch',
+                      'بنیادی معلومات، کردار اور برانچ میں ترمیم'
+                    )}
+                  </span>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      الاسم الكامل *
+                      {tr('الاسم الكامل *', 'Full Name *', 'پورا نام *')}
                     </label>
                     <input
                       type="text"
                       required
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                      className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                     />
                   </div>
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      البريد الإلكتروني في ملف المؤسسة *
+                      {tr('البريد الإلكتروني في ملف المؤسسة *', 'Organization Profile Email *', 'ادارے کی پروفائل ای میل *')}
                     </label>
                     <input
                       type="email"
@@ -1171,20 +1234,20 @@ export const EmployeesManager: React.FC = () => {
                       value={editEmail}
                       onChange={(e) => setEditEmail(e.target.value)}
                       dir="ltr"
-                      className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono"
+                      className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white font-mono"
                     />
                   </div>
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      رقم الهاتف
+                      {tr('رقم الهاتف', 'Phone Number', 'فون نمبر')}
                     </label>
                     <input
                       type="text"
                       value={editPhone}
                       onChange={(e) => setEditPhone(e.target.value)}
                       placeholder="05xxxxxxxx"
-                      className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                      className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                     />
                   </div>
                 </div>
@@ -1192,12 +1255,12 @@ export const EmployeesManager: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      الدور الوظيفي *
+                      {tr('الدور الوظيفي *', 'Assigned Role *', 'کردار *')}
                     </label>
                     <select
                       value={editRole}
                       onChange={(e) => setEditRole(e.target.value as StaffAssignableRole)}
-                      className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                      className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                     >
                       <option value="employee">{getUserRoleLabel('employee', language)}</option>
                       <option value="branch_manager">
@@ -1210,13 +1273,13 @@ export const EmployeesManager: React.FC = () => {
                   {editRole !== 'supervisor' ? (
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                        الفرع المخصص (فرع واحد فقط) *
+                        {tr('الفرع المخصص (فرع واحد فقط) *', 'Assigned Branch (Single Branch Only) *', 'مختص برانچ (صرف ایک برانچ) *')}
                       </label>
                       <select
                         required
                         value={editBranchId}
                         onChange={(e) => setEditBranchId(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                        className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                       >
                         {activeBranches.map((b) => (
                           <option key={b.id} value={b.id}>
@@ -1228,16 +1291,24 @@ export const EmployeesManager: React.FC = () => {
                   ) : (
                     <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-[11px] text-indigo-700 dark:text-indigo-300 flex items-center gap-2">
                       <Building2 className="w-4 h-4 shrink-0" />
-                      <span>يعمل المسؤول على مستوى جميع فروع المؤسسة وفق الصلاحيات أدناه.</span>
+                      <span>
+                        {tr(
+                          'يعمل المسؤول على مستوى جميع فروع المؤسسة وفق الصلاحيات أدناه.',
+                          'Supervisors operate across all organization branches according to the permissions below.',
+                          'سپروائزر نیچے دیے گئے اختیارات کے مطابق ادارے کی تمام برانچز پر کام کرتا ہے۔'
+                        )}
+                      </span>
                     </div>
                   )}
                 </div>
 
                 {editRole === 'supervisor' && (
-                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800 space-y-3">
-                    <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                      <SlidersHorizontal className="w-3.5 h-3.5 text-amber-500" />
-                      <span>صلاحيات المسؤول الاختيارية</span>
+                  <div className="p-4 rounded-2xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-3">
+                    <div className="text-xs font-bold text-[#0B1B32] dark:text-white flex items-center gap-1.5">
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-[#1764FF] dark:text-[#6CA2FF]" />
+                      <span>
+                        {tr('صلاحيات المسؤول الاختيارية', 'Optional Supervisor Permissions', 'سپروائزر کے اختیاری اختیارات')}
+                      </span>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       {SUPERVISOR_OPTIONAL_PERMISSION_KEYS.map((permKey) => {
@@ -1248,22 +1319,22 @@ export const EmployeesManager: React.FC = () => {
                             key={permKey}
                             className={`p-2.5 rounded-xl border text-xs flex items-start gap-2.5 cursor-pointer transition-colors ${
                               checked
-                                ? 'bg-amber-500/10 border-amber-500/40 text-slate-900 dark:text-white'
-                                : 'bg-white dark:bg-[#0c1829] border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300'
+                                ? 'bg-[#1764FF]/10 border-[#1764FF]/40 text-[#0B1B32] dark:text-white'
+                                : 'bg-white dark:bg-[#122543] border-[#DCE6FA] dark:border-[#1F3B66] text-slate-600 dark:text-slate-300'
                             }`}
                           >
                             <input
                               type="checkbox"
                               checked={checked}
                               onChange={() => handleToggleSupPerm(setEditSupPerms, permKey)}
-                              className="mt-0.5 rounded border-slate-400 text-amber-500 focus:ring-amber-500"
+                              className="mt-0.5 rounded border-slate-400 text-[#1764FF] focus:ring-[#1764FF]"
                             />
                             <div>
                               <div className="font-bold">
-                                {isEn ? meta.labelEn : meta.labelAr}
+                                {tr(meta.labelAr, meta.labelEn, meta.labelUr)}
                               </div>
                               <div className="text-[11px] opacity-75 leading-snug">
-                                {isEn ? meta.descEn : meta.descAr}
+                                {tr(meta.descAr, meta.descEn, meta.descUr)}
                               </div>
                             </div>
                           </label>
@@ -1274,36 +1345,56 @@ export const EmployeesManager: React.FC = () => {
                 )}
 
                 {editRole === 'branch_manager' && (
-                  <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-700 dark:text-emerald-300">
-                    صلاحيات مسؤول الفرع: تسجيل الإقفالات والمشتريات داخل الفرع المعين فقط، وعرض الموردين المسجلين (لا يمكنه إضافة أو تعديل أو حذف الموردين، ولا قراءة بيانات الفروع الأخرى).
+                  <div className="p-3 rounded-xl bg-[#08C99B]/10 border border-[#08C99B]/25 text-[11px] text-[#048264] dark:text-[#08C99B]">
+                    {tr(
+                      'صلاحيات مسؤول الفرع: تسجيل الإقفالات والمشتريات داخل الفرع المعين فقط، وعرض الموردين المسجلين (لا يمكنه إضافة أو تعديل أو حذف الموردين، ولا قراءة بيانات الفروع الأخرى).',
+                      'Branch Manager permissions: record closings and purchases for the assigned branch only, and view registered suppliers (cannot add/edit/delete suppliers or read other branches).',
+                      'برانچ مینیجر کے اختیارات: صرف مختص برانچ میں کلوزنگ اور خریداری درج کرنا، اور رجسٹرڈ سپلائرز دیکھنا (سپلائرز شامل/ترمیم/حذف نہیں کر سکتا)۔'
+                    )}
                   </div>
                 )}
 
                 {editRole === 'employee' && (
                   <div className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/20 text-[11px] text-sky-700 dark:text-sky-300">
-                    صلاحيات الموظف: تسجيل إقفالات الورديات في فرعه المعين فقط، مع الإبقاء على الصلاحيات الأساسية دون توسيع.
+                    {tr(
+                      'صلاحيات الموظف: تسجيل إقفالات الورديات في فرعه المعين فقط، مع الإبقاء على الصلاحيات الأساسية دون توسيع.',
+                      'Employee permissions: record shift closings for the assigned branch only, preserving minimal base access.',
+                      'ملازم کے اختیارات: صرف اپنی مختص برانچ میں شفٹ کلوزنگ درج کرنا۔'
+                    )}
                   </div>
                 )}
 
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                  <span className="text-[11px] text-slate-400">
-                    ملاحظة: رابط استعادة كلمة المرور يُرسل إلى البريد المعتمد لتسجيل الدخول في Firebase Auth.
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {tr(
+                      'ملاحظة: رابط استعادة كلمة المرور يُرسل إلى البريد المعتمد لتسجيل الدخول في Firebase Auth.',
+                      'Note: Password reset links are sent to the verified sign-in email in Firebase Auth.',
+                      'نوٹ: پاس ورڈ ری سیٹ لنک Firebase Auth میں تصدیق شدہ لاگ ان ای میل پر بھیجا جاتا ہے۔'
+                    )}
                   </span>
                   <button
                     type="submit"
                     disabled={editSaving || selectedEmployee.isArchived === true}
-                    className="px-5 py-2.5 rounded-xl font-bold text-xs text-slate-950 bg-amber-400 hover:bg-amber-300 transition-colors disabled:opacity-50"
+                    className="px-5 py-2.5 rounded-xl font-bold text-xs text-white bg-[#1764FF] hover:bg-[#1052D8] transition-colors disabled:opacity-50"
                   >
-                    {editSaving ? 'جاري الحفظ...' : 'حفظ التعديلات'}
+                    {editSaving
+                      ? tr('جاري الحفظ...', 'Saving...', 'محفوظ ہو رہا ہے...')
+                      : tr('حفظ التعديلات', 'Save Changes', 'تبدیلیاں محفوظ کریں')}
                   </button>
                 </div>
               </form>
 
               {/* Password Reset & Account Lifecycle Controls */}
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800 space-y-3">
-                <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-amber-500" />
-                  <span>أمان الحساب وإدارة الإيقاف والأرشفة</span>
+              <div className="p-4 rounded-2xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-3">
+                <div className="text-xs font-bold text-[#0B1B32] dark:text-white flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF]" />
+                  <span>
+                    {tr(
+                      'أمان الحساب وإدارة الإيقاف والأرشفة',
+                      'Account Security, Suspension & Archival',
+                      'اکاؤنٹ سکیورٹی، معطلی اور آرکائیو'
+                    )}
+                  </span>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2.5">
@@ -1311,11 +1402,13 @@ export const EmployeesManager: React.FC = () => {
                     type="button"
                     onClick={handleSendPasswordReset}
                     disabled={resetSending || selectedEmployee.isArchived === true}
-                    className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-[#0c1829] border border-slate-300 dark:border-slate-700 hover:border-amber-500 text-slate-800 dark:text-white inline-flex items-center gap-1.5 disabled:opacity-50"
+                    className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] hover:border-[#1764FF] text-[#0B1B32] dark:text-white inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors"
                   >
-                    <Send className="w-3.5 h-3.5 text-amber-500" />
+                    <Send className="w-3.5 h-3.5 text-[#1764FF] dark:text-[#6CA2FF]" />
                     <span>
-                      {resetSending ? 'جاري الإرسال...' : t('empSendPasswordReset')}
+                      {resetSending
+                        ? tr('جاري الإرسال...', 'Sending...', 'بھیجا جا رہا ہے...')
+                        : t('empSendPasswordReset')}
                     </span>
                   </button>
 
@@ -1332,7 +1425,7 @@ export const EmployeesManager: React.FC = () => {
                       className="px-3.5 py-2 rounded-xl text-xs font-semibold text-rose-600 dark:text-rose-400 border border-rose-500/30 hover:bg-rose-500/10 inline-flex items-center gap-1.5"
                     >
                       <UserX className="w-3.5 h-3.5" />
-                      <span>تعطيل الحساب مؤقتاً</span>
+                      <span>{tr('تعطيل الحساب مؤقتاً', 'Temporarily Disable', 'عارضی طور پر معطل کریں')}</span>
                     </button>
                   ) : (
                     <button
@@ -1341,14 +1434,16 @@ export const EmployeesManager: React.FC = () => {
                         toggleEmployeeStatus(selectedEmployee.uid, true).catch((err: any) =>
                           setActionFeedback({
                             type: 'error',
-                            message: err?.message || 'فشل إعادة التنشيط.',
+                            message:
+                              err?.message ||
+                              tr('فشل إعادة التنشيط.', 'Failed to reactivate account.', 'دوبارہ فعال کرنے میں ناکامی۔'),
                           })
                         )
                       }
-                      className="px-3.5 py-2 rounded-xl text-xs font-semibold text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 inline-flex items-center gap-1.5"
+                      className="px-3.5 py-2 rounded-xl text-xs font-semibold text-[#048264] dark:text-[#08C99B] border border-[#08C99B]/35 hover:bg-[#08C99B]/10 inline-flex items-center gap-1.5"
                     >
                       <UserCheck className="w-3.5 h-3.5" />
-                      <span>إعادة تنشيط الحساب</span>
+                      <span>{tr('إعادة تنشيط الحساب', 'Reactivate Account', 'اکاؤنٹ دوبارہ فعال کریں')}</span>
                     </button>
                   )}
 
@@ -1377,45 +1472,58 @@ export const EmployeesManager: React.FC = () => {
 
               {/* Employee Activity History (Audit Logs + Closings) */}
               <div className="space-y-3">
-                <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                  <History className="w-4 h-4 text-amber-500" />
-                  <span>سجل نشاط الموظف وإقفالاته الأخيرة</span>
+                <div className="text-xs font-bold text-[#0B1B32] dark:text-white flex items-center gap-1.5">
+                  <History className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF]" />
+                  <span>
+                    {tr(
+                      'سجل نشاط الموظف وإقفالاته الأخيرة',
+                      'Employee Activity & Recent Closings',
+                      'ملازم کی سرگرمی اور حالیہ کلوزنگ'
+                    )}
+                  </span>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800 space-y-2.5">
+                  <div className="p-3.5 rounded-2xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-2.5">
                     <div className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center justify-between">
-                      <span>الورديات والإقفالات</span>
-                      <span className="font-mono tabular-nums text-amber-500">
+                      <span>{tr('الورديات والإقفالات', 'Shifts & Closings', 'شفٹس اور کلوزنگ')}</span>
+                      <span className="font-mono tabular-nums text-[#1764FF] dark:text-[#6CA2FF]">
                         {employeeActivity.closings.length}
                       </span>
                     </div>
                     {employeeActivity.closings.length === 0 ? (
-                      <div className="text-[11px] text-slate-400 py-3 text-center">
-                        لا توجد ورديات مسجلة لهذا الحساب بعد.
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 py-3 text-center">
+                        {tr(
+                          'لا توجد ورديات مسجلة لهذا الحساب بعد.',
+                          'No shift closings recorded for this account yet.',
+                          'اس اکاؤنٹ کے لیے ابھی کوئی شفٹ کلوزنگ درج نہیں ہے۔'
+                        )}
                       </div>
                     ) : (
                       <div className="space-y-2 max-h-52 overflow-y-auto">
                         {employeeActivity.closings.map((c) => (
                           <div
                             key={c.id}
-                            className="p-2.5 rounded-xl bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 text-[11px] flex items-center justify-between gap-2"
+                            className="p-2.5 rounded-xl bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] text-[11px] flex items-center justify-between gap-2"
                           >
                             <div className="min-w-0">
-                              <div className="font-bold text-slate-900 dark:text-white truncate">
-                                {c.branchName} • {c.period === 'morning' ? 'صباحية' : 'مسائية'}
+                              <div className="font-bold text-[#0B1B32] dark:text-white truncate">
+                                {c.branchName} •{' '}
+                                {c.period === 'morning'
+                                  ? tr('صباحية', 'Morning', 'صبح')
+                                  : tr('مسائية', 'Evening', 'شام')}
                               </div>
-                              <div className="font-mono text-slate-400">{c.date}</div>
+                              <div className="font-mono text-slate-500 dark:text-slate-400">{c.date}</div>
                             </div>
                             <div className="text-end shrink-0">
-                              <div className="font-mono font-bold text-amber-500">
+                              <div className="font-mono font-bold text-[#048264] dark:text-[#08C99B]">
                                 {formatCurrency(
                                   c.totalSales,
                                   currentOrg?.currency || 'SAR',
                                   language
                                 )}
                               </div>
-                              <div className="text-[10px] text-slate-400">{c.status}</div>
+                              <div className="text-[10px] text-slate-500 dark:text-slate-400">{c.status}</div>
                             </div>
                           </div>
                         ))}
@@ -1423,28 +1531,32 @@ export const EmployeesManager: React.FC = () => {
                     )}
                   </div>
 
-                  <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800 space-y-2.5">
+                  <div className="p-3.5 rounded-2xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-2.5">
                     <div className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center justify-between">
-                      <span>سجل الرقابة الإداري</span>
-                      <span className="font-mono tabular-nums text-sky-400">
+                      <span>{tr('سجل الرقابة الإداري', 'Administrative Audit Log', 'انتظامی آڈٹ لاگ')}</span>
+                      <span className="font-mono tabular-nums text-sky-600 dark:text-sky-400">
                         {employeeActivity.logs.length}
                       </span>
                     </div>
                     {employeeActivity.logs.length === 0 ? (
-                      <div className="text-[11px] text-slate-400 py-3 text-center">
-                        لا توجد حركات تدقيق مسجلة بعد.
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 py-3 text-center">
+                        {tr(
+                          'لا توجد حركات تدقيق مسجلة بعد.',
+                          'No audit log entries recorded yet.',
+                          'ابھی کوئی آڈٹ سرگرمی درج نہیں ہے۔'
+                        )}
                       </div>
                     ) : (
                       <div className="space-y-2 max-h-52 overflow-y-auto">
                         {employeeActivity.logs.map((l) => (
                           <div
                             key={l.id}
-                            className="p-2.5 rounded-xl bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 text-[11px] space-y-1"
+                            className="p-2.5 rounded-xl bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] text-[11px] space-y-1"
                           >
                             <div className="flex items-center justify-between gap-2">
-                              <span className="font-bold text-amber-500">{l.action}</span>
-                              <span className="font-mono text-[10px] text-slate-400">
-                                {new Date(l.timestamp).toLocaleDateString('ar-SA')}
+                              <span className="font-bold text-[#1764FF] dark:text-[#6CA2FF]">{l.action}</span>
+                              <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                                {new Date(l.timestamp).toLocaleDateString(dateLocale)}
                               </span>
                             </div>
                             <div className="text-slate-600 dark:text-slate-300 leading-snug">
@@ -1464,22 +1576,38 @@ export const EmployeesManager: React.FC = () => {
 
       {/* Confirmation Modal before Disable or Archive */}
       {confirmAction && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-          <div className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl w-full max-w-md p-6 space-y-4">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-[#0B1B32]/80 backdrop-blur-sm">
+          <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] shadow-2xl w-full max-w-md p-6 space-y-4">
             <div className="flex items-start gap-3">
               <div className="w-10 h-10 rounded-xl bg-rose-500/15 text-rose-500 flex items-center justify-center shrink-0">
                 <AlertTriangle className="w-5 h-5" />
               </div>
               <div className="space-y-1">
-                <h5 className="text-sm font-bold text-slate-900 dark:text-white">
+                <h5 className="text-sm font-bold text-[#0B1B32] dark:text-white">
                   {confirmAction.type === 'archive'
-                    ? `تأكيد أرشفة وإيقاف حساب "${confirmAction.employee.displayName}"`
-                    : `تأكيد تعطيل حساب "${confirmAction.employee.displayName}"`}
+                    ? tr(
+                        `تأكيد أرشفة وإيقاف حساب "${confirmAction.employee.displayName}"`,
+                        `Confirm Archive & Revoke "${confirmAction.employee.displayName}"`,
+                        `"${confirmAction.employee.displayName}" کا اکاؤنٹ آرکائیو اور بند کرنے کی تصدیق`
+                      )
+                    : tr(
+                        `تأكيد تعطيل حساب "${confirmAction.employee.displayName}"`,
+                        `Confirm Disable "${confirmAction.employee.displayName}"`,
+                        `"${confirmAction.employee.displayName}" کا اکاؤنٹ معطل کرنے کی تصدیق`
+                      )}
                 </h5>
                 <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                   {confirmAction.type === 'archive'
-                    ? 'سيتم إيقاف الحساب ومنع تسجيل الدخول نهائياً مع الاحتفاظ التام بجميع الإقفالات والسجلات المالية وسجل الرقابة التاريخي دون أي حذف فعلي.'
-                    : 'لن يتمكن هذا المستخدم من تسجيل الدخول أو تنفيذ أي عملية حتى يعيد المدير تنشيط الحساب، وتبقى جميع سجلاته محفوظة.'}
+                    ? tr(
+                        'سيتم إيقاف الحساب ومنع تسجيل الدخول نهائياً مع الاحتفاظ التام بجميع الإقفالات والسجلات المالية وسجل الرقابة التاريخي دون أي حذف فعلي.',
+                        'This permanently revokes sign-in access while preserving all shift closings, financial records, and audit history untouched.',
+                        'اس سے لاگ ان رسائی مستقل طور پر بند ہو جائے گی جبکہ تمام کلوزنگ، مالی ریکارڈز اور آڈٹ تاریخ مکمل طور پر محفوظ رہے گی۔'
+                      )
+                    : tr(
+                        'لن يتمكن هذا المستخدم من تسجيل الدخول أو تنفيذ أي عملية حتى يعيد المدير تنشيط الحساب، وتبقى جميع سجلاته محفوظة.',
+                        'This user will be unable to sign in or perform actions until reactivated by a manager. All records remain preserved.',
+                        'یہ صارف مینیجر کی جانب سے دوبارہ فعال کیے جانے تک لاگ ان یا کوئی کارروائی نہیں کر سکے گا۔ تمام ریکارڈز محفوظ رہیں گے۔'
+                      )}
                 </p>
               </div>
             </div>
@@ -1487,7 +1615,7 @@ export const EmployeesManager: React.FC = () => {
             {confirmAction.type === 'archive' && (
               <div>
                 <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                  سبب الأرشفة (اختياري)
+                  {tr('سبب الأرشفة (اختياري)', 'Archival Reason (Optional)', 'آرکائیو کی وجہ (اختیاری)')}
                 </label>
                 <input
                   type="text"
@@ -1497,8 +1625,12 @@ export const EmployeesManager: React.FC = () => {
                       prev ? { ...prev, reason: e.target.value } : null
                     )
                   }
-                  placeholder="مثال: انتهاء فترة العمل في المؤسسة"
-                  className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                  placeholder={tr(
+                    'مثال: انتهاء فترة العمل في المؤسسة',
+                    'e.g., End of employment',
+                    'مثال: ملازمت کی مدت مکمل ہونا'
+                  )}
+                  className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                 />
               </div>
             )}
@@ -1508,9 +1640,9 @@ export const EmployeesManager: React.FC = () => {
                 type="button"
                 onClick={() => setConfirmAction(null)}
                 disabled={confirmBusy}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-[#F5F8FF] dark:hover:bg-[#173056]"
               >
-                إلغاء
+                {tr('إلغاء', 'Cancel', 'منسوخ کریں')}
               </button>
               <button
                 type="button"
@@ -1519,10 +1651,10 @@ export const EmployeesManager: React.FC = () => {
                 className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 disabled:opacity-50"
               >
                 {confirmBusy
-                  ? 'جاري التنفيذ...'
+                  ? tr('جاري التنفيذ...', 'Processing...', 'کارروائی جاری ہے...')
                   : confirmAction.type === 'archive'
-                  ? 'تأكيد الأرشفة مع حفظ السجلات'
-                  : 'تأكيد التعطيل'}
+                  ? tr('تأكيد الأرشفة مع حفظ السجلات', 'Confirm Archive & Keep Records', 'ریکارڈز محفوظ رکھ کر آرکائیو کریں')
+                  : tr('تأكيد التعطيل', 'Confirm Disable', 'معطلی کی تصدیق کریں')}
               </button>
             </div>
           </div>

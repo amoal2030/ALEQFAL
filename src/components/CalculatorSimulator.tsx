@@ -6,11 +6,9 @@ import {
   Coins,
   CreditCard,
   ShoppingBag,
-  ArrowRight,
-  Sparkles,
   CheckCircle2,
   Info,
-  RotateCcw
+  RotateCcw,
 } from 'lucide-react';
 
 export const CalculatorSimulator: React.FC = () => {
@@ -37,53 +35,57 @@ export const CalculatorSimulator: React.FC = () => {
   };
 
   return (
-    <section id="simulator" className="py-20 bg-[#EFF4FA] dark:bg-[#0B192C]/60 border-y border-slate-200 dark:border-slate-800 transition-colors">
+    <section
+      id="simulator"
+      className="py-20 bg-[#F5F8FF] dark:bg-[#0B1B32] border-b border-[#E2EAFA] dark:border-[#1E3A63] transition-colors"
+    >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Section Header */}
-        <div className="text-center max-w-3xl mx-auto mb-12">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-lg bg-white dark:bg-blue-500/15 border border-blue-200 dark:border-blue-500/30 text-blue-700 dark:text-blue-300 text-xs font-bold mb-4">
-            <Calculator className="w-3.5 h-3.5" />
-            <span>{t('simTitle')}</span>
-          </div>
-          <h2 className="text-3xl sm:text-4xl font-extrabold text-[#0B192C] dark:text-white tracking-tight">
+        <div className="text-center max-w-3xl mx-auto mb-12 space-y-2">
+          <p className="text-xs font-bold text-[#1764FF] dark:text-[#7EB0FF] tracking-wide">
+            {t('navSimulator')}
+          </p>
+          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-[#0B1B32] dark:text-white tracking-tight text-balance">
             {t('simTitle')}
           </h2>
-          <p className="mt-3 text-base sm:text-lg text-slate-600 dark:text-slate-300">
+          <p className="text-sm sm:text-base text-[#526785] dark:text-slate-300">
             {t('simSubtitle')}
           </p>
 
           {/* Benchmark Load Bar */}
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <div className="pt-4 flex flex-wrap items-center justify-center gap-3">
             <button
+              type="button"
               onClick={handleLoadBenchmark}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-all active:scale-95"
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold bg-[#1764FF] hover:bg-[#1052D8] text-white shadow-xs transition-all active:scale-95"
             >
-              <Sparkles className="w-4 h-4 text-white" />
+              <Calculator className="w-4 h-4 text-white" />
               <span>{t('simLoadExample')}</span>
             </button>
             <button
+              type="button"
               onClick={handleReset}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold text-[#0B192C] dark:text-slate-300 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-[#0B1B32] dark:text-slate-200 bg-white dark:bg-[#122543] border border-[#DCE6F8] dark:border-[#23416E] hover:bg-[#EAF1FF] dark:hover:bg-[#193259] transition-colors"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>إعادة التعيين</span>
+              <span>{t('simReset')}</span>
             </button>
           </div>
         </div>
 
-        {/* Main Grid: Inputs on Left, Equations & Outputs on Right */}
+        {/* Main Grid: Inputs & Live Formula Breakdown */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           {/* Input Cards: 5 Cols */}
           <div className="lg:col-span-5 space-y-4">
-            <div className="bg-white dark:bg-[#0C1829] rounded-2xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-5">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-sm font-extrabold text-[#0B192C] dark:text-white">
-                  مدخلات الوردية المالية
+            <div className="bg-white dark:bg-[#122543] rounded-2xl p-6 border border-[#E2EAFA] dark:border-[#1F3B66] shadow-xs space-y-5">
+              <div className="flex items-center justify-between pb-3 border-b border-[#EDF2FC] dark:border-[#1E3A63]">
+                <span className="text-sm font-extrabold text-[#0B1B32] dark:text-white">
+                  {t('simInputsTitle')}
                 </span>
                 <select
                   value={currency}
                   onChange={(e) => setCurrency(e.target.value)}
-                  className="text-xs font-bold px-2.5 py-1.5 rounded-lg bg-[#F4F7FB] dark:bg-slate-800 text-[#0B192C] dark:text-slate-200 border border-slate-200 dark:border-slate-700 focus:outline-none focus:border-blue-600"
+                  className="text-xs font-bold px-2.5 py-1.5 rounded-lg bg-[#F5F8FF] dark:bg-[#0E203A] text-[#0B1B32] dark:text-white border border-[#DCE6F8] dark:border-[#23416E] focus:outline-none focus:border-[#1764FF]"
                 >
                   <option value="SAR">SAR (ر.س)</option>
                   <option value="AED">AED (د.إ)</option>
@@ -95,12 +97,14 @@ export const CalculatorSimulator: React.FC = () => {
 
               {/* Cash Sales Input */}
               <div className="space-y-1.5">
-                <label className="flex items-center justify-between text-xs font-bold text-[#0B192C] dark:text-slate-300">
+                <label className="flex items-center justify-between text-xs font-bold text-[#0B1B32] dark:text-slate-200">
                   <span className="flex items-center gap-1.5">
-                    <Coins className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                    <Coins className="w-4 h-4 text-[#1764FF] dark:text-[#7EB0FF]" />
                     {t('simCash')}
                   </span>
-                  <span className="text-[11px] font-medium text-slate-400">نقد الكاش الفعلي</span>
+                  <span className="text-[11px] font-medium text-[#647B9C] dark:text-slate-400">
+                    {t('simCashHint')}
+                  </span>
                 </label>
                 <div className="relative">
                   <input
@@ -110,9 +114,9 @@ export const CalculatorSimulator: React.FC = () => {
                     value={cash}
                     onChange={(e) => setCash(e.target.value)}
                     placeholder="0.00"
-                    className="w-full px-4 py-3 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15 text-[#0B192C] dark:text-white font-mono-num text-base font-bold transition-all"
+                    className="w-full px-4 py-3 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20 text-[#0B1B32] dark:text-white font-mono-num text-base font-bold transition-all"
                   />
-                  <span className="absolute end-3 top-3.5 text-xs font-semibold text-slate-400">
+                  <span className="absolute end-3 top-3.5 text-xs font-semibold text-[#647B9C] dark:text-slate-400">
                     {currency}
                   </span>
                 </div>
@@ -120,12 +124,14 @@ export const CalculatorSimulator: React.FC = () => {
 
               {/* Card Sales Input */}
               <div className="space-y-1.5">
-                <label className="flex items-center justify-between text-xs font-bold text-[#0B192C] dark:text-slate-300">
+                <label className="flex items-center justify-between text-xs font-bold text-[#0B1B32] dark:text-slate-200">
                   <span className="flex items-center gap-1.5">
-                    <CreditCard className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+                    <CreditCard className="w-4 h-4 text-[#08C99B]" />
                     {t('simCard')}
                   </span>
-                  <span className="text-[11px] font-medium text-slate-400">مدى / فيزا / ماستر</span>
+                  <span className="text-[11px] font-medium text-[#647B9C] dark:text-slate-400">
+                    {t('simCardHint')}
+                  </span>
                 </label>
                 <div className="relative">
                   <input
@@ -135,9 +141,9 @@ export const CalculatorSimulator: React.FC = () => {
                     value={card}
                     onChange={(e) => setCard(e.target.value)}
                     placeholder="0.00"
-                    className="w-full px-4 py-3 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15 text-[#0B192C] dark:text-white font-mono-num text-base font-bold transition-all"
+                    className="w-full px-4 py-3 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20 text-[#0B1B32] dark:text-white font-mono-num text-base font-bold transition-all"
                   />
-                  <span className="absolute end-3 top-3.5 text-xs font-semibold text-slate-400">
+                  <span className="absolute end-3 top-3.5 text-xs font-semibold text-[#647B9C] dark:text-slate-400">
                     {currency}
                   </span>
                 </div>
@@ -145,12 +151,14 @@ export const CalculatorSimulator: React.FC = () => {
 
               {/* Expenses Input */}
               <div className="space-y-1.5">
-                <label className="flex items-center justify-between text-xs font-bold text-[#0B192C] dark:text-slate-300">
+                <label className="flex items-center justify-between text-xs font-bold text-[#0B1B32] dark:text-slate-200">
                   <span className="flex items-center gap-1.5">
-                    <ShoppingBag className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                    <ShoppingBag className="w-4 h-4 text-rose-500" />
                     {t('simExpenses')}
                   </span>
-                  <span className="text-[11px] font-medium text-slate-400">مصروفات وفواتير الوردية</span>
+                  <span className="text-[11px] font-medium text-[#647B9C] dark:text-slate-400">
+                    {t('simExpensesHint')}
+                  </span>
                 </label>
                 <div className="relative">
                   <input
@@ -160,18 +168,18 @@ export const CalculatorSimulator: React.FC = () => {
                     value={expenses}
                     onChange={(e) => setExpenses(e.target.value)}
                     placeholder="0.00"
-                    className="w-full px-4 py-3 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-700 focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15 text-[#0B192C] dark:text-white font-mono-num text-base font-bold transition-all"
+                    className="w-full px-4 py-3 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20 text-[#0B1B32] dark:text-white font-mono-num text-base font-bold transition-all"
                   />
-                  <span className="absolute end-3 top-3.5 text-xs font-semibold text-slate-400">
+                  <span className="absolute end-3 top-3.5 text-xs font-semibold text-[#647B9C] dark:text-slate-400">
                     {currency}
                   </span>
                 </div>
               </div>
 
               {/* Verification Info Note */}
-              <div className="p-3.5 rounded-xl bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-800/60 flex items-start gap-2.5">
-                <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-                <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+              <div className="p-3.5 rounded-xl bg-[#1764FF]/8 dark:bg-[#1764FF]/15 border border-[#1764FF]/20 dark:border-[#1764FF]/35 flex items-start gap-2.5">
+                <Info className="w-4 h-4 text-[#1764FF] dark:text-[#7EB0FF] shrink-0 mt-0.5" />
+                <p className="text-xs text-[#243958] dark:text-slate-200 leading-relaxed">
                   {t('simTestNotes')}
                 </p>
               </div>
@@ -183,115 +191,117 @@ export const CalculatorSimulator: React.FC = () => {
             {/* Output Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               {/* Total Sales */}
-              <div className="bg-white dark:bg-[#0C1829] rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-xs">
-                <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1">
+              <div className="bg-white dark:bg-[#122543] rounded-2xl p-5 border border-[#E2EAFA] dark:border-[#1F3B66] shadow-xs">
+                <span className="text-xs font-bold text-[#526785] dark:text-slate-300 block mb-1">
                   {t('simTotalSales')}
                 </span>
-                <div className="text-2xl font-extrabold text-[#0B192C] dark:text-white font-mono-num tracking-tight">
+                <div className="text-2xl font-extrabold text-[#0B1B32] dark:text-white font-mono-num tracking-tight">
                   {formatCurrency(calculations.totalSales, currency, language)}
                 </div>
-                <div className="mt-2.5 text-[11px] font-bold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-500/15 px-2.5 py-1 rounded-md inline-block">
+                <div className="mt-2.5 text-[11px] font-bold text-[#1764FF] dark:text-[#7EB0FF]">
                   {t('simTotalFormula')}
                 </div>
               </div>
 
               {/* Remaining in Box */}
-              <div className="bg-white dark:bg-[#0C1829] rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-xs">
-                <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1">
+              <div className="bg-white dark:bg-[#122543] rounded-2xl p-5 border border-[#E2EAFA] dark:border-[#1F3B66] shadow-xs">
+                <span className="text-xs font-bold text-[#526785] dark:text-slate-300 block mb-1">
                   {t('simRemainingInBox')}
                 </span>
-                <div className="text-2xl font-extrabold text-[#0B192C] dark:text-white font-mono-num tracking-tight">
+                <div className="text-2xl font-extrabold text-[#0B1B32] dark:text-white font-mono-num tracking-tight">
                   {formatCurrency(calculations.remainingInBox, currency, language)}
                 </div>
-                <div className="mt-2.5 text-[11px] font-bold text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-500/15 px-2.5 py-1 rounded-md inline-block">
+                <div className="mt-2.5 text-[11px] font-bold text-[#048264] dark:text-[#3CE0B9]">
                   {t('simRemainingFormula')}
                 </div>
               </div>
 
               {/* Net Period */}
-              <div className="bg-[#0B192C] rounded-2xl p-5 border border-[#1E375B] shadow-xs text-white">
-                <span className="text-xs font-bold text-blue-200/80 block mb-1">
+              <div className="bg-[#0B1B32] dark:bg-[#1764FF] rounded-2xl p-5 border border-[#1E3A63] dark:border-[#4A8BFF] shadow-xs text-white">
+                <span className="text-xs font-bold text-blue-100/90 block mb-1">
                   {t('simNetPeriod')}
                 </span>
                 <div className="text-2xl font-extrabold text-white font-mono-num tracking-tight">
                   {formatCurrency(calculations.netPeriod, currency, language)}
                 </div>
-                <div className="mt-2.5 text-[11px] font-bold text-blue-100 bg-blue-600/35 border border-blue-400/30 px-2.5 py-1 rounded-md inline-block">
+                <div className="mt-2.5 text-[11px] font-bold text-[#08C99B] dark:text-white/90">
                   {t('simNetFormula')}
                 </div>
               </div>
             </div>
 
             {/* Live Formula Walkthrough Card */}
-            <div className="bg-white dark:bg-[#0C1829] rounded-2xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-              <h3 className="text-sm font-extrabold text-[#0B192C] dark:text-white flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                <span>تفصيل المعادلات الحسابية المعتمدة وفقاً للبيانات المدخلة</span>
+            <div className="bg-white dark:bg-[#122543] rounded-2xl p-6 border border-[#E2EAFA] dark:border-[#1F3B66] shadow-xs space-y-4">
+              <h3 className="text-sm font-extrabold text-[#0B1B32] dark:text-white flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-[#08C99B]" />
+                <span>{t('simWalkthroughTitle')}</span>
               </h3>
 
               <div className="space-y-3 text-xs sm:text-sm">
-                {/* 1. Total Sales Calculation Row */}
-                <div className="p-3.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                {/* 1. Total Sales */}
+                <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#E2EAFA] dark:border-[#1F3B66] flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="w-6 h-6 rounded-lg bg-blue-600 text-white font-bold flex items-center justify-center text-xs">
+                    <span className="w-6 h-6 rounded-lg bg-[#1764FF] text-white font-bold flex items-center justify-center text-xs">
                       1
                     </span>
-                    <span className="text-slate-700 dark:text-slate-300 font-semibold">
-                      إجمالي المبيعات = النقد + الشبكة
+                    <span className="text-[#243958] dark:text-slate-200 font-semibold">
+                      {t('simRow1')}
                     </span>
                   </div>
-                  <div className="text-[#0B192C] dark:text-white font-bold font-mono-num">
+                  <div className="text-[#0B1B32] dark:text-white font-bold font-mono-num">
                     {formatCurrency(calculations.cashSales, currency, language)} +{' '}
                     {formatCurrency(calculations.cardSales, currency, language)} ={' '}
-                    <span className="text-blue-700 dark:text-blue-300">
+                    <span className="text-[#1764FF] dark:text-[#7EB0FF]">
                       {formatCurrency(calculations.totalSales, currency, language)}
                     </span>
                   </div>
                 </div>
 
-                {/* 2. Remaining in Box Calculation Row */}
-                <div className="p-3.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                {/* 2. Remaining in Box */}
+                <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#E2EAFA] dark:border-[#1F3B66] flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="w-6 h-6 rounded-lg bg-sky-600 text-white font-bold flex items-center justify-center text-xs">
+                    <span className="w-6 h-6 rounded-lg bg-[#08C99B] text-[#0B1B32] font-bold flex items-center justify-center text-xs">
                       2
                     </span>
-                    <span className="text-slate-700 dark:text-slate-300 font-semibold">
-                      الباقي في الصندوق = النقد - المشتريات
+                    <span className="text-[#243958] dark:text-slate-200 font-semibold">
+                      {t('simRow2')}
                     </span>
                   </div>
-                  <div className="text-[#0B192C] dark:text-white font-bold font-mono-num">
-                    {formatCurrency(calculations.cashSales, currency, language)} -{' '}
+                  <div className="text-[#0B1B32] dark:text-white font-bold font-mono-num">
+                    {formatCurrency(calculations.cashSales, currency, language)} −{' '}
                     {formatCurrency(calculations.expenses, currency, language)} ={' '}
-                    <span className="text-sky-700 dark:text-sky-300">
+                    <span className="text-[#048264] dark:text-[#3CE0B9]">
                       {formatCurrency(calculations.remainingInBox, currency, language)}
                     </span>
                   </div>
                 </div>
 
-                {/* 3. Net Period Calculation Row */}
-                <div className="p-3.5 rounded-xl bg-[#F4F7FB] dark:bg-[#070E17] border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                {/* 3. Net Period */}
+                <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#E2EAFA] dark:border-[#1F3B66] flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="w-6 h-6 rounded-lg bg-[#0B192C] text-white font-bold flex items-center justify-center text-xs">
+                    <span className="w-6 h-6 rounded-lg bg-[#0B1B32] dark:bg-[#1764FF] text-white font-bold flex items-center justify-center text-xs">
                       3
                     </span>
-                    <span className="text-slate-700 dark:text-slate-300 font-semibold">
-                      صافي الفترة = إجمالي المبيعات - المشتريات
+                    <span className="text-[#243958] dark:text-slate-200 font-semibold">
+                      {t('simRow3')}
                     </span>
                   </div>
-                  <div className="text-[#0B192C] dark:text-white font-bold font-mono-num">
-                    {formatCurrency(calculations.totalSales, currency, language)} -{' '}
+                  <div className="text-[#0B1B32] dark:text-white font-bold font-mono-num">
+                    {formatCurrency(calculations.totalSales, currency, language)} −{' '}
                     {formatCurrency(calculations.expenses, currency, language)} ={' '}
-                    <span className="text-emerald-700 dark:text-emerald-300">
+                    <span className="text-[#048264] dark:text-[#3CE0B9]">
                       {formatCurrency(calculations.netPeriod, currency, language)}
                     </span>
                   </div>
                 </div>
               </div>
 
-              {/* Status Alert */}
-              <div className="pt-2 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                <span>الحالة الحسابية: متطابقة بدقة عشرية سليمة</span>
-                <span className="font-bold text-emerald-700 dark:text-emerald-300">خالٍ من الفروقات</span>
+              {/* Status Footer */}
+              <div className="pt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[#526785] dark:text-slate-300">
+                <span>{t('simStatusBalanced')}</span>
+                <span className="font-bold text-[#048264] dark:text-[#3CE0B9]">
+                  {t('simStatusZeroDiff')}
+                </span>
               </div>
             </div>
           </div>

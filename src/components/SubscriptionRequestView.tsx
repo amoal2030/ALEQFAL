@@ -9,6 +9,7 @@ import {
   buildNewSubscriptionWhatsApp,
   getSubscriptionPlanLabel,
 } from '../utils/subscription';
+import { BrandLogo } from './common/BrandLogo';
 import {
   Building2,
   Check,
@@ -16,7 +17,6 @@ import {
   Copy,
   ExternalLink,
   Globe,
-  Lock,
   LogOut,
   Mail,
   MessageCircle,
@@ -81,18 +81,16 @@ export const SubscriptionRequestView: React.FC = () => {
 
   return (
     <div
-      className="min-h-screen flex flex-col bg-[#F4F7FB] dark:bg-[#070E17] text-[#0B192C] dark:text-slate-100 transition-colors"
+      className="min-h-screen flex flex-col bg-[#F5F8FF] dark:bg-[#0B1B32] text-[#0B1B32] dark:text-white transition-colors"
       dir={direction}
     >
       {/* Top Bar */}
-      <header className="bg-white/95 dark:bg-[#0C1829]/95 backdrop-blur-md border-b border-slate-200/90 dark:border-slate-800 sticky top-0 z-30">
+      <header className="bg-white/95 dark:bg-[#0B1B32]/95 backdrop-blur-md border-b border-[#DCE6FA] dark:border-[#1F3B66] sticky top-0 z-30">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-[#0B192C] border border-[#1E375B] text-blue-400 flex items-center justify-center shrink-0 shadow-xs">
-              <Lock className="w-4 h-4" />
-            </div>
+            <BrandLogo size="sm" />
             <div className="min-w-0">
-              <span className="font-extrabold text-sm sm:text-base text-[#0B192C] dark:text-white truncate block">
+              <span className="font-extrabold text-sm sm:text-base text-[#0B1B32] dark:text-white truncate block">
                 {t('brandName')} | {t('brandSub')}
               </span>
             </div>
@@ -103,13 +101,13 @@ export const SubscriptionRequestView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setLangMenuOpen(!langMenuOpen)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-xs font-semibold text-[#0B192C] dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#122543] text-xs font-semibold text-[#0B1B32] dark:text-slate-200 hover:border-[#1764FF]/50 transition-colors"
               >
-                <Globe className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                <Globe className="w-3.5 h-3.5 text-[#1764FF] dark:text-[#6CA2FF]" />
                 <span className="uppercase">{language}</span>
               </button>
               {langMenuOpen && (
-                <div className="absolute end-0 mt-1.5 w-32 rounded-xl bg-white dark:bg-[#0C1829] border border-slate-200 dark:border-slate-800 shadow-xl py-1 z-40">
+                <div className="absolute end-0 mt-1.5 w-32 rounded-xl bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] shadow-xl py-1 z-40">
                   {languages.map((l) => (
                     <button
                       key={l.code}
@@ -120,8 +118,8 @@ export const SubscriptionRequestView: React.FC = () => {
                       }}
                       className={`w-full px-3 py-2 text-start text-xs font-medium ${
                         language === l.code
-                          ? 'text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-500/15 font-bold'
-                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+                          ? 'text-[#1764FF] dark:text-[#6CA2FF] bg-[#1764FF]/10 font-bold'
+                          : 'text-[#0B1B32] dark:text-slate-200 hover:bg-[#F5F8FF] dark:hover:bg-[#173056]'
                       }`}
                     >
                       {l.label}
@@ -134,16 +132,20 @@ export const SubscriptionRequestView: React.FC = () => {
             <button
               type="button"
               onClick={toggleTheme}
-              className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-slate-700 transition-colors"
+              className="p-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#122543] text-slate-600 dark:text-slate-300 hover:border-[#1764FF]/50 transition-colors"
               aria-label={theme === 'dark' ? t('lightMode') : t('darkMode')}
             >
-              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              {theme === 'dark' ? (
+                <Sun className="w-4 h-4 text-[#08C99B]" />
+              ) : (
+                <Moon className="w-4 h-4 text-[#0B1B32]" />
+              )}
             </button>
 
             <button
               type="button"
               onClick={() => logout()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-500/15 dark:hover:text-rose-400 hover:border-rose-200 dark:hover:border-rose-500/30 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-500/15 dark:hover:text-rose-400 hover:border-rose-200 dark:hover:border-rose-500/30 transition-colors"
             >
               <LogOut className="w-3.5 h-3.5" />
               <span>{t('navLogout')}</span>
@@ -154,14 +156,14 @@ export const SubscriptionRequestView: React.FC = () => {
 
       {/* Main Content */}
       <main className="flex-1 flex items-center justify-center p-4 sm:p-6">
-        <div className="w-full max-w-2xl bg-white dark:bg-[#0C1829] border border-slate-200/90 dark:border-slate-800 rounded-2xl shadow-xs p-5 sm:p-8 space-y-6">
+        <div className="w-full max-w-2xl bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl shadow-xs p-5 sm:p-8 space-y-6">
           {/* Header */}
           <div className="flex items-start gap-3.5">
-            <div className="w-11 h-11 rounded-xl bg-blue-50 dark:bg-blue-500/15 border border-blue-100 dark:border-blue-500/25 text-blue-700 dark:text-blue-300 flex items-center justify-center shrink-0">
+            <div className="w-11 h-11 rounded-xl bg-[#1764FF]/10 border border-[#1764FF]/25 text-[#1764FF] dark:text-[#6CA2FF] flex items-center justify-center shrink-0">
               <Building2 className="w-5 h-5" />
             </div>
             <div className="space-y-1">
-              <h1 className="text-lg sm:text-xl font-extrabold text-[#0B192C] dark:text-white">
+              <h1 className="text-lg sm:text-xl font-extrabold text-[#0B1B32] dark:text-white">
                 {t('subReqTitle')}
               </h1>
               <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
@@ -174,17 +176,17 @@ export const SubscriptionRequestView: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Read-only Google Email */}
             <div className="sm:col-span-2">
-              <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5">
+              <label className="block text-xs font-bold text-[#0B1B32] dark:text-slate-200 mb-1.5">
                 {t('subReqGoogleEmail')}
               </label>
-              <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-[#F8FAFC] dark:bg-[#0F1E33] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-slate-200">
+              <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-slate-200">
                 <div className="flex items-center gap-2 min-w-0">
-                  <Mail className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                  <Mail className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF] shrink-0" />
                   <span className="font-mono text-xs sm:text-sm truncate select-all" dir="ltr">
                     {googleEmail}
                   </span>
                 </div>
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <CheckCircle2 className="w-4 h-4 text-[#048264] dark:text-[#08C99B] shrink-0" />
               </div>
             </div>
 
@@ -192,7 +194,7 @@ export const SubscriptionRequestView: React.FC = () => {
             <div>
               <label
                 htmlFor="sub-req-owner-name"
-                className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5"
+                className="block text-xs font-bold text-[#0B1B32] dark:text-slate-200 mb-1.5"
               >
                 {t('subReqOwnerName')}
               </label>
@@ -204,7 +206,7 @@ export const SubscriptionRequestView: React.FC = () => {
                   onChange={(e) => setOwnerName(e.target.value)}
                   maxLength={100}
                   placeholder={t('subReqOwnerNamePlaceholder')}
-                  className="w-full ps-9 pe-3.5 py-2.5 rounded-xl bg-white dark:bg-[#0F1E33] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15 outline-none transition-colors"
+                  className="w-full ps-9 pe-3.5 py-2.5 rounded-xl bg-white dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white placeholder:text-slate-400 focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/15 outline-none transition-colors"
                 />
                 <User className="w-4 h-4 text-slate-400 absolute start-3 top-3" />
               </div>
@@ -214,7 +216,7 @@ export const SubscriptionRequestView: React.FC = () => {
             <div>
               <label
                 htmlFor="sub-req-org-name"
-                className="block text-xs font-bold text-[#0B192C] dark:text-slate-300 mb-1.5"
+                className="block text-xs font-bold text-[#0B1B32] dark:text-slate-200 mb-1.5"
               >
                 {t('subReqOrgName')}
               </label>
@@ -226,7 +228,7 @@ export const SubscriptionRequestView: React.FC = () => {
                   onChange={(e) => setOrgName(e.target.value)}
                   maxLength={120}
                   placeholder={t('subReqOrgNamePlaceholder')}
-                  className="w-full ps-9 pe-3.5 py-2.5 rounded-xl bg-white dark:bg-[#0F1E33] border border-slate-200 dark:border-slate-700 text-sm text-[#0B192C] dark:text-white placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15 outline-none transition-colors"
+                  className="w-full ps-9 pe-3.5 py-2.5 rounded-xl bg-white dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white placeholder:text-slate-400 focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/15 outline-none transition-colors"
                 />
                 <Building2 className="w-4 h-4 text-slate-400 absolute start-3 top-3" />
               </div>
@@ -235,7 +237,7 @@ export const SubscriptionRequestView: React.FC = () => {
 
           {/* 5 Subscription Plans */}
           <div className="space-y-2">
-            <label className="block text-xs font-bold text-[#0B192C] dark:text-slate-300">
+            <label className="block text-xs font-bold text-[#0B1B32] dark:text-slate-200">
               {t('subSelectDuration')}
             </label>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
@@ -248,8 +250,8 @@ export const SubscriptionRequestView: React.FC = () => {
                     onClick={() => setSelectedPlan(plan.id)}
                     className={`p-3 rounded-xl border text-start transition-all ${
                       active
-                        ? 'border-blue-600 bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 font-bold ring-1 ring-blue-600/20'
-                        : 'border-slate-200 dark:border-slate-800 bg-[#F8FAFC] dark:bg-[#0F1E33] text-slate-700 dark:text-slate-300 hover:border-blue-300 dark:hover:border-blue-500/40'
+                        ? 'border-[#1764FF] bg-[#1764FF]/10 text-[#1764FF] dark:text-[#6CA2FF] font-bold ring-1 ring-[#1764FF]/25'
+                        : 'border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] text-slate-700 dark:text-slate-300 hover:border-[#1764FF]/40'
                     }`}
                   >
                     <div className="text-xs sm:text-sm leading-snug">
@@ -264,12 +266,12 @@ export const SubscriptionRequestView: React.FC = () => {
           {/* Preview Box */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-              <span className="font-bold text-[#0B192C] dark:text-slate-300">{t('subPreviewMessageLabel')}</span>
+              <span className="font-bold text-[#0B1B32] dark:text-slate-200">{t('subPreviewMessageLabel')}</span>
               <span className="font-mono" dir="ltr">
                 +{SUBSCRIPTION_WHATSAPP_LOCAL}
               </span>
             </div>
-            <pre className="p-3.5 rounded-xl bg-[#F8FAFC] dark:bg-[#0F1E33] border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap font-sans leading-relaxed">
+            <pre className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap font-sans leading-relaxed">
               {whatsapp.message}
             </pre>
             {!isFormComplete && (
@@ -287,7 +289,7 @@ export const SubscriptionRequestView: React.FC = () => {
                   href={whatsapp.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex-1 inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-xs"
+                  className="flex-1 inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm text-white bg-[#1764FF] hover:bg-[#1052D8] transition-colors shadow-xs"
                 >
                   <MessageCircle className="w-4 h-4 shrink-0" />
                   <span>{t('subSubscribeNow')}</span>
@@ -297,7 +299,7 @@ export const SubscriptionRequestView: React.FC = () => {
                 <button
                   type="button"
                   disabled
-                  className="flex-1 inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm text-slate-400 bg-slate-200 dark:bg-slate-800 dark:text-slate-500 cursor-not-allowed"
+                  className="flex-1 inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm text-slate-400 bg-slate-200 dark:bg-[#0E203A] dark:text-slate-500 cursor-not-allowed"
                 >
                   <MessageCircle className="w-4 h-4 shrink-0" />
                   <span>{t('subSubscribeNow')}</span>
@@ -308,9 +310,9 @@ export const SubscriptionRequestView: React.FC = () => {
                 type="button"
                 onClick={handleCopyMessage}
                 disabled={!isFormComplete}
-                className="inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-xs sm:text-sm border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-[#0B192C] dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
+                className="inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-xs sm:text-sm border border-[#DCE6FA] dark:border-[#1F3B66] bg-white dark:bg-[#0E203A] text-[#0B1B32] dark:text-slate-200 hover:bg-[#F5F8FF] dark:hover:bg-[#173056] disabled:opacity-40 transition-colors"
               >
-                {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                {copied ? <Check className="w-4 h-4 text-[#08C99B]" /> : <Copy className="w-4 h-4" />}
                 <span>{copied ? t('subCopiedMessage') : t('subCopyMessage')}</span>
               </button>
             </div>
@@ -319,7 +321,7 @@ export const SubscriptionRequestView: React.FC = () => {
               type="button"
               onClick={handleCheckActivation}
               disabled={checking}
-              className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm border border-blue-200 dark:border-blue-500/30 bg-blue-50/80 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-100/80 dark:hover:bg-blue-500/20 transition-colors disabled:opacity-60"
+              className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm border border-[#1764FF]/25 bg-[#1764FF]/8 dark:bg-[#1764FF]/12 text-[#1764FF] dark:text-[#6CA2FF] hover:bg-[#1764FF]/15 transition-colors disabled:opacity-60"
             >
               <RefreshCw className={`w-4 h-4 ${checking ? 'animate-spin' : ''}`} />
               <span>{checking ? t('subCheckingStatus') : t('subCheckActivation')}</span>

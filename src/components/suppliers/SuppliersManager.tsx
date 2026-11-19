@@ -65,10 +65,9 @@ const EMPTY_FORM: FormState = {
 
 export const SuppliersManager: React.FC = () => {
   const { userProfile, currentOrg } = useAuth();
-  const { language } = useLanguage();
+  const { language, tr } = useLanguage();
   const currency = currentOrg?.currency || 'SAR';
 
-  // Strict RBAC capabilities derived exclusively from canonical permissions.ts
   const canCreate = useMemo(() => canUserCreateSupplier(userProfile), [userProfile]);
   const canEdit = useMemo(() => canUserEditSupplier(userProfile), [userProfile]);
   const canToggle = useMemo(() => canUserToggleSupplierStatus(userProfile), [userProfile]);
@@ -76,20 +75,16 @@ export const SuppliersManager: React.FC = () => {
 
   const canAccessManagement = canCreate;
 
-  // Data state
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Search & filter
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
-  // Banners
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Add/Edit Modal state
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [formState, setFormState] = useState<FormState>(EMPTY_FORM);
@@ -98,7 +93,6 @@ export const SuppliersManager: React.FC = () => {
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const submitLockRef = useRef<boolean>(false);
 
-  // Delete Confirmation Modal state (Manager ONLY)
   const [deleteTarget, setDeleteTarget] = useState<Supplier | null>(null);
   const [deleteBlockedInfo, setDeleteBlockedInfo] = useState<{
     linkedPurchasesCount: number;
@@ -115,11 +109,18 @@ export const SuppliersManager: React.FC = () => {
       const list = await fetchOrgSuppliersForManagement(userProfile, currentOrg.id);
       setSuppliers(list);
     } catch (err: any) {
-      setLoadError(err?.message || 'تعذر تحميل قائمة الموردين.');
+      setLoadError(
+        err?.message ||
+          tr(
+            'تعذر تحميل قائمة الموردين.',
+            'Failed to load suppliers list.',
+            'سپلائرز کی فہرست لوڈ نہیں ہو سکی۔'
+          )
+      );
     } finally {
       setLoading(false);
     }
-  }, [userProfile, currentOrg?.id, canAccessManagement]);
+  }, [userProfile, currentOrg?.id, canAccessManagement, tr]);
 
   useEffect(() => {
     void loadSuppliers();
@@ -204,11 +205,23 @@ export const SuppliersManager: React.FC = () => {
 
     const isEditing = Boolean(editingSupplier);
     if (isEditing && !canEdit) {
-      setModalError('تعديل بيانات الموردين متاح لمدير المؤسسة فقط.');
+      setModalError(
+        tr(
+          'تعديل بيانات الموردين متاح لمدير المؤسسة فقط.',
+          'Editing supplier records is restricted to the Organization Manager.',
+          'سپلائرز کے ڈیٹا میں ترمیم صرف ادارے کے مینیجر تک محدود ہے۔'
+        )
+      );
       return;
     }
     if (!isEditing && !canCreate) {
-      setModalError('لا تملك صلاحية إضافة مورد جديد.');
+      setModalError(
+        tr(
+          'لا تملك صلاحية إضافة مورد جديد.',
+          'You do not have permission to add a new supplier.',
+          'آپ کے پاس نیا سپلائر شامل کرنے کی اجازت نہیں ہے۔'
+        )
+      );
       return;
     }
 
@@ -252,7 +265,13 @@ export const SuppliersManager: React.FC = () => {
               return a.name.localeCompare(b.name, 'ar');
             })
         );
-        setSuccessMessage(`تم تحديث بيانات المورد "${updated.name}" بنجاح.`);
+        setSuccessMessage(
+          tr(
+            `تم تحديث بيانات المورد "${updated.name}" بنجاح.`,
+            `Supplier "${updated.name}" updated successfully.`,
+            `سپلائر "${updated.name}" کا ڈیٹا کامیابی سے اپ ڈیٹ ہو گیا۔`
+          )
+        );
       } else {
         const created = await createSupplier({
           userProfile,
@@ -266,13 +285,26 @@ export const SuppliersManager: React.FC = () => {
             return a.name.localeCompare(b.name, 'ar');
           })
         );
-        setSuccessMessage(`تم تسجيل المورد "${created.name}" بنجاح وإتاحته في فواتير المشتريات.`);
+        setSuccessMessage(
+          tr(
+            `تم تسجيل المورد "${created.name}" بنجاح وإتاحته في فواتير المشتريات.`,
+            `Supplier "${created.name}" created and is now available for purchase invoices.`,
+            `سپلائر "${created.name}" کامیابی سے درج ہو گیا اور اب خریداری انوائسز میں دستیاب ہے۔`
+          )
+        );
       }
       setIsModalOpen(false);
       setEditingSupplier(null);
       setFormState(EMPTY_FORM);
     } catch (err: any) {
-      setModalError(err?.message || 'تعذر حفظ بيانات المورد. يرجى المحاولة مرة أخرى.');
+      setModalError(
+        err?.message ||
+          tr(
+            'تعذر حفظ بيانات المورد. يرجى المحاولة مرة أخرى.',
+            'Failed to save supplier data. Please try again.',
+            'سپلائر کا ڈیٹا محفوظ نہیں ہو سکا۔ براہِ کرم دوبارہ کوشش کریں۔'
+          )
+      );
     } finally {
       submitLockRef.current = false;
       setIsSaving(false);
@@ -301,15 +333,30 @@ export const SuppliersManager: React.FC = () => {
       );
       setSuccessMessage(
         updated.isActive
-          ? `تم تفعيل المورد "${updated.name}" بنجاح.`
-          : `تم إيقاف المورد "${updated.name}" بنجاح ولن يظهر في الفواتير الجديدة مع الحفاظ على الفواتير السابقة.`
+          ? tr(
+              `تم تفعيل المورد "${updated.name}" بنجاح.`,
+              `Supplier "${updated.name}" activated successfully.`,
+              `سپلائر "${updated.name}" کامیابی سے فعال کر دیا گیا۔`
+            )
+          : tr(
+              `تم إيقاف المورد "${updated.name}" بنجاح ولن يظهر في الفواتير الجديدة مع الحفاظ على الفواتير السابقة.`,
+              `Supplier "${updated.name}" deactivated. It will not appear on new invoices while preserving historical records.`,
+              `سپلائر "${updated.name}" غیر فعال کر دیا گیا۔ گزشتہ ریکارڈ محفوظ رہیں گے لیکن یہ نئی انوائسز میں ظاہر نہیں ہوگا۔`
+            )
       );
       if (deleteTarget?.id === updated.id) {
         setDeleteTarget(null);
         setDeleteBlockedInfo(null);
       }
     } catch (err: any) {
-      setActionError(err?.message || 'تعذر تغيير حالة المورد.');
+      setActionError(
+        err?.message ||
+          tr(
+            'تعذر تغيير حالة المورد.',
+            'Failed to change supplier status.',
+            'سپلائر کی حیثیت تبدیل نہیں ہو سکی۔'
+          )
+      );
     } finally {
       setTogglingId(null);
     }
@@ -333,7 +380,13 @@ export const SuppliersManager: React.FC = () => {
         setSuppliers((prev) => prev.filter((s) => s.id !== res.supplierId));
         setDeleteTarget(null);
         setDeleteBlockedInfo(null);
-        setSuccessMessage(`تم حذف المورد "${deletedName}" نهائياً بنجاح.`);
+        setSuccessMessage(
+          tr(
+            `تم حذف المورد "${deletedName}" نهائياً بنجاح.`,
+            `Supplier "${deletedName}" permanently deleted.`,
+            `سپلائر "${deletedName}" مستقل طور پر حذف کر دیا گیا۔`
+          )
+        );
       } else {
         setDeleteBlockedInfo({
           linkedPurchasesCount: res.linkedPurchasesCount,
@@ -341,25 +394,35 @@ export const SuppliersManager: React.FC = () => {
         });
       }
     } catch (err: any) {
-      setActionError(err?.message || 'تعذر حذف المورد.');
+      setActionError(
+        err?.message ||
+          tr('تعذر حذف المورد.', 'Failed to delete supplier.', 'سپلائر حذف نہیں ہو سکا۔')
+      );
       setDeleteTarget(null);
     } finally {
       setIsDeleting(false);
     }
   };
 
-  // Defense-in-depth Access Guard (Branch Manager & Employee are strictly denied)
   if (!canAccessManagement) {
     return (
-      <div className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-6 sm:p-10 text-center max-w-2xl mx-auto space-y-3">
+      <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-6 sm:p-10 text-center max-w-2xl mx-auto space-y-3">
         <div className="w-12 h-12 rounded-2xl bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto">
           <Lock className="w-6 h-6" />
         </div>
-        <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-          غير مصرح بإدارة الموردين
+        <h2 className="text-lg font-bold text-[#0B1B32] dark:text-white">
+          {tr(
+            'غير مصرح بإدارة الموردين',
+            'Not Authorized to Manage Suppliers',
+            'سپلائرز کے انتظام کی اجازت نہیں'
+          )}
         </h2>
-        <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-          إدارة الموردين مقتصرة على مدير المؤسسة، وللمسؤول المخول بصلاحية إضافة الموردين فقط. يمكن لمسؤول الفرع اختيار الموردين المسجلين مسبقاً من شاشة إدخال المشتريات.
+        <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+          {tr(
+            'إدارة الموردين مقتصرة على مدير المؤسسة، وللمسؤول المخول بصلاحية إضافة الموردين فقط. يمكن لمسؤول الفرع اختيار الموردين المسجلين مسبقاً من شاشة إدخال المشتريات.',
+            'Supplier management is restricted to the Organization Manager and supervisors authorized to add suppliers. Branch Managers can select existing suppliers directly from the Purchase Entry screen.',
+            'سپلائرز کا انتظام صرف ادارے کے مینیجر اور مجاز سپروائزرز تک محدود ہے۔ برانچ مینیجرز خریداری اندراج اسکرین سے پہلے سے درج سپلائرز منتخب کر سکتے ہیں۔'
+          )}
         </p>
       </div>
     );
@@ -370,16 +433,17 @@ export const SuppliersManager: React.FC = () => {
       {/* Page Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="space-y-1">
-          <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white">
-            إدارة الموردين
+          <h2 className="text-xl sm:text-2xl font-extrabold text-[#0B1B32] dark:text-white">
+            {tr('إدارة الموردين', 'Suppliers Management', 'سپلائرز کا انتظام')}
           </h2>
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-            <span>{currentOrg?.name || 'المؤسسة'}</span>
+            <span>{currentOrg?.name || tr('المؤسسة', 'Organization', 'ادارہ')}</span>
             <span aria-hidden="true">·</span>
             <span>{getUserRoleLabel(userProfile?.role, language)}</span>
             <span aria-hidden="true">·</span>
             <span className="font-mono tabular-nums">
-              الإجمالي {counts.total} (نشط {counts.active} / موقوف {counts.inactive})
+              {tr('الإجمالي', 'Total', 'کل')} {counts.total} ({tr('نشط', 'Active', 'فعال')}{' '}
+              {counts.active} / {tr('موقوف', 'Inactive', 'غیر فعال')} {counts.inactive})
             </span>
           </div>
         </div>
@@ -389,20 +453,20 @@ export const SuppliersManager: React.FC = () => {
             type="button"
             onClick={() => void loadSuppliers()}
             disabled={loading}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 hover:border-amber-500/40 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#0B1B32] dark:text-slate-200 bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] hover:border-[#1764FF]/50 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span>تحديث</span>
+            <span>{tr('تحديث', 'Refresh', 'تازہ کریں')}</span>
           </button>
 
           {canCreate && (
             <button
               type="button"
               onClick={openCreateModal}
-              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition-colors whitespace-nowrap shrink-0 shadow-sm"
+              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-[#1764FF] hover:bg-[#1052D8] transition-colors whitespace-nowrap shrink-0 shadow-sm shadow-[#1764FF]/20"
             >
               <Plus className="w-4 h-4" />
-              <span>إضافة مورد جديد</span>
+              <span>{tr('إضافة مورد جديد', 'Add New Supplier', 'نیا سپلائر شامل کریں')}</span>
             </button>
           )}
         </div>
@@ -410,10 +474,14 @@ export const SuppliersManager: React.FC = () => {
 
       {/* Supervisor Add-Only Scope Notice */}
       {!canEdit && canCreate && (
-        <div className="p-3.5 rounded-xl bg-slate-100/80 dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300 flex items-center gap-2.5">
-          <Truck className="w-4 h-4 text-amber-500 shrink-0" />
+        <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] text-xs text-slate-600 dark:text-slate-300 flex items-center gap-2.5">
+          <Truck className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF] shrink-0" />
           <span>
-            صلاحيتك الحالية تتيح لك استعراض الموردين وإضافة مورد جديد فقط. تعديل بيانات الموردين أو إيقافهم أو حذفهم مقتصر على مدير المؤسسة.
+            {tr(
+              'صلاحيتك الحالية تتيح لك استعراض الموردين وإضافة مورد جديد فقط. تعديل بيانات الموردين أو إيقافهم أو حذفهم مقتصر على مدير المؤسسة.',
+              'Your current role allows viewing suppliers and adding new suppliers only. Editing, deactivating, or deleting suppliers is restricted to the Organization Manager.',
+              'آپ کا موجودہ کردار صرف سپلائرز دیکھنے اور نیا سپلائر شامل کرنے کی اجازت دیتا ہے۔ ترمیم، معطلی یا حذف کرنا صرف ادارے کے مینیجر تک محدود ہے۔'
+            )}
           </span>
         </div>
       )}
@@ -422,17 +490,17 @@ export const SuppliersManager: React.FC = () => {
       {successMessage && (
         <div
           role="status"
-          className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 text-xs sm:text-sm flex items-start justify-between gap-3"
+          className="p-4 rounded-2xl bg-[#08C99B]/10 border border-[#08C99B]/30 text-[#048264] dark:text-[#08C99B] text-xs sm:text-sm flex items-start justify-between gap-3"
         >
           <div className="flex items-start gap-2.5">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+            <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" />
             <span>{successMessage}</span>
           </div>
           <button
             type="button"
             onClick={() => setSuccessMessage(null)}
-            aria-label="إغلاق الرسالة"
-            className="p-1 text-emerald-700 dark:text-emerald-300 hover:opacity-75"
+            aria-label={tr('إغلاق الرسالة', 'Dismiss message', 'پیغام بند کریں')}
+            className="p-1 hover:opacity-75"
           >
             <X className="w-4 h-4" />
           </button>
@@ -452,7 +520,7 @@ export const SuppliersManager: React.FC = () => {
             <button
               type="button"
               onClick={() => setActionError(null)}
-              aria-label="إغلاق التنبيه"
+              aria-label={tr('إغلاق التنبيه', 'Dismiss alert', 'انتباہ بند کریں')}
               className="p-1 text-rose-700 dark:text-rose-300 hover:opacity-75"
             >
               <X className="w-4 h-4" />
@@ -462,30 +530,34 @@ export const SuppliersManager: React.FC = () => {
       )}
 
       {/* Search & Status Filter Toolbar */}
-      <section className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+      <section className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] overflow-hidden">
+        <div className="p-4 sm:p-5 border-b border-[#E6EEFC] dark:border-[#1F3B66] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
           <div className="relative flex-1 max-w-md">
             <Search className="w-4 h-4 text-slate-400 absolute start-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="بحث باسم المورد، الرقم الضريبي، أو رقم الجوال..."
-              aria-label="البحث عن مورد"
-              className="w-full ps-10 pe-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#070e17] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
+              placeholder={tr(
+                'بحث باسم المورد، الرقم الضريبي، أو رقم الجوال...',
+                'Search by supplier name, VAT ID, or phone...',
+                'سپلائر نام، ٹیکس نمبر یا موبائل نمبر سے تلاش کریں...'
+              )}
+              aria-label={tr('البحث عن مورد', 'Search supplier', 'سپلائر تلاش کریں')}
+              className="w-full ps-10 pe-3.5 py-2.5 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF]"
             />
           </div>
 
           <div
             role="tablist"
-            aria-label="تصفية حالة الموردين"
-            className="inline-flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800 self-start sm:self-auto"
+            aria-label={tr('تصفية حالة الموردين', 'Filter supplier status', 'سپلائرز کی حالت فلٹر کریں')}
+            className="inline-flex items-center gap-1 p-1 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] self-start sm:self-auto"
           >
             {(
               [
-                { id: 'all', label: `الكل (${counts.total})` },
-                { id: 'active', label: `نشط (${counts.active})` },
-                { id: 'inactive', label: `موقوف (${counts.inactive})` },
+                { id: 'all', label: `${tr('الكل', 'All', 'سب')} (${counts.total})` },
+                { id: 'active', label: `${tr('نشط', 'Active', 'فعال')} (${counts.active})` },
+                { id: 'inactive', label: `${tr('موقوف', 'Inactive', 'غیر فعال')} (${counts.inactive})` },
               ] as const
             ).map((tab) => (
               <button
@@ -496,8 +568,8 @@ export const SuppliersManager: React.FC = () => {
                 onClick={() => setStatusFilter(tab.id)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
                   statusFilter === tab.id
-                    ? 'bg-white dark:bg-[#0c1829] text-amber-600 dark:text-amber-400 shadow-sm border border-amber-500/30'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    ? 'bg-white dark:bg-[#122543] text-[#1764FF] dark:text-[#6CA2FF] shadow-sm border border-[#1764FF]/30'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-[#0B1B32] dark:hover:text-white'
                 }`}
               >
                 {tab.label}
@@ -512,35 +584,46 @@ export const SuppliersManager: React.FC = () => {
             {[0, 1, 2, 3].map((row) => (
               <div
                 key={row}
-                className="h-12 rounded-xl bg-slate-100 dark:bg-slate-800/60 animate-pulse"
+                className="h-12 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] animate-pulse"
               />
             ))}
           </div>
         ) : filteredSuppliers.length === 0 ? (
-          /* Empty State */
           <div className="p-8 sm:p-12 text-center space-y-3">
-            <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800/80 text-slate-400 flex items-center justify-center mx-auto">
+            <div className="w-12 h-12 rounded-2xl bg-[#F5F8FF] dark:bg-[#0E203A] text-slate-400 flex items-center justify-center mx-auto">
               <Truck className="w-6 h-6" />
             </div>
-            <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
+            <h3 className="text-sm sm:text-base font-bold text-[#0B1B32] dark:text-white">
               {suppliers.length === 0
-                ? 'لا يوجد موردون مسجلون في المؤسسة بعد'
-                : 'لا توجد نتائج مطابقة للبحث'}
+                ? tr(
+                    'لا يوجد موردون مسجلون في المؤسسة بعد',
+                    'No suppliers registered in this organization yet',
+                    'اس ادارے میں ابھی کوئی سپلائر درج نہیں ہے'
+                  )
+                : tr('لا توجد نتائج مطابقة للبحث', 'No matching results found', 'تلاش کے مطابق کوئی نتیجہ نہیں ملا')}
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
               {suppliers.length === 0
-                ? 'أضف الموردين المعتمدين لمؤسستك ليتمكن المدير والمسؤولون ومسؤولو الفروع من اختيارهم عند تسجيل فواتير المشتريات.'
-                : 'جرّب تعديل كلمات البحث أو تغيير تصفية الحالة.'}
+                ? tr(
+                    'أضف الموردين المعتمدين لمؤسستك ليتمكن المدير والمسؤولون ومسؤولو الفروع من اختيارهم عند تسجيل فواتير المشتريات.',
+                    'Add approved suppliers for your organization so managers, supervisors, and branch managers can select them on purchase invoices.',
+                    'اپنے ادارے کے منظور شدہ سپلائرز شامل کریں تاکہ مینیجرز، سپروائزرز اور برانچ مینیجرز خریداری انوائسز میں انہیں منتخب کر سکیں۔'
+                  )
+                : tr(
+                    'جرّب تعديل كلمات البحث أو تغيير تصفية الحالة.',
+                    'Try adjusting your search keywords or status filter.',
+                    'اپنے تلاش کے الفاظ یا حالت کا فلٹر تبدیل کرنے کی کوشش کریں۔'
+                  )}
             </p>
             {suppliers.length === 0 && canCreate && (
               <div className="pt-2">
                 <button
                   type="button"
                   onClick={openCreateModal}
-                  className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition-colors"
+                  className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-[#1764FF] hover:bg-[#1052D8] transition-colors"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>إضافة أول مورد</span>
+                  <span>{tr('إضافة أول مورد', 'Add First Supplier', 'پہلا سپلائر شامل کریں')}</span>
                 </button>
               </div>
             )}
@@ -551,40 +634,45 @@ export const SuppliersManager: React.FC = () => {
             <div className="hidden md:block overflow-x-auto">
               <table className="w-full text-start border-collapse">
                 <thead>
-                  <tr className="bg-slate-50 dark:bg-[#070e17]/70 border-b border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-600 dark:text-slate-400">
-                    <th className="py-3 px-4 text-start">اسم المورد</th>
-                    <th className="py-3 px-4 text-start">الرقم الضريبي</th>
-                    <th className="py-3 px-4 text-start">رقم الجوال</th>
-                    <th className="py-3 px-4 text-start">العنوان</th>
-                    <th className="py-3 px-4 text-start">الملاحظات</th>
-                    <th className="py-3 px-4 text-start">الحالة</th>
+                  <tr className="bg-[#F5F8FF] dark:bg-[#0E203A] border-b border-[#DCE6FA] dark:border-[#1F3B66] text-xs font-bold text-slate-600 dark:text-slate-400">
+                    <th className="py-3 px-4 text-start">{tr('اسم المورد', 'Supplier Name', 'سپلائر کا نام')}</th>
+                    <th className="py-3 px-4 text-start">{tr('الرقم الضريبي', 'Tax / VAT ID', 'ٹیکس نمبر')}</th>
+                    <th className="py-3 px-4 text-start">{tr('رقم الجوال', 'Phone', 'موبائل نمبر')}</th>
+                    <th className="py-3 px-4 text-start">{tr('العنوان', 'Address', 'پتہ')}</th>
+                    <th className="py-3 px-4 text-start">{tr('الملاحظات', 'Notes', 'نوٹس')}</th>
+                    <th className="py-3 px-4 text-start">{tr('الحالة', 'Status', 'حالت')}</th>
                     {(canEdit || canToggle || canDelete) && (
-                      <th className="py-3 px-4 text-center w-40">إجراءات</th>
+                      <th className="py-3 px-4 text-center w-40">{tr('إجراءات', 'Actions', 'اقدامات')}</th>
                     )}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 text-sm">
+                <tbody className="divide-y divide-[#E6EEFC] dark:divide-[#1F3B66]/70 text-sm">
                   {filteredSuppliers.map((sup) => (
                     <tr
                       key={sup.id}
-                      className={`hover:bg-slate-50/70 dark:hover:bg-slate-800/30 transition-colors ${
+                      className={`hover:bg-[#F5F8FF]/70 dark:hover:bg-[#173056]/40 transition-colors ${
                         !sup.isActive ? 'opacity-70' : ''
                       }`}
                     >
                       <td className="py-3.5 px-4 align-top">
-                        <p className="font-bold text-slate-900 dark:text-white">{sup.name}</p>
+                        <p className="font-bold text-[#0B1B32] dark:text-white">{sup.name}</p>
                         {(sup.companyName || sup.contactPerson || sup.openingBalance !== undefined) && (
                           <div className="text-[11px] text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-1.5 mt-0.5">
                             {sup.companyName && <span>{sup.companyName}</span>}
                             {sup.companyName && sup.contactPerson && <span aria-hidden="true">·</span>}
-                            {sup.contactPerson && <span>المسؤول: {sup.contactPerson}</span>}
+                            {sup.contactPerson && (
+                              <span>
+                                {tr('المسؤول:', 'Contact:', 'رابطہ شخص:')} {sup.contactPerson}
+                              </span>
+                            )}
                             {sup.openingBalance !== undefined && sup.openingBalance > 0 && (
                               <>
                                 {(sup.companyName || sup.contactPerson) && (
                                   <span aria-hidden="true">·</span>
                                 )}
                                 <span className="font-mono tabular-nums">
-                                  رصيد افتتاحي: {formatCurrency(sup.openingBalance, currency, language)}
+                                  {tr('رصيد افتتاحي:', 'Opening Bal:', 'ابتدائی بیلنس:')}{' '}
+                                  {formatCurrency(sup.openingBalance, currency, language)}
                                 </span>
                               </>
                             )}
@@ -607,11 +695,13 @@ export const SuppliersManager: React.FC = () => {
                         <span
                           className={
                             sup.isActive
-                              ? 'text-emerald-600 dark:text-emerald-400'
+                              ? 'text-[#048264] dark:text-[#08C99B]'
                               : 'text-slate-500 dark:text-slate-400'
                           }
                         >
-                          {sup.isActive ? 'نشط' : 'موقوف'}
+                          {sup.isActive
+                            ? tr('نشط', 'Active', 'فعال')
+                            : tr('موقوف', 'Inactive', 'غیر فعال')}
                         </span>
                       </td>
                       {(canEdit || canToggle || canDelete) && (
@@ -621,9 +711,9 @@ export const SuppliersManager: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => openEditModal(sup)}
-                                title="تعديل بيانات المورد"
-                                aria-label={`تعديل المورد ${sup.name}`}
-                                className="p-2 rounded-lg text-slate-600 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
+                                title={tr('تعديل بيانات المورد', 'Edit Supplier', 'سپلائر میں ترمیم کریں')}
+                                aria-label={`${tr('تعديل المورد', 'Edit supplier', 'سپلائر ترمیم')} ${sup.name}`}
+                                className="p-2 rounded-lg text-slate-600 dark:text-slate-300 hover:text-[#1764FF] dark:hover:text-[#6CA2FF] hover:bg-[#1764FF]/10 transition-colors"
                               >
                                 <Edit3 className="w-4 h-4" />
                               </button>
@@ -633,16 +723,20 @@ export const SuppliersManager: React.FC = () => {
                                 type="button"
                                 onClick={() => void handleToggleStatus(sup)}
                                 disabled={togglingId === sup.id}
-                                title={sup.isActive ? 'إيقاف المورد' : 'إعادة تفعيل المورد'}
+                                title={
+                                  sup.isActive
+                                    ? tr('إيقاف المورد', 'Deactivate Supplier', 'سپلائر غیر فعال کریں')
+                                    : tr('إعادة تفعيل المورد', 'Reactivate Supplier', 'سپلائر دوبارہ فعال کریں')
+                                }
                                 aria-label={
                                   sup.isActive
-                                    ? `إيقاف المورد ${sup.name}`
-                                    : `تفعيل المورد ${sup.name}`
+                                    ? `${tr('إيقاف المورد', 'Deactivate supplier', 'سپلائر غیر فعال')} ${sup.name}`
+                                    : `${tr('تفعيل المورد', 'Activate supplier', 'سپلائر فعال')} ${sup.name}`
                                 }
                                 className={`p-2 rounded-lg transition-colors disabled:opacity-40 ${
                                   sup.isActive
                                     ? 'text-slate-500 hover:text-amber-600 hover:bg-amber-500/10'
-                                    : 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10'
+                                    : 'text-[#048264] dark:text-[#08C99B] hover:bg-[#08C99B]/10'
                                 }`}
                               >
                                 {sup.isActive ? (
@@ -660,8 +754,8 @@ export const SuppliersManager: React.FC = () => {
                                   setDeleteBlockedInfo(null);
                                   setActionError(null);
                                 }}
-                                title="حذف المورد"
-                                aria-label={`حذف المورد ${sup.name}`}
+                                title={tr('حذف المورد', 'Delete Supplier', 'سپلائر حذف کریں')}
+                                aria-label={`${tr('حذف المورد', 'Delete supplier', 'سپلائر حذف')} ${sup.name}`}
                                 className="p-2 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -677,7 +771,7 @@ export const SuppliersManager: React.FC = () => {
             </div>
 
             {/* Mobile Stacked Cards */}
-            <div className="md:hidden divide-y divide-slate-200 dark:divide-slate-800">
+            <div className="md:hidden divide-y divide-[#DCE6FA] dark:divide-[#1F3B66]">
               {filteredSuppliers.map((sup) => (
                 <div
                   key={sup.id}
@@ -685,7 +779,7 @@ export const SuppliersManager: React.FC = () => {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <h3 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                      <h3 className="text-sm font-bold text-[#0B1B32] dark:text-white truncate">
                         {sup.name}
                       </h3>
                       {sup.companyName && (
@@ -697,27 +791,29 @@ export const SuppliersManager: React.FC = () => {
                     <span
                       className={`text-xs font-bold shrink-0 ${
                         sup.isActive
-                          ? 'text-emerald-600 dark:text-emerald-400'
+                          ? 'text-[#048264] dark:text-[#08C99B]'
                           : 'text-slate-500 dark:text-slate-400'
                       }`}
                     >
-                      {sup.isActive ? 'نشط' : 'موقوف'}
+                      {sup.isActive
+                        ? tr('نشط', 'Active', 'فعال')
+                        : tr('موقوف', 'Inactive', 'غیر فعال')}
                     </span>
                   </div>
 
                   <div className="grid grid-cols-1 gap-1.5 text-xs text-slate-600 dark:text-slate-400">
                     <div className="flex items-center justify-between gap-2">
-                      <span>الرقم الضريبي:</span>
-                      <span className="font-mono tabular-nums text-slate-800 dark:text-slate-200" dir="ltr">
+                      <span>{tr('الرقم الضريبي:', 'Tax ID:', 'ٹیکس نمبر:')}</span>
+                      <span className="font-mono tabular-nums text-[#0B1B32] dark:text-slate-200" dir="ltr">
                         {sup.taxNumber || '—'}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="inline-flex items-center gap-1">
                         <Phone className="w-3.5 h-3.5 text-slate-400" />
-                        <span>الجوال:</span>
+                        <span>{tr('الجوال:', 'Phone:', 'موبائل:')}</span>
                       </span>
-                      <span className="font-mono tabular-nums text-slate-800 dark:text-slate-200" dir="ltr">
+                      <span className="font-mono tabular-nums text-[#0B1B32] dark:text-slate-200" dir="ltr">
                         {sup.phone || '—'}
                       </span>
                     </div>
@@ -728,22 +824,22 @@ export const SuppliersManager: React.FC = () => {
                       </div>
                     )}
                     {sup.notes && (
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800/80">
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-[#E6EEFC] dark:border-[#1F3B66]/70">
                         {sup.notes}
                       </p>
                     )}
                   </div>
 
                   {(canEdit || canToggle || canDelete) && (
-                    <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/80">
+                    <div className="flex items-center gap-2 pt-2 border-t border-[#E6EEFC] dark:border-[#1F3B66]/70">
                       {canEdit && (
                         <button
                           type="button"
                           onClick={() => openEditModal(sup)}
-                          className="flex-1 min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 hover:text-amber-600 transition-colors"
+                          className="flex-1 min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-[#0B1B32] dark:text-slate-200 bg-[#F5F8FF] dark:bg-[#0E203A] hover:bg-[#1764FF]/15 hover:text-[#1764FF] transition-colors"
                         >
                           <Edit3 className="w-3.5 h-3.5" />
-                          <span>تعديل</span>
+                          <span>{tr('تعديل', 'Edit', 'ترمیم')}</span>
                         </button>
                       )}
                       {canToggle && (
@@ -751,17 +847,17 @@ export const SuppliersManager: React.FC = () => {
                           type="button"
                           onClick={() => void handleToggleStatus(sup)}
                           disabled={togglingId === sup.id}
-                          className="flex-1 min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 transition-colors disabled:opacity-50"
+                          className="flex-1 min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-[#0B1B32] dark:text-slate-200 bg-[#F5F8FF] dark:bg-[#0E203A] transition-colors disabled:opacity-50"
                         >
                           {sup.isActive ? (
                             <>
                               <PauseCircle className="w-3.5 h-3.5" />
-                              <span>إيقاف</span>
+                              <span>{tr('إيقاف', 'Deactivate', 'غیر فعال')}</span>
                             </>
                           ) : (
                             <>
                               <PlayCircle className="w-3.5 h-3.5" />
-                              <span>تفعيل</span>
+                              <span>{tr('تفعيل', 'Activate', 'فعال کریں')}</span>
                             </>
                           )}
                         </button>
@@ -775,7 +871,7 @@ export const SuppliersManager: React.FC = () => {
                             setActionError(null);
                           }}
                           className="min-w-[44px] min-h-[42px] inline-flex items-center justify-center p-2 rounded-xl text-rose-600 dark:text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 transition-colors"
-                          aria-label={`حذف المورد ${sup.name}`}
+                          aria-label={`${tr('حذف المورد', 'Delete supplier', 'سپلائر حذف')} ${sup.name}`}
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -795,25 +891,35 @@ export const SuppliersManager: React.FC = () => {
           role="dialog"
           aria-modal="true"
           aria-labelledby="supplier-modal-title"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0B1B32]/65 backdrop-blur-xs"
         >
-          <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl">
-            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+          <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] shadow-2xl">
+            <div className="p-5 border-b border-[#E6EEFC] dark:border-[#1F3B66] flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+                <div className="w-9 h-9 rounded-xl bg-[#1764FF]/12 text-[#1764FF] dark:text-[#6CA2FF] flex items-center justify-center">
                   <Building2 className="w-4 h-4" />
                 </div>
                 <div>
                   <h3
                     id="supplier-modal-title"
-                    className="text-base font-bold text-slate-900 dark:text-white"
+                    className="text-base font-bold text-[#0B1B32] dark:text-white"
                   >
-                    {editingSupplier ? 'تعديل بيانات المورد' : 'إضافة مورد جديد'}
+                    {editingSupplier
+                      ? tr('تعديل بيانات المورد', 'Edit Supplier Details', 'سپلائر کی تفصیلات میں ترمیم')
+                      : tr('إضافة مورد جديد', 'Add New Supplier', 'نیا سپلائر شامل کریں')}
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
                     {editingSupplier
-                      ? 'تحديث بيانات المورد المسجل في دليل المؤسسة'
-                      : 'تسجيل مورد جديد في دليل المؤسسة لاستخدامه في فواتير المشتريات'}
+                      ? tr(
+                          'تحديث بيانات المورد المسجل في دليل المؤسسة',
+                          'Update supplier information in your organization directory',
+                          'اپنے ادارے کی ڈائریکٹری میں سپلائر کی معلومات اپ ڈیٹ کریں'
+                        )
+                      : tr(
+                          'تسجيل مورد جديد في دليل المؤسسة لاستخدامه في فواتير المشتريات',
+                          'Register a new supplier in your organization directory for purchase invoices',
+                          'خریداری انوائسز میں استعمال کے لیے نیا سپلائر درج کریں'
+                        )}
                   </p>
                 </div>
               </div>
@@ -821,8 +927,8 @@ export const SuppliersManager: React.FC = () => {
                 type="button"
                 onClick={closeFormModal}
                 disabled={isSaving}
-                aria-label="إغلاق النافذة"
-                className="p-2 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                aria-label={tr('إغلاق النافذة', 'Close modal', 'ونڈو بند کریں')}
+                className="p-2 rounded-lg text-slate-400 hover:text-[#0B1B32] dark:hover:text-white"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -839,13 +945,13 @@ export const SuppliersManager: React.FC = () => {
                 </div>
               )}
 
-              {/* Primary Required/Requested Fields */}
               <div className="space-y-1.5">
                 <label
                   htmlFor="supplier-name"
-                  className="text-xs font-semibold text-slate-700 dark:text-slate-300 block"
+                  className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block"
                 >
-                  اسم المورد <span className="text-rose-500">*</span>
+                  {tr('اسم المورد', 'Supplier Name', 'سپلائر کا نام')}{' '}
+                  <span className="text-rose-500">*</span>
                 </label>
                 <input
                   id="supplier-name"
@@ -855,8 +961,12 @@ export const SuppliersManager: React.FC = () => {
                   value={formState.name}
                   onChange={(e) => setFormState((prev) => ({ ...prev, name: e.target.value }))}
                   disabled={isSaving}
-                  placeholder="مثال: شركة التوريد الغذائية الحديثة"
-                  className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
+                  placeholder={tr(
+                    'مثال: شركة التوريد الغذائية الحديثة',
+                    'e.g. Modern Food Supply Co.',
+                    'مثال: ماڈرن فوڈ سپلائی کمپنی'
+                  )}
+                  className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF]"
                 />
               </div>
 
@@ -864,9 +974,9 @@ export const SuppliersManager: React.FC = () => {
                 <div className="space-y-1.5">
                   <label
                     htmlFor="supplier-tax"
-                    className="text-xs font-semibold text-slate-700 dark:text-slate-300 block"
+                    className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block"
                   >
-                    رقم التسجيل الضريبي
+                    {tr('رقم التسجيل الضريبي', 'VAT / Tax Registration Number', 'ٹیکس رجسٹریشن نمبر')}
                   </label>
                   <input
                     id="supplier-tax"
@@ -879,16 +989,16 @@ export const SuppliersManager: React.FC = () => {
                     }
                     disabled={isSaving}
                     placeholder="300000000000003"
-                    className="w-full px-3.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF]"
                   />
                 </div>
 
                 <div className="space-y-1.5">
                   <label
                     htmlFor="supplier-phone"
-                    className="text-xs font-semibold text-slate-700 dark:text-slate-300 block"
+                    className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block"
                   >
-                    رقم الجوال
+                    {tr('رقم الجوال', 'Phone Number', 'موبائل نمبر')}
                   </label>
                   <input
                     id="supplier-phone"
@@ -899,7 +1009,7 @@ export const SuppliersManager: React.FC = () => {
                     onChange={(e) => setFormState((prev) => ({ ...prev, phone: e.target.value }))}
                     disabled={isSaving}
                     placeholder="05XXXXXXXX"
-                    className="w-full px-3.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF]"
                   />
                 </div>
               </div>
@@ -907,9 +1017,9 @@ export const SuppliersManager: React.FC = () => {
               <div className="space-y-1.5">
                 <label
                   htmlFor="supplier-address"
-                  className="text-xs font-semibold text-slate-700 dark:text-slate-300 block"
+                  className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block"
                 >
-                  العنوان
+                  {tr('العنوان', 'Address', 'پتہ')}
                 </label>
                 <input
                   id="supplier-address"
@@ -918,17 +1028,17 @@ export const SuppliersManager: React.FC = () => {
                   value={formState.address}
                   onChange={(e) => setFormState((prev) => ({ ...prev, address: e.target.value }))}
                   disabled={isSaving}
-                  placeholder="المدينة، الحي، الشارع..."
-                  className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
+                  placeholder={tr('المدينة، الحي، الشارع...', 'City, District, Street...', 'شہر، علاقہ، گلی...')}
+                  className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF]"
                 />
               </div>
 
               <div className="space-y-1.5">
                 <label
                   htmlFor="supplier-notes"
-                  className="text-xs font-semibold text-slate-700 dark:text-slate-300 block"
+                  className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block"
                 >
-                  الملاحظات
+                  {tr('الملاحظات', 'Notes', 'نوٹس')}
                 </label>
                 <textarea
                   id="supplier-notes"
@@ -937,32 +1047,39 @@ export const SuppliersManager: React.FC = () => {
                   value={formState.notes}
                   onChange={(e) => setFormState((prev) => ({ ...prev, notes: e.target.value }))}
                   disabled={isSaving}
-                  placeholder="مواعيد التوريد، شروط السداد، أو أي ملاحظات إضافية..."
-                  className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 resize-y"
+                  placeholder={tr(
+                    'مواعيد التوريد، شروط السداد، أو أي ملاحظات إضافية...',
+                    'Delivery schedule, payment terms, or any additional notes...',
+                    'ڈیلیوری شیڈول، ادائیگی کی شرائط، یا کوئی اضافی نوٹس...'
+                  )}
+                  className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF] resize-y"
                 />
               </div>
 
-              {/* Optional Extended Business Details Toggle */}
               <div className="pt-1">
                 <button
                   type="button"
                   onClick={() => setShowOptionalFields((prev) => !prev)}
-                  className="text-xs font-semibold text-amber-600 dark:text-amber-400 hover:underline"
+                  className="text-xs font-semibold text-[#1764FF] dark:text-[#6CA2FF] hover:underline"
                 >
                   {showOptionalFields
-                    ? 'إخفاء البيانات الإضافية'
-                    : '+ بيانات إضافية اختيارية (الشركة، الشخص المسؤول، البريد، الرصيد الافتتاحي)'}
+                    ? tr('إخفاء البيانات الإضافية', 'Hide Additional Fields', 'اضافی تفصیلات چھپائیں')
+                    : tr(
+                        '+ بيانات إضافية اختيارية (الشركة، الشخص المسؤول، البريد، الرصيد الافتتاحي)',
+                        '+ Optional Details (Company, Contact Person, Email, Opening Balance)',
+                        '+ اختیاری تفصیلات (کمپنی، رابطہ شخص، ای میل، ابتدائی بیلنس)'
+                      )}
                 </button>
               </div>
 
               {showOptionalFields && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-100 dark:border-slate-800">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-[#E6EEFC] dark:border-[#1F3B66]">
                   <div className="space-y-1.5">
                     <label
                       htmlFor="supplier-company"
-                      className="text-xs font-semibold text-slate-700 dark:text-slate-300 block"
+                      className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block"
                     >
-                      اسم الشركة / المؤسسة
+                      {tr('اسم الشركة / المؤسسة', 'Company / Entity Name', 'کمپنی / ادارے کا نام')}
                     </label>
                     <input
                       id="supplier-company"
@@ -973,15 +1090,15 @@ export const SuppliersManager: React.FC = () => {
                         setFormState((prev) => ({ ...prev, companyName: e.target.value }))
                       }
                       disabled={isSaving}
-                      className="w-full px-3.5 py-2 rounded-xl text-sm bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                      className="w-full px-3.5 py-2 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                     />
                   </div>
                   <div className="space-y-1.5">
                     <label
                       htmlFor="supplier-contact"
-                      className="text-xs font-semibold text-slate-700 dark:text-slate-300 block"
+                      className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block"
                     >
-                      الشخص المسؤول
+                      {tr('الشخص المسؤول', 'Contact Person', 'رابطہ شخص')}
                     </label>
                     <input
                       id="supplier-contact"
@@ -992,15 +1109,15 @@ export const SuppliersManager: React.FC = () => {
                         setFormState((prev) => ({ ...prev, contactPerson: e.target.value }))
                       }
                       disabled={isSaving}
-                      className="w-full px-3.5 py-2 rounded-xl text-sm bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                      className="w-full px-3.5 py-2 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                     />
                   </div>
                   <div className="space-y-1.5">
                     <label
                       htmlFor="supplier-email"
-                      className="text-xs font-semibold text-slate-700 dark:text-slate-300 block"
+                      className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block"
                     >
-                      البريد الإلكتروني
+                      {tr('البريد الإلكتروني', 'Email Address', 'ای میل پتہ')}
                     </label>
                     <input
                       id="supplier-email"
@@ -1012,15 +1129,15 @@ export const SuppliersManager: React.FC = () => {
                         setFormState((prev) => ({ ...prev, email: e.target.value }))
                       }
                       disabled={isSaving}
-                      className="w-full px-3.5 py-2 rounded-xl text-sm font-mono bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                      className="w-full px-3.5 py-2 rounded-xl text-sm font-mono bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                     />
                   </div>
                   <div className="space-y-1.5">
                     <label
                       htmlFor="supplier-opening-balance"
-                      className="text-xs font-semibold text-slate-700 dark:text-slate-300 block"
+                      className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block"
                     >
-                      الرصيد الافتتاحي ({currency})
+                      {tr('الرصيد الافتتاحي', 'Opening Balance', 'ابتدائی بیلنس')} ({currency})
                     </label>
                     <input
                       id="supplier-opening-balance"
@@ -1034,28 +1151,32 @@ export const SuppliersManager: React.FC = () => {
                       }
                       disabled={isSaving}
                       placeholder="0.00"
-                      className="w-full px-3.5 py-2 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                      className="w-full px-3.5 py-2 rounded-xl text-sm font-mono tabular-nums bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                     />
                   </div>
                 </div>
               )}
 
-              <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2">
+              <div className="pt-4 border-t border-[#E6EEFC] dark:border-[#1F3B66] flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={closeFormModal}
                   disabled={isSaving}
-                  className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+                  className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 bg-[#F5F8FF] dark:bg-[#0E203A] hover:bg-[#E6EEFC] dark:hover:bg-[#173056] transition-colors"
                 >
-                  إلغاء
+                  {tr('إلغاء', 'Cancel', 'منسوخ')}
                 </button>
                 <button
                   type="submit"
                   disabled={isSaving}
-                  className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition-colors disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-[#1764FF] hover:bg-[#1052D8] transition-colors disabled:opacity-50"
                 >
                   {isSaving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                  <span>{editingSupplier ? 'حفظ التعديلات' : 'حفظ المورد'}</span>
+                  <span>
+                    {editingSupplier
+                      ? tr('حفظ التعديلات', 'Save Changes', 'تبدیلیاں محفوظ کریں')
+                      : tr('حفظ المورد', 'Save Supplier', 'سپلائر محفوظ کریں')}
+                  </span>
                 </button>
               </div>
             </form>
@@ -1063,15 +1184,15 @@ export const SuppliersManager: React.FC = () => {
         </div>
       )}
 
-      {/* Delete Confirmation Modal (Manager ONLY — with Purchase Referential Integrity Guard) */}
+      {/* Delete Confirmation Modal (Manager ONLY) */}
       {canDelete && deleteTarget && (
         <div
           role="dialog"
           aria-modal="true"
           aria-labelledby="delete-supplier-title"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0B1B32]/65 backdrop-blur-xs"
         >
-          <div className="w-full max-w-md bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4">
+          <div className="w-full max-w-md bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] shadow-2xl p-5 space-y-4">
             <div className="flex items-start gap-3">
               <div className="w-10 h-10 rounded-xl bg-rose-500/15 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
                 <Trash2 className="w-5 h-5" />
@@ -1079,12 +1200,24 @@ export const SuppliersManager: React.FC = () => {
               <div className="space-y-1">
                 <h3
                   id="delete-supplier-title"
-                  className="text-base font-bold text-slate-900 dark:text-white"
+                  className="text-base font-bold text-[#0B1B32] dark:text-white"
                 >
-                  تأكيد حذف المورد
+                  {tr('تأكيد حذف المورد', 'Confirm Supplier Deletion', 'سپلائر حذف کرنے کی تصدیق')}
                 </h3>
-                <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                  هل تريد حذف المورد <strong className="text-slate-900 dark:text-white">{deleteTarget.name}</strong>؟ سيتم التحقق أولاً من عدم ارتباطه بأي فواتير مشتريات مسجلة حفاظاً على سلامة السجلات المالية.
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {language === 'ar' ? (
+                    <>
+                      هل تريد حذف المورد <strong className="text-[#0B1B32] dark:text-white">{deleteTarget.name}</strong>؟ سيتم التحقق أولاً من عدم ارتباطه بأي فواتير مشتريات مسجلة حفاظاً على سلامة السجلات المالية.
+                    </>
+                  ) : language === 'en' ? (
+                    <>
+                      Delete supplier <strong className="text-[#0B1B32] dark:text-white">{deleteTarget.name}</strong>? The system will first verify that no purchase invoices are linked to preserve financial integrity.
+                    </>
+                  ) : (
+                    <>
+                      کیا آپ سپلائر <strong className="text-[#0B1B32] dark:text-white">{deleteTarget.name}</strong> کو حذف کرنا چاہتے ہیں؟ مالی ریکارڈ کے تحفظ کے لیے پہلے تصدیق کی جائے گی کہ کوئی خریداری انوائس اس سے منسلک نہیں ہے۔
+                    </>
+                  )}
                 </p>
               </div>
             </div>
@@ -1100,16 +1233,22 @@ export const SuppliersManager: React.FC = () => {
                     type="button"
                     onClick={() => void handleToggleStatus(deleteTarget)}
                     disabled={togglingId === deleteTarget.id}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-400 text-slate-950 hover:bg-amber-300 transition-colors"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1764FF] text-white hover:bg-[#1052D8] transition-colors"
                   >
                     <PauseCircle className="w-3.5 h-3.5" />
-                    <span>إيقاف المورد بدلاً من الحذف</span>
+                    <span>
+                      {tr(
+                        'إيقاف المورد بدلاً من الحذف',
+                        'Deactivate Supplier Instead',
+                        'حذف کرنے کے بجائے سپلائر غیر فعال کریں'
+                      )}
+                    </span>
                   </button>
                 )}
               </div>
             )}
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#E6EEFC] dark:border-[#1F3B66]">
               <button
                 type="button"
                 onClick={() => {
@@ -1119,9 +1258,9 @@ export const SuppliersManager: React.FC = () => {
                   }
                 }}
                 disabled={isDeleting}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800"
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 bg-[#F5F8FF] dark:bg-[#0E203A]"
               >
-                إلغاء
+                {tr('إلغاء', 'Cancel', 'منسوخ')}
               </button>
               {!deleteBlockedInfo && (
                 <button
@@ -1131,7 +1270,7 @@ export const SuppliersManager: React.FC = () => {
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 transition-colors disabled:opacity-50"
                 >
                   {isDeleting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                  <span>تأكيد الحذف</span>
+                  <span>{tr('تأكيد الحذف', 'Confirm Delete', 'حذف کی تصدیق')}</span>
                 </button>
               )}
             </div>

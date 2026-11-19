@@ -95,11 +95,16 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-const PAYMENT_METHOD_OPTIONS: Array<{ value: PurchasePaymentMethod; label: string }> = [
-  { value: 'cash', label: 'نقداً' },
-  { value: 'card', label: 'شبكة / بطاقة' },
-  { value: 'transfer', label: 'تحويل بنكي' },
-  { value: 'credit', label: 'آجل' },
+const PAYMENT_METHOD_OPTIONS: Array<{
+  value: PurchasePaymentMethod;
+  ar: string;
+  en: string;
+  ur: string;
+}> = [
+  { value: 'cash', ar: 'نقداً', en: 'Cash', ur: 'نقد' },
+  { value: 'card', ar: 'شبكة / بطاقة', en: 'Card / POS', ur: 'کارڈ / پی او ایس' },
+  { value: 'transfer', ar: 'تحويل بنكي', en: 'Bank Transfer', ur: 'بینک ٹرانسفر' },
+  { value: 'credit', ar: 'آجل', en: 'Credit', ur: 'ادھار' },
 ];
 
 export interface PurchaseEntryViewProps {
@@ -112,7 +117,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
   initialBranchId,
 }) => {
   const { userProfile, currentOrg, branches, currentBranch } = useAuth();
-  const { language } = useLanguage();
+  const { language, tr } = useLanguage();
 
   const currency = currentOrg?.currency || 'SAR';
   const effectivePerms = useMemo(
@@ -143,7 +148,6 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
     [branches]
   );
 
-  // Branch selection state
   const [selectedBranchId, setSelectedBranchId] = useState<string>(() => {
     if (!canSelectAnyBranch) {
       return assignedBranchId || '';
@@ -167,8 +171,6 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
     }
   }, [canSelectAnyBranch, assignedBranchId, currentBranch?.id, selectableBranches, selectedBranchId]);
 
-  // Preserve real branchId passed from notification for org-wide Supervisor ONLY
-  // (Branch Manager remains strictly locked to assignedBranchId above).
   useEffect(() => {
     if (!canSelectAnyBranch || !initialBranchId) return;
     if (selectableBranches.some((b) => b.id === initialBranchId)) {
@@ -196,17 +198,14 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
     );
   }, [canSelectAnyBranch, assignedBranchId, currentBranch, selectableBranches, selectedBranchId]);
 
-  // Suppliers state
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [suppliersLoading, setSuppliersLoading] = useState<boolean>(false);
   const [suppliersError, setSuppliersError] = useState<string | null>(null);
   const [supplierSearch, setSupplierSearch] = useState<string>('');
 
-  // Recent purchases confirmation list
   const [recentPurchases, setRecentPurchases] = useState<Purchase[]>([]);
   const [recentLoading, setRecentLoading] = useState<boolean>(false);
 
-  // Invoice header form fields
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
   const [date, setDate] = useState<string>(() => getTodayIsoDate());
   const [taxNumber, setTaxNumber] = useState<string>('');
@@ -214,28 +213,23 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
   const [paymentMethod, setPaymentMethod] = useState<PurchasePaymentMethod>('cash');
   const [notes, setNotes] = useState<string>('');
 
-  // Line items (1..100)
   const [lineItems, setLineItems] = useState<DraftLineItem[]>(() => [createEmptyLineItem()]);
 
-  // Discount & VAT
   const [discountAmount, setDiscountAmount] = useState<string>('');
   const [vatMode, setVatMode] = useState<VatMode>('15');
   const [customVatRate, setCustomVatRate] = useState<string>('15');
 
-  // Multiple Attachments
   const [attachments, setAttachments] = useState<PurchaseAttachmentDraft[]>([]);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const [isDraggingFiles, setIsDraggingFiles] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Submission & validation state
   const [showValidationErrors, setShowValidationErrors] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const submittingLockRef = useRef<boolean>(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [savedBanner, setSavedBanner] = useState<SavedSessionBanner | null>(null);
 
-  // Cleanup object URLs on unmount
   const attachmentsRef = useRef<PurchaseAttachmentDraft[]>([]);
   attachmentsRef.current = attachments;
   useEffect(() => {
@@ -260,12 +254,23 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
       } else {
         setSuppliers([]);
         setSuppliersError(
-          'حسابك يملك صلاحية إدخال المشتريات، لكنه يحتاج إلى صلاحية «عرض الموردين المسجلين» من مدير المؤسسة لاختيار المورد.'
+          tr(
+            'حسابك يملك صلاحية إدخال المشتريات، لكنه يحتاج إلى صلاحية «عرض الموردين المسجلين» من مدير المؤسسة لاختيار المورد.',
+            'Your account has purchase entry permission, but requires "View Registered Suppliers" permission from the Organization Manager to select a supplier.',
+            'آپ کے اکاؤنٹ کو خریداری اندراج کی اجازت ہے، لیکن سپلائر منتخب کرنے کے لیے ادارے کے مینیجر سے "درج سپلائرز دیکھنے" کی اجازت درکار ہے۔'
+          )
         );
       }
     } catch (err: any) {
       setSuppliers([]);
-      setSuppliersError(err?.message || 'تعذر تحميل قائمة الموردين.');
+      setSuppliersError(
+        err?.message ||
+          tr(
+            'تعذر تحميل قائمة الموردين.',
+            'Failed to load suppliers list.',
+            'سپلائرز کی فہرست لوڈ نہیں ہو سکی۔'
+          )
+      );
     } finally {
       setSuppliersLoading(false);
     }
@@ -275,11 +280,11 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
       const recent = await fetchRecentPurchases(userProfile, currentOrg.id, 6);
       setRecentPurchases(recent);
     } catch {
-      // Recent list is auxiliary confirmation; do not block invoice entry
+      // Auxiliary confirmation list
     } finally {
       setRecentLoading(false);
     }
-  }, [userProfile, currentOrg?.id, canEnterPurchases, effectivePerms.canViewSuppliers]);
+  }, [userProfile, currentOrg?.id, canEnterPurchases, effectivePerms.canViewSuppliers, tr]);
 
   useEffect(() => {
     void loadSuppliersAndRecent();
@@ -314,11 +319,9 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
     setFormError(null);
   };
 
-  // Effective VAT rate input
   const effectiveVatRateInput =
     vatMode === '15' ? '15' : vatMode === '0' ? '0' : customVatRate;
 
-  // Live Halala-exact calculation
   const calc = useMemo(
     () =>
       calculatePurchaseTotals({
@@ -335,7 +338,6 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
     [lineItems, discountAmount, effectiveVatRateInput]
   );
 
-  // Per-row error map for inline feedback
   const rowErrorsMap = useMemo(() => {
     const map: Record<number, string> = {};
     if (!showValidationErrors) return map;
@@ -351,7 +353,6 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
     return map;
   }, [calc.errors, showValidationErrors]);
 
-  // Line Item Handlers
   const handleAddLineItem = () => {
     if (lineItems.length >= MAX_PURCHASE_INVOICE_ITEMS) return;
     setLineItems((prev) => [...prev, createEmptyLineItem()]);
@@ -379,7 +380,6 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
     setFormError(null);
   };
 
-  // Attachment Handlers
   const addIncomingFiles = (fileList: FileList | File[]) => {
     setAttachmentNotice(null);
     setFormError(null);
@@ -389,7 +389,11 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
     const remainingSlots = MAX_PURCHASE_INVOICE_ATTACHMENTS - attachments.length;
     if (remainingSlots <= 0) {
       setAttachmentNotice(
-        `تم الوصول إلى الحد الأقصى للمرفقات (${MAX_PURCHASE_INVOICE_ATTACHMENTS} ملفاً لكل فاتورة).`
+        tr(
+          `تم الوصول إلى الحد الأقصى للمرفقات (${MAX_PURCHASE_INVOICE_ATTACHMENTS} ملفاً لكل فاتورة).`,
+          `Maximum attachments limit reached (${MAX_PURCHASE_INVOICE_ATTACHMENTS} files per invoice).`,
+          `منسلک فائلوں کی زیادہ سے زیادہ حد پوری ہو گئی (${MAX_PURCHASE_INVOICE_ATTACHMENTS} فائلیں فی انوائس)۔`
+        )
       );
       return;
     }
@@ -408,7 +412,13 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
         attachments.some((a) => a.fileName === check.normalizedName && a.fileSize === check.size) ||
         accepted.some((a) => a.fileName === check.normalizedName && a.fileSize === check.size);
       if (isDuplicate) {
-        rejectedMessages.push(`الملف "${check.normalizedName}" مرفق بالفعل.`);
+        rejectedMessages.push(
+          tr(
+            `الملف "${check.normalizedName}" مرفق بالفعل.`,
+            `File "${check.normalizedName}" is already attached.`,
+            `فائل "${check.normalizedName}" پہلے ہی منسلک ہے۔`
+          )
+        );
         continue;
       }
 
@@ -433,7 +443,11 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
 
     if (incoming.length > remainingSlots) {
       rejectedMessages.push(
-        `تم إرفاق ${accepted.length} ملف فقط لعدم تجاوز الحد الأقصى (${MAX_PURCHASE_INVOICE_ATTACHMENTS} ملفاً).`
+        tr(
+          `تم إرفاق ${accepted.length} ملف فقط لعدم تجاوز الحد الأقصى (${MAX_PURCHASE_INVOICE_ATTACHMENTS} ملفاً).`,
+          `Only ${accepted.length} file(s) attached to stay within the ${MAX_PURCHASE_INVOICE_ATTACHMENTS}-file limit.`,
+          `زیادہ سے زیادہ حد (${MAX_PURCHASE_INVOICE_ATTACHMENTS} فائلیں) کے اندر رہنے کے لیے صرف ${accepted.length} فائل منسلک کی گئی۔`
+        )
       );
     }
 
@@ -492,7 +506,6 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
   const handleSubmitInvoice = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Strict synchronous lock to prevent duplicate saves on double click / Enter spam
     if (submittingLockRef.current || isSubmitting) {
       return;
     }
@@ -502,22 +515,46 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
     setSavedBanner(null);
 
     if (!userProfile || !currentOrg?.id || !canEnterPurchases) {
-      setFormError('غير مصرح لك بإدخال فواتير المشتريات.');
+      setFormError(
+        tr(
+          'غير مصرح لك بإدخال فواتير المشتريات.',
+          'You are not authorized to enter purchase invoices.',
+          'آپ کو خریداری انوائسز درج کرنے کی اجازت نہیں ہے۔'
+        )
+      );
       return;
     }
 
     if (!effectiveBranch) {
-      setFormError('يرجى التأكد من اختيار فرع نشط مرتبط بالفاتورة.');
+      setFormError(
+        tr(
+          'يرجى التأكد من اختيار فرع نشط مرتبط بالفاتورة.',
+          'Please select an active branch for this invoice.',
+          'براہِ کرم اس انوائس کے لیے ایک فعال برانچ منتخب کریں۔'
+        )
+      );
       return;
     }
 
     if (!canUserCreatePurchase(userProfile, effectiveBranch.id)) {
-      setFormError('غير مصرح لك بإدخال فواتير مشتريات لهذا الفرع.');
+      setFormError(
+        tr(
+          'غير مصرح لك بإدخال فواتير مشتريات لهذا الفرع.',
+          'You are not authorized to enter purchase invoices for this branch.',
+          'آپ کو اس برانچ کے لیے خریداری انوائس درج کرنے کی اجازت نہیں ہے۔'
+        )
+      );
       return;
     }
 
     if (!selectedSupplier) {
-      setFormError('يرجى اختيار المورد من قائمة الموردين المسجلين مسبقاً.');
+      setFormError(
+        tr(
+          'يرجى اختيار المورد من قائمة الموردين المسجلين مسبقاً.',
+          'Please select a supplier from the registered suppliers list.',
+          'براہِ کرم درج سپلائرز کی فہرست میں سے سپلائر منتخب کریں۔'
+        )
+      );
       return;
     }
 
@@ -568,25 +605,39 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
       setRecentPurchases((prev) => [result.purchase, ...prev].slice(0, 6));
       resetForm(true);
     } catch (err: any) {
-      setFormError(err?.message || 'تعذر حفظ فاتورة المشتريات. يرجى المحاولة مرة أخرى.');
+      setFormError(
+        err?.message ||
+          tr(
+            'تعذر حفظ فاتورة المشتريات. يرجى المحاولة مرة أخرى.',
+            'Failed to save purchase invoice. Please try again.',
+            'خریداری انوائس محفوظ نہیں ہو سکی۔ براہِ کرم دوبارہ کوشش کریں۔'
+          )
+      );
     } finally {
       submittingLockRef.current = false;
       setIsSubmitting(false);
     }
   };
 
-  // Access-Denied Guard (defense-in-depth for employees or revoked accounts)
   if (!canEnterPurchases) {
     return (
-      <div className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-6 sm:p-10 text-center max-w-2xl mx-auto space-y-3">
+      <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-6 sm:p-10 text-center max-w-2xl mx-auto space-y-3">
         <div className="w-12 h-12 rounded-2xl bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto">
           <Lock className="w-6 h-6" />
         </div>
-        <h2 className="text-lg font-bold text-slate-900 dark:text-white">
-          غير مصرح بإدخال فواتير المشتريات
+        <h2 className="text-lg font-bold text-[#0B1B32] dark:text-white">
+          {tr(
+            'غير مصرح بإدخال فواتير المشتريات',
+            'Not Authorized to Enter Purchase Invoices',
+            'خریداری انوائسز درج کرنے کی اجازت نہیں'
+          )}
         </h2>
-        <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-          إدخال فواتير المشتريات متاح فقط لمدير المؤسسة، وللمسؤول الممنوح صلاحية المشتريات، ولمسؤول الفرع ضمن فرعه المعيّن.
+        <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+          {tr(
+            'إدخال فواتير المشتريات متاح فقط لمدير المؤسسة، وللمسؤول الممنوح صلاحية المشتريات، ولمسؤول الفرع ضمن فرعه المعيّن.',
+            'Purchase invoice entry is restricted to authorized supervisors and branch managers within their assigned branch.',
+            'خریداری انوائس کا اندراج صرف مجاز سپروائزرز اور برانچ مینیجرز کے لیے ان کی مقرر کردہ برانچ تک محدود ہے۔'
+          )}
         </p>
       </div>
     );
@@ -597,18 +648,18 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
       {/* Page Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="space-y-1">
-          <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white">
-            إدخال فاتورة مشتريات
+          <h2 className="text-xl sm:text-2xl font-extrabold text-[#0B1B32] dark:text-white">
+            {tr('إدخال فاتورة مشتريات', 'Enter Purchase Invoice', 'خریداری انوائس درج کریں')}
           </h2>
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-            <span>{currentOrg?.name || 'المؤسسة'}</span>
+            <span>{currentOrg?.name || tr('المؤسسة', 'Organization', 'ادارہ')}</span>
             <span aria-hidden="true">·</span>
             <span>{getUserRoleLabel(userProfile?.role, language)}</span>
             <span aria-hidden="true">·</span>
             <span>
               {canSelectAnyBranch
-                ? `جميع فروع المؤسسة (${selectableBranches.length})`
-                : `فرع محدد: ${effectiveBranch?.name || 'غير معيّن'}`}
+                ? `${tr('جميع فروع المؤسسة', 'All Organization Branches', 'ادارے کی تمام برانچز')} (${selectableBranches.length})`
+                : `${tr('فرع محدد:', 'Assigned Branch:', 'مقرر کردہ برانچ:')} ${effectiveBranch?.name || tr('غير معيّن', 'Unassigned', 'غیر مقرر')}`}
             </span>
             <span aria-hidden="true">·</span>
             <span className="font-mono">{currency}</span>
@@ -620,20 +671,20 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
             type="button"
             onClick={() => void loadSuppliersAndRecent()}
             disabled={suppliersLoading || isSubmitting}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 hover:border-amber-500/40 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#0B1B32] dark:text-slate-200 bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] hover:border-[#1764FF]/50 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${suppliersLoading ? 'animate-spin' : ''}`} />
-            <span>تحديث الموردين</span>
+            <span>{tr('تحديث الموردين', 'Refresh Suppliers', 'سپلائرز تازہ کریں')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => resetForm(false)}
             disabled={isSubmitting}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-[#0c1829] border border-slate-200 dark:border-slate-800 hover:border-rose-500/40 hover:text-rose-600 dark:hover:text-rose-400 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#0B1B32] dark:text-slate-200 bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] hover:border-rose-500/40 hover:text-rose-600 dark:hover:text-rose-400 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>مسح النموذج</span>
+            <span>{tr('مسح النموذج', 'Reset Form', 'فارم صاف کریں')}</span>
           </button>
         </div>
       </div>
@@ -642,22 +693,32 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
       {savedBanner && (
         <div
           role="status"
-          className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 text-xs sm:text-sm flex items-start gap-3"
+          className="p-4 rounded-2xl bg-[#08C99B]/10 border border-[#08C99B]/30 text-[#048264] dark:text-[#08C99B] text-xs sm:text-sm flex items-start gap-3"
         >
-          <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+          <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" />
           <div className="space-y-1 flex-1 min-w-0">
-            <p className="font-bold">تم حفظ فاتورة المشتريات بنجاح</p>
-            <p className="text-xs text-emerald-700/90 dark:text-emerald-300/90">
-              المورد: {savedBanner.supplierName}
+            <p className="font-bold">
+              {tr(
+                'تم حفظ فاتورة المشتريات بنجاح',
+                'Purchase invoice saved successfully',
+                'خریداری انوائس کامیابی سے محفوظ ہو گئی'
+              )}
+            </p>
+            <p className="text-xs opacity-90">
+              {tr('المورد:', 'Supplier:', 'سپلائر:')} {savedBanner.supplierName}
               {' · '}
-              الفرع: {savedBanner.branchName}
-              {savedBanner.invoiceNumber ? ` · رقم الفاتورة: ${savedBanner.invoiceNumber}` : ''}
+              {tr('الفرع:', 'Branch:', 'برانچ:')} {savedBanner.branchName}
+              {savedBanner.invoiceNumber
+                ? ` · ${tr('رقم الفاتورة:', 'Invoice #:', 'انوائس نمبر:')} ${savedBanner.invoiceNumber}`
+                : ''}
               {' · '}
-              الأصناف: <span className="font-mono tabular-nums">{savedBanner.itemsCount}</span>
+              {tr('الأصناف:', 'Items:', 'اشیاء:')}{' '}
+              <span className="font-mono tabular-nums">{savedBanner.itemsCount}</span>
               {' · '}
-              المرفقات: <span className="font-mono tabular-nums">{savedBanner.attachmentsCount}</span>
+              {tr('المرفقات:', 'Attachments:', 'منسلکات:')}{' '}
+              <span className="font-mono tabular-nums">{savedBanner.attachmentsCount}</span>
               {' · '}
-              الإجمالي:{' '}
+              {tr('الإجمالي:', 'Total:', 'کل:')}{' '}
               <span className="font-mono tabular-nums font-bold">
                 {formatCurrency(savedBanner.totalAmount, currency, language)}
               </span>
@@ -688,32 +749,36 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
 
       <form onSubmit={handleSubmitInvoice} noValidate className="space-y-6">
         {/* Section 1: Invoice Header Metadata */}
-        <section className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-5">
-          <div className="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-slate-100 dark:border-slate-800">
+        <section className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-5 sm:p-6 space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-[#E6EEFC] dark:border-[#1F3B66]">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+              <div className="w-9 h-9 rounded-xl bg-[#1764FF]/12 text-[#1764FF] dark:text-[#6CA2FF] flex items-center justify-center shrink-0">
                 <Receipt className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
-                  بيانات الفاتورة الأساسية
+                <h3 className="text-sm sm:text-base font-bold text-[#0B1B32] dark:text-white">
+                  {tr('بيانات الفاتورة الأساسية', 'Primary Invoice Details', 'انوائس کی بنیادی تفصیلات')}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  اختر المورد المسجل مسبقاً وتاريخ الفاتورة والفرع المستهدف
+                  {tr(
+                    'اختر المورد المسجل مسبقاً وتاريخ الفاتورة والفرع المستهدف',
+                    'Select a registered supplier, invoice date, and target branch',
+                    'درج شدہ سپلائر، انوائس کی تاریخ اور مطلوبہ برانچ منتخب کریں'
+                  )}
                 </p>
               </div>
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* 1. Supplier (First per Phase 4.4 order) */}
+            {/* 1. Supplier */}
             <div className="md:col-span-2 space-y-1.5">
               <div className="flex items-center justify-between gap-2">
                 <label
                   htmlFor="purchase-supplier"
-                  className="text-xs font-semibold text-slate-700 dark:text-slate-300"
+                  className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200"
                 >
-                  المورد <span className="text-rose-500">*</span>
+                  {tr('المورد', 'Supplier', 'سپلائر')} <span className="text-rose-500">*</span>
                 </label>
                 {suppliers.length > 6 && (
                   <div className="relative w-44">
@@ -722,9 +787,9 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                       type="text"
                       value={supplierSearch}
                       onChange={(e) => setSupplierSearch(e.target.value)}
-                      placeholder="تصفية الموردين..."
-                      aria-label="تصفية قائمة الموردين"
-                      className="w-full ps-8 pe-2.5 py-1 rounded-lg text-[11px] bg-slate-50 dark:bg-[#070e17] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:border-amber-500"
+                      placeholder={tr('تصفية الموردين...', 'Filter suppliers...', 'سپلائرز فلٹر کریں...')}
+                      aria-label={tr('تصفية قائمة الموردين', 'Filter suppliers list', 'سپلائرز فہرست فلٹر')}
+                      className="w-full ps-8 pe-2.5 py-1 rounded-lg text-[11px] bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:border-[#1764FF]"
                     />
                   </div>
                 )}
@@ -736,18 +801,18 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                 onChange={(e) => handleSelectSupplier(e.target.value)}
                 disabled={suppliersLoading || isSubmitting || suppliers.length === 0}
                 required
-                className={`w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#070e17] border text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 disabled:opacity-60 ${
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF] disabled:opacity-60 ${
                   showValidationErrors && !selectedSupplierId
                     ? 'border-rose-500'
-                    : 'border-slate-300 dark:border-slate-700'
+                    : 'border-[#DCE6FA] dark:border-[#1F3B66]'
                 }`}
               >
                 <option value="">
                   {suppliersLoading
-                    ? 'جاري تحميل الموردين...'
+                    ? tr('جاري تحميل الموردين...', 'Loading suppliers...', 'سپلائرز لوڈ ہو رہے ہیں...')
                     : suppliers.length === 0
-                      ? 'لا يوجد موردون نشطون مسجلون حالياً'
-                      : 'اختر المورد من القائمة...'}
+                      ? tr('لا يوجد موردون نشطون مسجلون حالياً', 'No active suppliers available', 'فی الحال کوئی فعال سپلائر موجود نہیں')
+                      : tr('اختر المورد من القائمة...', 'Select a supplier...', 'فہرست سے سپلائر منتخب کریں...')}
                 </option>
                 {filteredSuppliers.map((sup) => (
                   <option key={sup.id} value={sup.id}>
@@ -762,23 +827,35 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
                   <p className="text-[11px] text-amber-700 dark:text-amber-400">
                     {userProfile?.role === 'branch_manager'
-                      ? 'لا يوجد موردون نشطون مسجلون. يرجى طلب تسجيل الموردين من مدير المؤسسة أو المسؤول المخول.'
-                      : 'لا يوجد موردون نشطون مسجلون في المؤسسة بعد. يجب تسجيل مورد نشط قبل حفظ فواتير المشتريات.'}
+                      ? tr(
+                          'لا يوجد موردون نشطون مسجلون. يرجى طلب تسجيل الموردين من مدير المؤسسة أو المسؤول المخول.',
+                          'No active suppliers found. Please ask the Organization Manager or an authorized supervisor to register suppliers.',
+                          'کوئی فعال سپلائر موجود نہیں۔ براہِ کرم ادارے کے مینیجر یا مجاز سپروائزر سے سپلائرز درج کرنے کی درخواست کریں۔'
+                        )
+                      : tr(
+                          'لا يوجد موردون نشطون مسجلون في المؤسسة بعد. يجب تسجيل مورد نشط قبل حفظ فواتير المشتريات.',
+                          'No active suppliers registered yet. At least one active supplier is required before saving purchase invoices.',
+                          'ابھی کوئی فعال سپلائر درج نہیں ہے۔ انوائس محفوظ کرنے سے پہلے کم از کم ایک فعال سپلائر ضروری ہے۔'
+                        )}
                   </p>
                   {canCreateSuppliers && onOpenSuppliers && (
                     <button
                       type="button"
                       onClick={onOpenSuppliers}
-                      className="text-[11px] font-bold text-amber-600 dark:text-amber-400 hover:underline whitespace-nowrap shrink-0"
+                      className="text-[11px] font-bold text-[#1764FF] dark:text-[#6CA2FF] hover:underline whitespace-nowrap shrink-0"
                     >
-                      + إضافة مورد جديد
+                      {tr('+ إضافة مورد جديد', '+ Add New Supplier', '+ نیا سپلائر شامل کریں')}
                     </button>
                   )}
                 </div>
               )}
               {userProfile?.role === 'branch_manager' && suppliers.length > 0 && (
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  يقتصر الاختيار على الموردين النشطين المسجلين مسبقاً في المؤسسة.
+                  {tr(
+                    'يقتصر الاختيار على الموردين النشطين المسجلين مسبقاً في المؤسسة.',
+                    'Selection is restricted to active pre-registered suppliers in your organization.',
+                    'انتخاب صرف ادارے میں پہلے سے درج فعال سپلائرز تک محدود ہے۔'
+                  )}
                 </p>
               )}
             </div>
@@ -787,11 +864,12 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
             <div className="space-y-1.5">
               <label
                 htmlFor="purchase-date"
-                className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+                className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 flex items-center gap-1.5"
               >
                 <Calendar className="w-3.5 h-3.5 text-slate-400" />
                 <span>
-                  تاريخ الفاتورة <span className="text-rose-500">*</span>
+                  {tr('تاريخ الفاتورة', 'Invoice Date', 'انوائس کی تاریخ')}{' '}
+                  <span className="text-rose-500">*</span>
                 </span>
               </label>
               <input
@@ -805,21 +883,21 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                 disabled={isSubmitting}
                 required
                 dir="ltr"
-                className={`w-full px-3.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#070e17] border text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 ${
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-[#F5F8FF] dark:bg-[#0E203A] border text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF] ${
                   showValidationErrors && !date
                     ? 'border-rose-500'
-                    : 'border-slate-300 dark:border-slate-700'
+                    : 'border-[#DCE6FA] dark:border-[#1F3B66]'
                 }`}
               />
             </div>
 
-            {/* 3. Tax Number (auto-filled from supplier, editable) */}
+            {/* 3. Tax Number */}
             <div className="space-y-1.5">
               <label
                 htmlFor="purchase-tax-number"
-                className="text-xs font-semibold text-slate-700 dark:text-slate-300"
+                className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200"
               >
-                الرقم الضريبي للمورد
+                {tr('الرقم الضريبي للمورد', 'Supplier VAT Number', 'سپلائر کا ٹیکس نمبر')}
               </label>
               <input
                 id="purchase-tax-number"
@@ -830,7 +908,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                 maxLength={40}
                 placeholder="300000000000003"
                 dir="ltr"
-                className="w-full px-3.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
+                className="w-full px-3.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF]"
               />
             </div>
 
@@ -838,10 +916,10 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
             <div className="space-y-1.5">
               <label
                 htmlFor="purchase-invoice-number"
-                className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+                className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 flex items-center gap-1.5"
               >
                 <Hash className="w-3.5 h-3.5 text-slate-400" />
-                <span>رقم الفاتورة</span>
+                <span>{tr('رقم الفاتورة', 'Invoice Number', 'انوائس نمبر')}</span>
               </label>
               <input
                 id="purchase-invoice-number"
@@ -850,21 +928,21 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                 onChange={(e) => setInvoiceNumber(e.target.value)}
                 disabled={isSubmitting}
                 maxLength={80}
-                placeholder="مثال: INV-2026-0045"
+                placeholder={tr('مثال: INV-2026-0045', 'e.g. INV-2026-0045', 'مثال: INV-2026-0045')}
                 dir="ltr"
-                className="w-full px-3.5 py-2.5 rounded-xl text-sm font-mono bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
+                className="w-full px-3.5 py-2.5 rounded-xl text-sm font-mono bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF]"
               />
             </div>
 
-            {/* 5. Branch (Selectable for Manager/Supervisor, Strictly Locked for Branch Manager) */}
+            {/* 5. Branch */}
             <div className="space-y-1.5">
               <label
                 htmlFor="purchase-branch"
-                className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5"
+                className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 flex items-center gap-1.5"
               >
                 <Building2 className="w-3.5 h-3.5 text-slate-400" />
                 <span>
-                  الفرع <span className="text-rose-500">*</span>
+                  {tr('الفرع', 'Branch', 'برانچ')} <span className="text-rose-500">*</span>
                 </span>
               </label>
 
@@ -878,10 +956,10 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                   }}
                   disabled={isSubmitting || selectableBranches.length === 0}
                   required
-                  className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
+                  className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF]"
                 >
                   {selectableBranches.length === 0 ? (
-                    <option value="">لا توجد فروع نشطة</option>
+                    <option value="">{tr('لا توجد فروع نشطة', 'No active branches', 'کوئی فعال برانچ نہیں')}</option>
                   ) : (
                     selectableBranches.map((b) => (
                       <option key={b.id} value={b.id}>
@@ -893,27 +971,31 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
               ) : (
                 <div
                   id="purchase-branch"
-                  className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-100 dark:bg-[#070e17]/80 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 flex items-center justify-between gap-2"
+                  className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-slate-200 flex items-center justify-between gap-2"
                 >
                   <span className="truncate font-semibold">
                     {effectiveBranch
                       ? `${effectiveBranch.name} (${effectiveBranch.code})`
-                      : 'فرع غير معيّن'}
+                      : tr('فرع غير معيّن', 'Unassigned Branch', 'غیر مقرر برانچ')}
                   </span>
-                  <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-label="فرع مقيد" />
+                  <Lock
+                    className="w-3.5 h-3.5 text-[#1764FF] dark:text-[#6CA2FF] shrink-0"
+                    aria-label={tr('فرع مقيد', 'Locked branch', 'محدود برانچ')}
+                  />
                 </div>
               )}
             </div>
 
             {/* 6. Payment Method */}
             <div className="md:col-span-2 space-y-1.5">
-              <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
-                طريقة الدفع <span className="text-rose-500">*</span>
+              <span className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block">
+                {tr('طريقة الدفع', 'Payment Method', 'ادائیگی کا طریقہ')}{' '}
+                <span className="text-rose-500">*</span>
               </span>
               <div
                 role="radiogroup"
-                aria-label="طريقة الدفع"
-                className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800"
+                aria-label={tr('طريقة الدفع', 'Payment Method', 'ادائیگی کا طریقہ')}
+                className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66]"
               >
                 {PAYMENT_METHOD_OPTIONS.map((opt) => {
                   const active = paymentMethod === opt.value;
@@ -927,11 +1009,11 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                       onClick={() => setPaymentMethod(opt.value)}
                       className={`px-3 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
                         active
-                          ? 'bg-white dark:bg-[#0c1829] text-amber-600 dark:text-amber-400 shadow-sm border border-amber-500/30'
-                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          ? 'bg-white dark:bg-[#122543] text-[#1764FF] dark:text-[#6CA2FF] shadow-sm border border-[#1764FF]/30'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-[#0B1B32] dark:hover:text-white'
                       }`}
                     >
-                      {opt.label}
+                      {tr(opt.ar, opt.en, opt.ur)}
                     </button>
                   );
                 })}
@@ -940,20 +1022,24 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
           </div>
         </section>
 
-        {/* Section 2: Invoice Line Items Table (1..100 items) */}
-        <section className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-          <div className="p-5 sm:p-6 flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800">
+        {/* Section 2: Invoice Line Items Table */}
+        <section className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] overflow-hidden">
+          <div className="p-5 sm:p-6 flex flex-wrap items-center justify-between gap-3 border-b border-[#E6EEFC] dark:border-[#1F3B66]">
             <div className="space-y-0.5">
               <div className="flex items-center gap-2.5">
-                <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
-                  أصناف الفاتورة
+                <h3 className="text-sm sm:text-base font-bold text-[#0B1B32] dark:text-white">
+                  {tr('أصناف الفاتورة', 'Invoice Line Items', 'انوائس کی اشیاء')}
                 </h3>
                 <span className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                  {lineItems.length} / {MAX_PURCHASE_INVOICE_ITEMS} صنف
+                  {lineItems.length} / {MAX_PURCHASE_INVOICE_ITEMS} {tr('صنف', 'item(s)', 'اشیاء')}
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                أدخل كل صنف في سطر مستقل مع الكمية وسعر الوحدة ليتم حساب الإجمالي تلقائياً بدقة الهللات
+                {tr(
+                  'أدخل كل صنف في سطر مستقل مع الكمية وسعر الوحدة ليتم حساب الإجمالي تلقائياً بدقة الهللات',
+                  'Enter each item on a separate row with quantity and unit price for exact halala-precision totals',
+                  'ہر شے کو مقدار اور یونٹ قیمت کے ساتھ علیحدہ سطر میں درج کریں تاکہ کل رقم خودکار درستگی سے شمار ہو'
+                )}
               </p>
             </div>
 
@@ -961,27 +1047,29 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
               type="button"
               onClick={handleAddLineItem}
               disabled={isSubmitting || lineItems.length >= MAX_PURCHASE_INVOICE_ITEMS}
-              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition-colors whitespace-nowrap shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-[#1764FF] hover:bg-[#1052D8] transition-colors whitespace-nowrap shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Plus className="w-4 h-4" />
-              <span>إضافة صنف</span>
+              <span>{tr('إضافة صنف', 'Add Item', 'شے شامل کریں')}</span>
             </button>
           </div>
 
-          {/* Desktop & Tablet Table View */}
+          {/* Desktop Table View */}
           <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-start border-collapse">
               <thead>
-                <tr className="bg-slate-50 dark:bg-[#070e17]/70 border-b border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-600 dark:text-slate-400">
+                <tr className="bg-[#F5F8FF] dark:bg-[#0E203A] border-b border-[#DCE6FA] dark:border-[#1F3B66] text-xs font-bold text-slate-600 dark:text-slate-400">
                   <th className="py-3 px-4 text-center w-12">#</th>
-                  <th className="py-3 px-4 text-start min-w-[240px]">اسم الصنف *</th>
-                  <th className="py-3 px-4 text-start w-32">الكمية *</th>
-                  <th className="py-3 px-4 text-start w-40">سعر الوحدة ({currency}) *</th>
-                  <th className="py-3 px-4 text-end w-40">إجمالي الصنف</th>
-                  <th className="py-3 px-4 text-center w-16">حذف</th>
+                  <th className="py-3 px-4 text-start min-w-[240px]">{tr('اسم الصنف *', 'Item Name *', 'شے کا نام *')}</th>
+                  <th className="py-3 px-4 text-start w-32">{tr('الكمية *', 'Quantity *', 'مقدار *')}</th>
+                  <th className="py-3 px-4 text-start w-40">
+                    {tr('سعر الوحدة', 'Unit Price', 'یونٹ قیمت')} ({currency}) *
+                  </th>
+                  <th className="py-3 px-4 text-end w-40">{tr('إجمالي الصنف', 'Line Total', 'شے کا کل')}</th>
+                  <th className="py-3 px-4 text-center w-16">{tr('حذف', 'Remove', 'حذف')}</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+              <tbody className="divide-y divide-[#E6EEFC] dark:divide-[#1F3B66]/70">
                 {lineItems.map((row, idx) => {
                   const qtyNum = Number(row.quantity);
                   const priceNum = Number(row.unitPrice);
@@ -997,7 +1085,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
 
                   return (
                     <React.Fragment key={row.rowKey}>
-                      <tr className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30 transition-colors">
+                      <tr className="hover:bg-[#F5F8FF]/70 dark:hover:bg-[#173056]/40 transition-colors">
                         <td className="py-2.5 px-4 text-center text-xs font-mono tabular-nums text-slate-400">
                           {idx + 1}
                         </td>
@@ -1010,12 +1098,12 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                             }
                             disabled={isSubmitting}
                             maxLength={200}
-                            placeholder={`اسم الصنف رقم ${idx + 1}`}
-                            aria-label={`اسم الصنف رقم ${idx + 1}`}
-                            className={`w-full px-3 py-2 rounded-lg text-sm bg-slate-50 dark:bg-[#070e17] border text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 ${
+                            placeholder={tr(`اسم الصنف رقم ${idx + 1}`, `Item #${idx + 1} name`, `شے #${idx + 1} کا نام`)}
+                            aria-label={tr(`اسم الصنف رقم ${idx + 1}`, `Item #${idx + 1} name`, `شے #${idx + 1} کا نام`)}
+                            className={`w-full px-3 py-2 rounded-lg text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF] ${
                               showValidationErrors && row.name.trim() === ''
                                 ? 'border-rose-500'
-                                : 'border-slate-200 dark:border-slate-700'
+                                : 'border-[#DCE6FA] dark:border-[#1F3B66]'
                             }`}
                           />
                         </td>
@@ -1032,12 +1120,12 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                             disabled={isSubmitting}
                             placeholder="1"
                             dir="ltr"
-                            aria-label={`الكمية للصنف رقم ${idx + 1}`}
-                            className={`w-full px-3 py-2 rounded-lg text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#070e17] border text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 ${
+                            aria-label={tr(`الكمية للصنف رقم ${idx + 1}`, `Quantity for item #${idx + 1}`, `شے #${idx + 1} کی مقدار`)}
+                            className={`w-full px-3 py-2 rounded-lg text-sm font-mono tabular-nums bg-[#F5F8FF] dark:bg-[#0E203A] border text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF] ${
                               showValidationErrors &&
                               calc.errors.some((err) => err.startsWith(`item_${idx}_`) && err.includes('quantity'))
                                 ? 'border-rose-500'
-                                : 'border-slate-200 dark:border-slate-700'
+                                : 'border-[#DCE6FA] dark:border-[#1F3B66]'
                             }`}
                           />
                         </td>
@@ -1054,16 +1142,16 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                             disabled={isSubmitting}
                             placeholder="0.00"
                             dir="ltr"
-                            aria-label={`سعر الوحدة للصنف رقم ${idx + 1}`}
-                            className={`w-full px-3 py-2 rounded-lg text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#070e17] border text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 ${
+                            aria-label={tr(`سعر الوحدة للصنف رقم ${idx + 1}`, `Unit price for item #${idx + 1}`, `شے #${idx + 1} کی یونٹ قیمت`)}
+                            className={`w-full px-3 py-2 rounded-lg text-sm font-mono tabular-nums bg-[#F5F8FF] dark:bg-[#0E203A] border text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF] ${
                               showValidationErrors &&
                               calc.errors.some((err) => err.startsWith(`item_${idx}_`) && err.includes('unit_price'))
                                 ? 'border-rose-500'
-                                : 'border-slate-200 dark:border-slate-700'
+                                : 'border-[#DCE6FA] dark:border-[#1F3B66]'
                             }`}
                           />
                         </td>
-                        <td className="py-2.5 px-4 text-end text-sm font-bold font-mono tabular-nums text-slate-900 dark:text-white whitespace-nowrap">
+                        <td className="py-2.5 px-4 text-end text-sm font-bold font-mono tabular-nums text-[#0B1B32] dark:text-white whitespace-nowrap">
                           {formatCurrency(lineTotal, currency, language)}
                         </td>
                         <td className="py-2.5 px-3 text-center">
@@ -1071,8 +1159,16 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                             type="button"
                             onClick={() => handleRemoveLineItem(row.rowKey)}
                             disabled={isSubmitting}
-                            title={lineItems.length > 1 ? 'حذف الصنف' : 'تفريغ السطر'}
-                            aria-label={lineItems.length > 1 ? `حذف الصنف رقم ${idx + 1}` : 'تفريغ السطر'}
+                            title={
+                              lineItems.length > 1
+                                ? tr('حذف الصنف', 'Remove item', 'شے حذف کریں')
+                                : tr('تفريغ السطر', 'Clear row', 'سطر صاف کریں')
+                            }
+                            aria-label={
+                              lineItems.length > 1
+                                ? tr(`حذف الصنف رقم ${idx + 1}`, `Remove item #${idx + 1}`, `شے #${idx + 1} حذف کریں`)
+                                : tr('تفريغ السطر', 'Clear row', 'سطر صاف کریں')
+                            }
                             className="p-2 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-40"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -1094,7 +1190,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
           </div>
 
           {/* Mobile Stacked Rows View */}
-          <div className="md:hidden divide-y divide-slate-200 dark:divide-slate-800">
+          <div className="md:hidden divide-y divide-[#DCE6FA] dark:divide-[#1F3B66]">
             {lineItems.map((row, idx) => {
               const qtyNum = Number(row.quantity);
               const priceNum = Number(row.unitPrice);
@@ -1112,17 +1208,17 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                 <div key={row.rowKey} className="p-4 space-y-3">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-bold text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                      صنف #{idx + 1}
+                      {tr('صنف', 'Item', 'شے')} #{idx + 1}
                     </span>
                     <div className="flex items-center gap-3">
-                      <span className="text-sm font-bold font-mono tabular-nums text-amber-600 dark:text-amber-400">
+                      <span className="text-sm font-bold font-mono tabular-nums text-[#1764FF] dark:text-[#6CA2FF]">
                         {formatCurrency(lineTotal, currency, language)}
                       </span>
                       <button
                         type="button"
                         onClick={() => handleRemoveLineItem(row.rowKey)}
                         disabled={isSubmitting}
-                        aria-label={`حذف الصنف رقم ${idx + 1}`}
+                        aria-label={tr(`حذف الصنف رقم ${idx + 1}`, `Remove item #${idx + 1}`, `شے #${idx + 1} حذف کریں`)}
                         className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-rose-500 hover:bg-rose-500/10 transition-colors"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -1132,7 +1228,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                      اسم الصنف *
+                      {tr('اسم الصنف *', 'Item Name *', 'شے کا نام *')}
                     </label>
                     <input
                       type="text"
@@ -1140,11 +1236,11 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                       onChange={(e) => handleUpdateLineItem(row.rowKey, 'name', e.target.value)}
                       disabled={isSubmitting}
                       maxLength={200}
-                      placeholder={`أدخل اسم الصنف رقم ${idx + 1}`}
-                      className={`w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#070e17] border text-slate-900 dark:text-white ${
+                      placeholder={tr(`أدخل اسم الصنف رقم ${idx + 1}`, `Enter item #${idx + 1} name`, `شے #${idx + 1} کا نام درج کریں`)}
+                      className={`w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border text-[#0B1B32] dark:text-white ${
                         showValidationErrors && row.name.trim() === ''
                           ? 'border-rose-500'
-                          : 'border-slate-300 dark:border-slate-700'
+                          : 'border-[#DCE6FA] dark:border-[#1F3B66]'
                       }`}
                     />
                   </div>
@@ -1152,7 +1248,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                        الكمية *
+                        {tr('الكمية *', 'Quantity *', 'مقدار *')}
                       </label>
                       <input
                         type="number"
@@ -1165,17 +1261,17 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                         }
                         disabled={isSubmitting}
                         dir="ltr"
-                        className={`w-full px-3 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#070e17] border text-slate-900 dark:text-white ${
+                        className={`w-full px-3 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-[#F5F8FF] dark:bg-[#0E203A] border text-[#0B1B32] dark:text-white ${
                           showValidationErrors &&
                           calc.errors.some((err) => err.startsWith(`item_${idx}_`) && err.includes('quantity'))
                             ? 'border-rose-500'
-                            : 'border-slate-300 dark:border-slate-700'
+                            : 'border-[#DCE6FA] dark:border-[#1F3B66]'
                         }`}
                       />
                     </div>
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                        سعر الوحدة ({currency}) *
+                        {tr('سعر الوحدة', 'Unit Price', 'یونٹ قیمت')} ({currency}) *
                       </label>
                       <input
                         type="number"
@@ -1189,11 +1285,11 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                         disabled={isSubmitting}
                         placeholder="0.00"
                         dir="ltr"
-                        className={`w-full px-3 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#070e17] border text-slate-900 dark:text-white ${
+                        className={`w-full px-3 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-[#F5F8FF] dark:bg-[#0E203A] border text-[#0B1B32] dark:text-white ${
                           showValidationErrors &&
                           calc.errors.some((err) => err.startsWith(`item_${idx}_`) && err.includes('unit_price'))
                             ? 'border-rose-500'
-                            : 'border-slate-300 dark:border-slate-700'
+                            : 'border-[#DCE6FA] dark:border-[#1F3B66]'
                         }`}
                       />
                     </div>
@@ -1208,42 +1304,50 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
           </div>
 
           {/* Table Footer Add Action */}
-          <div className="p-4 bg-slate-50/70 dark:bg-[#070e17]/50 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+          <div className="p-4 bg-[#F5F8FF]/70 dark:bg-[#0E203A]/70 border-t border-[#E6EEFC] dark:border-[#1F3B66] flex flex-wrap items-center justify-between gap-3">
             <button
               type="button"
               onClick={handleAddLineItem}
               disabled={isSubmitting || lineItems.length >= MAX_PURCHASE_INVOICE_ITEMS}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-amber-700 dark:text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition-colors whitespace-nowrap disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-[#1764FF] dark:text-[#6CA2FF] bg-[#1764FF]/10 hover:bg-[#1764FF]/20 border border-[#1764FF]/30 transition-colors whitespace-nowrap disabled:opacity-40"
             >
               <Plus className="w-4 h-4" />
-              <span>إضافة صنف جديد</span>
+              <span>{tr('إضافة صنف جديد', 'Add New Item', 'نئی شے شامل کریں')}</span>
             </button>
 
             <div className="text-xs text-slate-600 dark:text-slate-400 flex items-center gap-2">
-              <span>مجموع الأصناف ({lineItems.length}):</span>
-              <span className="font-mono tabular-nums font-bold text-sm text-slate-900 dark:text-white">
+              <span>
+                {tr('مجموع الأصناف', 'Items Subtotal', 'اشیاء کا مجموعہ')} ({lineItems.length}):
+              </span>
+              <span className="font-mono tabular-nums font-bold text-sm text-[#0B1B32] dark:text-white">
                 {formatCurrency(calc.subtotalAmount, currency, language)}
               </span>
             </div>
           </div>
         </section>
 
-        {/* Section 3: Attachments & Notes (7 cols) + Accounting Summary & Save (5 cols) */}
+        {/* Section 3: Attachments & Notes + Accounting Summary & Save */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Attachments & Notes */}
-          <section className="lg:col-span-7 bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-5">
+          <section className="lg:col-span-7 bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-5 sm:p-6 space-y-5">
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-2">
-                <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  <Paperclip className="w-4 h-4 text-amber-500" />
-                  <span>مرفقات الفاتورة (صور وملفات PDF)</span>
+                <h3 className="text-sm sm:text-base font-bold text-[#0B1B32] dark:text-white flex items-center gap-2">
+                  <Paperclip className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF]" />
+                  <span>
+                    {tr('مرفقات الفاتورة (صور وملفات PDF)', 'Invoice Attachments (Images & PDFs)', 'انوائس منسلکات (تصاویر اور PDF)')}
+                  </span>
                 </h3>
                 <span className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
                   {attachments.length} / {MAX_PURCHASE_INVOICE_ATTACHMENTS}
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                يمكنك إرفاق عدة صور أو ملفات PDF لنفس الفاتورة (حتى 50 ميجابايت للملف) وحذف أي ملف قبل الحفظ.
+                {tr(
+                  'يمكنك إرفاق عدة صور أو ملفات PDF لنفس الفاتورة (حتى 50 ميجابايت للملف) وحذف أي ملف قبل الحفظ.',
+                  'Attach multiple images or PDF files to the invoice (up to 50 MB per file) and remove any file before saving.',
+                  'آپ ایک ہی انوائس کے ساتھ متعدد تصاویر یا PDF فائلیں (فی فائل 50 MB تک) منسلک کر سکتے ہیں اور محفوظ کرنے سے پہلے ہٹا سکتے ہیں۔'
+                )}
               </p>
             </div>
 
@@ -1263,8 +1367,8 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
               }}
               className={`rounded-xl border-2 border-dashed p-5 text-center transition-colors ${
                 isDraggingFiles
-                  ? 'border-amber-500 bg-amber-500/10'
-                  : 'border-slate-300 dark:border-slate-700 bg-slate-50/70 dark:bg-[#070e17]/60'
+                  ? 'border-[#1764FF] bg-[#1764FF]/10'
+                  : 'border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF]/70 dark:bg-[#0E203A]/60'
               }`}
             >
               <input
@@ -1275,14 +1379,18 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                 onChange={handleFileInputChange}
                 disabled={isSubmitting || attachments.length >= MAX_PURCHASE_INVOICE_ATTACHMENTS}
                 className="hidden"
-                aria-label="اختيار مرفقات الفاتورة"
+                aria-label={tr('اختيار مرفقات الفاتورة', 'Select invoice attachments', 'انوائس منسلکات منتخب کریں')}
               />
               <div className="space-y-2">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto">
+                <div className="w-10 h-10 rounded-xl bg-[#1764FF]/12 text-[#1764FF] dark:text-[#6CA2FF] flex items-center justify-center mx-auto">
                   <Upload className="w-5 h-5" />
                 </div>
                 <div className="text-xs text-slate-600 dark:text-slate-300">
-                  اسحب الصور أو ملفات PDF وأفلتها هنا، أو اخترها من جهازك
+                  {tr(
+                    'اسحب الصور أو ملفات PDF وأفلتها هنا، أو اخترها من جهازك',
+                    'Drag & drop images or PDF files here, or browse from your device',
+                    'تصاویر یا PDF فائلیں یہاں گھسیٹ کر چھوڑیں، یا اپنے ڈیوائس سے منتخب کریں'
+                  )}
                 </div>
                 <button
                   type="button"
@@ -1290,10 +1398,10 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                   disabled={
                     isSubmitting || attachments.length >= MAX_PURCHASE_INVOICE_ATTACHMENTS
                   }
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-slate-800 dark:text-white bg-white dark:bg-[#0c1829] border border-slate-300 dark:border-slate-700 hover:border-amber-500 transition-colors disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-[#0B1B32] dark:text-white bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] hover:border-[#1764FF] transition-colors disabled:opacity-50"
                 >
-                  <Paperclip className="w-3.5 h-3.5 text-amber-500" />
-                  <span>اختيار صور أو ملفات PDF</span>
+                  <Paperclip className="w-3.5 h-3.5 text-[#1764FF] dark:text-[#6CA2FF]" />
+                  <span>{tr('اختيار صور أو ملفات PDF', 'Choose Images or PDFs', 'تصاویر یا PDF منتخب کریں')}</span>
                 </button>
               </div>
             </div>
@@ -1305,13 +1413,12 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
               </div>
             )}
 
-            {/* Attached Files List */}
             {attachments.length > 0 && (
-              <ul className="divide-y divide-slate-100 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+              <ul className="divide-y divide-[#E6EEFC] dark:divide-[#1F3B66] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-xl overflow-hidden">
                 {attachments.map((att) => (
                   <li
                     key={att.localId}
-                    className="p-3 flex items-center justify-between gap-3 bg-slate-50/50 dark:bg-[#070e17]/40"
+                    className="p-3 flex items-center justify-between gap-3 bg-[#F5F8FF]/60 dark:bg-[#0E203A]/60"
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       {att.previewUrl ? (
@@ -1319,7 +1426,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                           src={att.previewUrl}
                           alt={att.fileName}
                           referrerPolicy="no-referrer"
-                          className="w-10 h-10 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+                          className="w-10 h-10 rounded-lg object-cover border border-[#DCE6FA] dark:border-[#1F3B66] shrink-0"
                         />
                       ) : (
                         <div className="w-10 h-10 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
@@ -1331,11 +1438,14 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                         </div>
                       )}
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                        <p className="text-xs font-semibold text-[#0B1B32] dark:text-white truncate">
                           {att.fileName}
                         </p>
                         <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                          {formatFileSize(att.fileSize)} · {att.mimeType === 'application/pdf' ? 'PDF' : 'صورة'}
+                          {formatFileSize(att.fileSize)} ·{' '}
+                          {att.mimeType === 'application/pdf'
+                            ? 'PDF'
+                            : tr('صورة', 'Image', 'تصویر')}
                         </p>
                       </div>
                     </div>
@@ -1344,7 +1454,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                       type="button"
                       onClick={() => handleRemoveAttachment(att.localId)}
                       disabled={isSubmitting}
-                      aria-label={`حذف المرفق ${att.fileName}`}
+                      aria-label={`${tr('حذف المرفق', 'Remove attachment', 'منسلک فائل ہٹائیں')} ${att.fileName}`}
                       className="p-2 min-w-[40px] min-h-[40px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -1355,16 +1465,20 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
             )}
 
             <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-              ملاحظة: يتم تسجيل جميع بيانات المرفقات وربطها مباشرة برقم الفاتورة في قاعدة البيانات بشكل متزامن؛ وسيتم ربط رفع الملفات الثنائية السحابي عند تفعيل خدمة التخزين في الخطوة اللاحقة.
+              {tr(
+                'ملاحظة: يتم تسجيل جميع بيانات المرفقات وربطها مباشرة برقم الفاتورة في قاعدة البيانات بشكل متزامن؛ وسيتم ربط رفع الملفات الثنائية السحابي عند تفعيل خدمة التخزين في الخطوة اللاحقة.',
+                'Note: Attachment metadata is atomically linked to the invoice record in the database.',
+                'نوٹ: منسلک فائلوں کا ڈیٹا براہِ راست انوائس نمبر کے ساتھ ڈیٹا بیس میں محفوظ کیا جاتا ہے۔'
+              )}
             </p>
 
             {/* Optional Notes */}
-            <div className="space-y-1.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <div className="space-y-1.5 pt-2 border-t border-[#E6EEFC] dark:border-[#1F3B66]">
               <label
                 htmlFor="purchase-notes"
-                className="text-xs font-semibold text-slate-700 dark:text-slate-300 block"
+                className="text-xs font-semibold text-[#0B1B32] dark:text-slate-200 block"
               >
-                ملاحظات الفاتورة (اختياري)
+                {tr('ملاحظات الفاتورة (اختياري)', 'Invoice Notes (Optional)', 'انوائس نوٹس (اختیاری)')}
               </label>
               <textarea
                 id="purchase-notes"
@@ -1373,37 +1487,39 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                 onChange={(e) => setNotes(e.target.value)}
                 disabled={isSubmitting}
                 maxLength={1000}
-                placeholder="أي ملاحظات محاسبية أو تفاصيل تسليم أو رقم أمر شراء..."
-                className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 resize-y"
+                placeholder={tr(
+                  'أي ملاحظات محاسبية أو تفاصيل تسليم أو رقم أمر شراء...',
+                  'Any accounting notes, delivery details, or PO reference...',
+                  'کوئی اکاؤنٹنگ نوٹس، ڈیلیوری تفصیلات یا خریداری آرڈر نمبر...'
+                )}
+                className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF] resize-y"
               />
             </div>
           </section>
 
           {/* Accounting Totals & Submit */}
-          <section className="lg:col-span-5 bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-5">
-            <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white pb-3 border-b border-slate-100 dark:border-slate-800">
-              ملخص الحسابات والإجمالي النهائي
+          <section className="lg:col-span-5 bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-5 sm:p-6 space-y-5">
+            <h3 className="text-sm sm:text-base font-bold text-[#0B1B32] dark:text-white pb-3 border-b border-[#E6EEFC] dark:border-[#1F3B66]">
+              {tr('ملخص الحسابات والإجمالي النهائي', 'Accounting Summary & Final Total', 'اکاؤنٹنگ خلاصہ اور حتمی کل')}
             </h3>
 
             <div className="space-y-4">
-              {/* Subtotal */}
               <div className="flex items-center justify-between text-sm">
                 <span className="text-slate-600 dark:text-slate-400">
-                  المجموع الفرعي (قبل الخصم)
+                  {tr('المجموع الفرعي (قبل الخصم)', 'Subtotal (Before Discount)', 'ذیلی کل (رعایت سے پہلے)')}
                 </span>
-                <span className="font-mono tabular-nums font-bold text-slate-900 dark:text-white">
+                <span className="font-mono tabular-nums font-bold text-[#0B1B32] dark:text-white">
                   {formatCurrency(calc.subtotalAmount, currency, language)}
                 </span>
               </div>
 
-              {/* Discount Input */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between gap-3">
                   <label
                     htmlFor="purchase-discount"
                     className="text-sm text-slate-600 dark:text-slate-400"
                   >
-                    الخصم ({currency})
+                    {tr('الخصم', 'Discount', 'رعایت')} ({currency})
                   </label>
                   <input
                     id="purchase-discount"
@@ -1419,52 +1535,58 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                     disabled={isSubmitting}
                     placeholder="0.00"
                     dir="ltr"
-                    className={`w-36 px-3 py-2 rounded-xl text-sm font-mono tabular-nums text-end bg-slate-50 dark:bg-[#070e17] border text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 ${
+                    className={`w-36 px-3 py-2 rounded-xl text-sm font-mono tabular-nums text-end bg-[#F5F8FF] dark:bg-[#0E203A] border text-[#0B1B32] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#1764FF]/30 focus:border-[#1764FF] ${
                       calc.errors.includes('discount_exceeds_subtotal') ||
                       calc.errors.includes('discount_must_be_non_negative') ||
                       calc.errors.includes('discount_precision_exceeded')
                         ? 'border-rose-500'
-                        : 'border-slate-300 dark:border-slate-700'
+                        : 'border-[#DCE6FA] dark:border-[#1F3B66]'
                     }`}
                   />
                 </div>
                 {calc.errors.includes('discount_exceeds_subtotal') && (
                   <p className="text-xs text-rose-600 dark:text-rose-400">
-                    لا يمكن أن يتجاوز الخصم المجموع الفرعي.
+                    {tr(
+                      'لا يمكن أن يتجاوز الخصم المجموع الفرعي.',
+                      'Discount cannot exceed the subtotal.',
+                      'رعایت ذیلی کل سے زیادہ نہیں ہو سکتی۔'
+                    )}
                   </p>
                 )}
                 {calc.errors.includes('discount_precision_exceeded') && (
                   <p className="text-xs text-rose-600 dark:text-rose-400">
-                    قيمة الخصم يجب ألا تتجاوز خانتين عشريتين (دقة الهللات).
+                    {tr(
+                      'قيمة الخصم يجب ألا تتجاوز خانتين عشريتين (دقة الهللات).',
+                      'Discount value must not exceed 2 decimal places.',
+                      'رعایت کی رقم زیادہ سے زیادہ 2 اعشاریہ تک ہونی چاہیے۔'
+                    )}
                   </p>
                 )}
               </div>
 
-              {/* Taxable Amount */}
-              <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 pt-2 border-t border-slate-100 dark:border-slate-800/80">
-                <span>الصافي الخاضع للضريبة</span>
+              <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 pt-2 border-t border-[#E6EEFC] dark:border-[#1F3B66]">
+                <span>{tr('الصافي الخاضع للضريبة', 'Taxable Net Amount', 'ٹیکس کے قابل خالص رقم')}</span>
                 <span className="font-mono tabular-nums font-semibold text-slate-700 dark:text-slate-300">
                   {formatCurrency(calc.taxableAmount, currency, language)}
                 </span>
               </div>
 
-              {/* VAT Mode & Rate */}
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-slate-600 dark:text-slate-400">
-                    ضريبة القيمة المضافة
+                    {tr('ضريبة القيمة المضافة', 'Value Added Tax (VAT)', 'ویلیو ایڈڈ ٹیکس (VAT)')}
                   </span>
-                  <span className="font-mono tabular-nums text-sm font-semibold text-slate-900 dark:text-white">
+                  <span className="font-mono tabular-nums text-sm font-semibold text-[#0B1B32] dark:text-white">
                     {formatCurrency(calc.vatAmount, currency, language)}
                   </span>
                 </div>
 
-                <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-[#070e17] border border-slate-200 dark:border-slate-800">
+                <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66]">
                   {(
                     [
-                      { id: '15', label: '15% قياسي' },
-                      { id: '0', label: '0% معفى' },
-                      { id: 'custom', label: 'نسبة مخصصة' },
+                      { id: '15', label: tr('15% قياسي', '15% Standard', '15% معیاری') },
+                      { id: '0', label: tr('0% معفى', '0% Exempt', '0% مستثنیٰ') },
+                      { id: 'custom', label: tr('نسبة مخصصة', 'Custom Rate', 'مخصوص شرح') },
                     ] as const
                   ).map((opt) => (
                     <button
@@ -1477,8 +1599,8 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                       }}
                       className={`px-2 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
                         vatMode === opt.id
-                          ? 'bg-white dark:bg-[#0c1829] text-amber-600 dark:text-amber-400 shadow-sm border border-amber-500/30'
-                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          ? 'bg-white dark:bg-[#122543] text-[#1764FF] dark:text-[#6CA2FF] shadow-sm border border-[#1764FF]/30'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-[#0B1B32] dark:hover:text-white'
                       }`}
                     >
                       {opt.label}
@@ -1492,7 +1614,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                       htmlFor="purchase-custom-vat"
                       className="text-xs text-slate-600 dark:text-slate-400"
                     >
-                      نسبة الضريبة المخصصة (%)
+                      {tr('نسبة الضريبة المخصصة (%)', 'Custom VAT Rate (%)', 'مخصوص ٹیکس شرح (%)')}
                     </label>
                     <input
                       id="purchase-custom-vat"
@@ -1508,43 +1630,41 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                       }}
                       disabled={isSubmitting}
                       dir="ltr"
-                      className="w-28 px-3 py-2 rounded-xl text-sm font-mono tabular-nums text-end bg-slate-50 dark:bg-[#070e17] border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
+                      className="w-28 px-3 py-2 rounded-xl text-sm font-mono tabular-nums text-end bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                     />
                   </div>
                 )}
               </div>
 
-              {/* Final Invoice Total */}
-              <div className="pt-4 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3">
+              <div className="pt-4 border-t border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between gap-3">
                 <div>
-                  <span className="text-sm font-bold text-slate-900 dark:text-white block">
-                    الإجمالي النهائي للفاتورة
+                  <span className="text-sm font-bold text-[#0B1B32] dark:text-white block">
+                    {tr('الإجمالي النهائي للفاتورة', 'Final Invoice Total', 'انوائس کا حتمی کل')}
                   </span>
                   <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    محسوب بدقة الهللات الصحيحة
+                    {tr('محسوب بدقة الهللات الصحيحة', 'Computed with integer halala precision', 'درست ہلالہ حساب سے شمار شدہ')}
                   </span>
                 </div>
-                <span className="text-xl sm:text-2xl font-black font-mono tabular-nums text-amber-600 dark:text-amber-400">
+                <span className="text-xl sm:text-2xl font-black font-mono tabular-nums text-[#1764FF] dark:text-[#6CA2FF]">
                   {formatCurrency(calc.totalAmount, currency, language)}
                 </span>
               </div>
             </div>
 
-            {/* Primary Save Button */}
             <button
               type="submit"
               disabled={isSubmitting || suppliers.length === 0 || !effectiveBranch}
-              className="w-full py-3.5 px-5 rounded-xl text-sm font-extrabold text-slate-950 bg-amber-400 hover:bg-amber-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full py-3.5 px-5 rounded-xl text-sm font-extrabold text-white bg-[#1764FF] hover:bg-[#1052D8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1764FF] transition-colors flex items-center justify-center gap-2 shadow-sm shadow-[#1764FF]/20 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>جاري حفظ فاتورة المشتريات...</span>
+                  <span>{tr('جاري حفظ فاتورة المشتريات...', 'Saving purchase invoice...', 'خریداری انوائس محفوظ ہو رہی ہے...')}</span>
                 </>
               ) : (
                 <>
                   <Save className="w-4 h-4" />
-                  <span>حفظ فاتورة المشتريات</span>
+                  <span>{tr('حفظ فاتورة المشتريات', 'Save Purchase Invoice', 'خریداری انوائس محفوظ کریں')}</span>
                 </>
               )}
             </button>
@@ -1553,47 +1673,53 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
       </form>
 
       {/* Compact Recent Saved Invoices Confirmation Strip */}
-      <section className="bg-white dark:bg-[#0c1829] rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+      <section className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] overflow-hidden">
+        <div className="px-5 py-4 border-b border-[#E6EEFC] dark:border-[#1F3B66] flex items-center justify-between gap-2">
           <div>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-              آخر فواتير المشتريات المسجلة
+            <h3 className="text-sm font-bold text-[#0B1B32] dark:text-white">
+              {tr('آخر فواتير المشتريات المسجلة', 'Recently Recorded Purchase Invoices', 'حالیہ درج خریداری انوائسز')}
             </h3>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              عرض تأكيدي لآخر العمليات المسجلة ضمن نطاق صلاحياتك
+              {tr(
+                'عرض تأكيدي لآخر العمليات المسجلة ضمن نطاق صلاحياتك',
+                'Confirmation view of recent entries within your permission scope',
+                'آپ کے دائرہ اختیار میں حالیہ اندراجات کا تصدیقی منظر'
+              )}
             </p>
           </div>
-          {recentLoading && (
-            <RefreshCw className="w-4 h-4 text-slate-400 animate-spin" />
-          )}
+          {recentLoading && <RefreshCw className="w-4 h-4 text-slate-400 animate-spin" />}
         </div>
 
         {recentPurchases.length === 0 ? (
           <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400">
-            لا توجد فواتير مشتريات مسجلة بعد ضمن نطاقك الحالي.
+            {tr(
+              'لا توجد فواتير مشتريات مسجلة بعد ضمن نطاقك الحالي.',
+              'No purchase invoices recorded yet within your current scope.',
+              'آپ کے موجودہ دائرہ کار میں ابھی کوئی خریداری انوائس درج نہیں ہے۔'
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-start border-collapse text-xs">
               <thead>
-                <tr className="bg-slate-50 dark:bg-[#070e17]/60 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400">
-                  <th className="py-2.5 px-4 text-start font-semibold">التاريخ</th>
-                  <th className="py-2.5 px-4 text-start font-semibold">المورد</th>
-                  <th className="py-2.5 px-4 text-start font-semibold">رقم الفاتورة</th>
-                  <th className="py-2.5 px-4 text-start font-semibold">الفرع</th>
-                  <th className="py-2.5 px-4 text-end font-semibold">الإجمالي النهائي</th>
+                <tr className="bg-[#F5F8FF] dark:bg-[#0E203A] border-b border-[#DCE6FA] dark:border-[#1F3B66] text-slate-500 dark:text-slate-400">
+                  <th className="py-2.5 px-4 text-start font-semibold">{tr('التاريخ', 'Date', 'تاریخ')}</th>
+                  <th className="py-2.5 px-4 text-start font-semibold">{tr('المورد', 'Supplier', 'سپلائر')}</th>
+                  <th className="py-2.5 px-4 text-start font-semibold">{tr('رقم الفاتورة', 'Invoice #', 'انوائس نمبر')}</th>
+                  <th className="py-2.5 px-4 text-start font-semibold">{tr('الفرع', 'Branch', 'برانچ')}</th>
+                  <th className="py-2.5 px-4 text-end font-semibold">{tr('الإجمالي النهائي', 'Final Total', 'حتمی کل')}</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+              <tbody className="divide-y divide-[#E6EEFC] dark:divide-[#1F3B66]/70">
                 {recentPurchases.map((pur) => (
                   <tr
                     key={pur.id}
-                    className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30 transition-colors"
+                    className="hover:bg-[#F5F8FF]/70 dark:hover:bg-[#173056]/40 transition-colors"
                   >
                     <td className="py-2.5 px-4 font-mono tabular-nums text-slate-700 dark:text-slate-300 whitespace-nowrap">
                       {pur.date}
                     </td>
-                    <td className="py-2.5 px-4 font-semibold text-slate-900 dark:text-white">
+                    <td className="py-2.5 px-4 font-semibold text-[#0B1B32] dark:text-white">
                       {pur.supplierName || pur.supplierId}
                     </td>
                     <td className="py-2.5 px-4 font-mono text-slate-600 dark:text-slate-400 whitespace-nowrap">
@@ -1602,7 +1728,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                     <td className="py-2.5 px-4 text-slate-600 dark:text-slate-400 whitespace-nowrap">
                       {pur.branchName || pur.branchId}
                     </td>
-                    <td className="py-2.5 px-4 text-end font-mono tabular-nums font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                    <td className="py-2.5 px-4 text-end font-mono tabular-nums font-bold text-[#0B1B32] dark:text-white whitespace-nowrap">
                       {formatCurrency(pur.totalAmount, currency, language)}
                     </td>
                   </tr>
