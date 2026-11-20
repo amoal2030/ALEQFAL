@@ -164,6 +164,13 @@ service cloud.firestore {
         isOrgSubscriptionAllowed(get(/databases/$(database)/documents/organizations/$(targetOrgId)).data);
     }
 
+    // Direct get() variant for &&-only create paths with no enclosing || fallback:
+    // missing organization document aborts evaluation to DENY, identical to exists() && get().
+    function hasActiveOrgSubscriptionDirect(targetOrgId) {
+      return isValidId(targetOrgId) &&
+        isOrgSubscriptionAllowed(get(/databases/$(database)/documents/organizations/$(targetOrgId)).data);
+    }
+
     // Validation helper for Super Admin organization subscription writes
     function hasValidSuperAdminSubscriptionPayload(data) {
       return !hasAnySubscriptionField(data) || (
@@ -235,6 +242,13 @@ service cloud.firestore {
     function isBranchInOrg(branchId, targetOrgId) {
       return isValidId(branchId) &&
         exists(/databases/$(database)/documents/branches/$(branchId)) &&
+        get(/databases/$(database)/documents/branches/$(branchId)).data.orgId == targetOrgId;
+    }
+
+    // Direct get() variant for &&-only create paths with no enclosing || fallback:
+    // missing branch document aborts evaluation to DENY, identical to exists() && get().
+    function isBranchInOrgDirect(branchId, targetOrgId) {
+      return isValidId(branchId) &&
         get(/databases/$(database)/documents/branches/$(branchId)).data.orgId == targetOrgId;
     }
 
@@ -550,8 +564,7 @@ service cloud.firestore {
       let isCreatorStaff = (u.role in ['branch_manager', 'employee'] && userHasSingleAssignedBranch(u, data.branchId)) ||
         (u.role == 'supervisor' && (userHasPermission(u, 'canCreateClosing') || userHasPermission(u, 'canApproveClosings')));
       return u.isActive == true &&
-        u.orgId == data.orgId &&
-        hasActiveOrgSubscription(data.orgId) && (
+        u.orgId == data.orgId && (
           u.role == 'manager' ? (
             data.keys().hasOnly([
               'closingId', 'orgId', 'branchId', 'yearMonth', 'archiveStatus',
@@ -561,18 +574,18 @@ service cloud.firestore {
               'archivedAt', 'archivedBy', 'archiveError', 'updatedAt'
             ]) &&
             data.archiveStatus in ['pending_drive_sync', 'archived', 'failed'] &&
-            existsAfter(/databases/$(database)/documents/closings/$(closingId)) &&
+            hasActiveOrgSubscriptionDirect(data.orgId) &&
             managerArchiveCreateMatchesClosing(closingId, data)
           ) : isCreatorStaff ? (
             data.keys().hasOnly([
               'closingId', 'orgId', 'branchId', 'yearMonth', 'archiveStatus', 'updatedAt'
             ]) &&
             data.archiveStatus == 'pending_drive_sync' &&
+            hasActiveOrgSubscriptionDirect(data.orgId) &&
             (
               !exists(/databases/$(database)/documents/closings/$(closingId)) ||
               isExistingClosingNonApprovedForCreator(closingId, data.orgId, data.branchId, data.yearMonth)
             ) &&
-            existsAfter(/databases/$(database)/documents/closings/$(closingId)) &&
             isAfterClosingNonApprovedForCreator(closingId, data.orgId, data.branchId, data.yearMonth)
           ) : false
         );
@@ -583,8 +596,7 @@ service cloud.firestore {
       let isCreatorStaff = (u.role in ['branch_manager', 'employee'] && userHasSingleAssignedBranch(u, prevData.branchId)) ||
         (u.role == 'supervisor' && (userHasPermission(u, 'canCreateClosing') || userHasPermission(u, 'canApproveClosings')));
       return u.isActive == true &&
-        u.orgId == prevData.orgId &&
-        hasActiveOrgSubscription(prevData.orgId) && (
+        u.orgId == prevData.orgId && (
           u.role == 'manager' ? (
             nextData.diff(prevData).affectedKeys().hasOnly([
               'archiveStatus',
@@ -594,16 +606,15 @@ service cloud.firestore {
               'archivedAt', 'archivedBy', 'archiveError', 'updatedAt'
             ]) &&
             nextData.archiveStatus in ['pending_drive_sync', 'archived', 'failed', 'stale'] &&
-            existsAfter(/databases/$(database)/documents/closings/$(closingId)) &&
+            hasActiveOrgSubscriptionDirect(prevData.orgId) &&
             managerArchiveUpdateMatchesClosing(closingId, nextData, prevData)
           ) : isCreatorStaff ? (
             prevData.branchId is string && prevData.branchId.size() > 0 &&
             nextData.diff(prevData).affectedKeys().hasOnly(['archiveStatus', 'updatedAt']) &&
             prevData.archiveStatus == 'pending_drive_sync' &&
             nextData.archiveStatus == 'pending_drive_sync' &&
-            exists(/databases/$(database)/documents/closings/$(closingId)) &&
+            hasActiveOrgSubscriptionDirect(prevData.orgId) &&
             isExistingClosingNonApprovedForCreator(closingId, prevData.orgId, prevData.branchId, prevData.yearMonth) &&
-            existsAfter(/databases/$(database)/documents/closings/$(closingId)) &&
             isAfterClosingNonApprovedForCreator(closingId, prevData.orgId, prevData.branchId, prevData.yearMonth)
           ) : false
         );
@@ -1235,8 +1246,6 @@ service cloud.firestore {
     function canCreateClosing(u, data) {
       return u.isActive == true &&
         u.orgId == data.orgId &&
-        hasActiveOrgSubscription(data.orgId) &&
-        isBranchInOrg(data.branchId, data.orgId) &&
         data.employeeId == request.auth.uid &&
         data.period in ['morning', 'evening'] &&
         data.cashSales >= 0 &&
@@ -1255,7 +1264,9 @@ service cloud.firestore {
             u.get('permissions', {}).get('canCreateClosing', true) == true &&
             userHasSingleAssignedBranch(u, data.branchId)
           )
-        );
+        ) &&
+        hasActiveOrgSubscriptionDirect(data.orgId) &&
+        isBranchInOrgDirect(data.branchId, data.orgId);
     }
 
     function canUpdateClosing(nextData, prevData) {
@@ -1267,9 +1278,8 @@ service cloud.firestore {
       let canEditOwn = isManager ||
         (u.role == 'supervisor' && userHasPermission(u, 'canCreateClosing')) ||
         (u.role in ['branch_manager', 'employee'] && u.get('permissions', {}).get('canCreateClosing', true) == true && userHasSingleAssignedBranch(u, prevData.branchId));
-      let prevVals = nextData.previousValues;
+      let prevVals = nextData.get('previousValues', null);
       return isMember &&
-        hasActiveOrgSubscription(orgId) &&
         hasImmutableClosingIdentity(nextData, prevData) && (
           prevData.status != 'approved' ? (
             (canApprove && nextData.status in ['approved', 'rejected']) ||
@@ -1287,7 +1297,8 @@ service cloud.firestore {
             prevVals.totalSales == prevData.totalSales &&
             hasValidHalalaShiftAccounting(nextData)
           )
-        );
+        ) &&
+        hasActiveOrgSubscriptionDirect(orgId);
     }
 
     // Shift Closings Collection
@@ -1305,11 +1316,11 @@ service cloud.firestore {
       );
 
       allow create: if isSignedIn() && isValidId(closingId) &&
-        hasValidUserDoc() &&
+        incoming().employeeId == request.auth.uid &&
         canCreateClosing(getUserData(), incoming());
 
       allow update: if isSignedIn() && isValidId(closingId) &&
-        hasValidUserDoc() &&
+        hasImmutableClosingIdentity(incoming(), existing()) &&
         canUpdateClosing(incoming(), existing());
 
       allow delete: if isSuperAdmin() &&
@@ -1448,11 +1459,16 @@ service cloud.firestore {
           it.total is number && it.total >= 0 && math.abs(it.total * 100 - math.round(it.quantity * it.unitPrice * 100.0)) < 0.001;
       }
 
+      function isOkAttDoc(aid, pOrg, pBr, pId) {
+        let a = getAfter(/databases/$(database)/documents/attachments/$(aid)).data;
+        return a.orgId == pOrg &&
+          a.branchId == pBr &&
+          a.purchaseId == pId;
+      }
+
       function isOkAtt(aid, pOrg, pBr, pId) {
         return isValidId(aid) &&
-          getAfter(/databases/$(database)/documents/attachments/$(aid)).data.orgId == pOrg &&
-          getAfter(/databases/$(database)/documents/attachments/$(aid)).data.branchId == pBr &&
-          getAfter(/databases/$(database)/documents/attachments/$(aid)).data.purchaseId == pId;
+          isOkAttDoc(aid, pOrg, pBr, pId);
       }
 
       function hasValidPurchaseFields(data) {
@@ -1528,13 +1544,11 @@ service cloud.firestore {
 
       function canCreatePurchase(u, purchaseId, data) {
         return u.isActive == true &&
+          isValidId(data.orgId) &&
           u.orgId == data.orgId &&
-          hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(data.orgId)).data) &&
           data.id == purchaseId &&
           isValidId(data.branchId) &&
-          get(/databases/$(database)/documents/branches/$(data.branchId)).data.orgId == data.orgId &&
           isValidId(data.supplierId) &&
-          supplierDocIsActiveInOrg(data.supplierId, data.orgId) &&
           data.createdBy == request.auth.uid &&
           data.createdByRole == u.role && (
             u.role == 'manager' ||
@@ -1545,6 +1559,9 @@ service cloud.firestore {
               userHasSingleAssignedBranch(u, data.branchId)
             )
           ) &&
+          hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(data.orgId)).data) &&
+          get(/databases/$(database)/documents/branches/$(data.branchId)).data.orgId == data.orgId &&
+          supplierDocIsActiveInOrg(data.supplierId, data.orgId) &&
           hasValidPurchaseFields(data);
       }
 
@@ -1585,7 +1602,8 @@ service cloud.firestore {
       );
 
       allow create: if isSignedIn() && isValidId(purchaseId) &&
-        hasValidUserDoc() &&
+        incoming().id == purchaseId &&
+        incoming().createdBy == request.auth.uid &&
         canCreatePurchase(getUserData(), purchaseId, incoming());
 
       allow update: if isSignedIn() && isValidId(purchaseId) &&
@@ -1624,16 +1642,18 @@ service cloud.firestore {
             (data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt));
         }
 
+        function matchesPurchaseSubItemParent(u, pId, data) {
+          let pAfter = getAfter(/databases/$(database)/documents/purchases/$(pId)).data;
+          return pAfter.orgId == data.orgId &&
+            pAfter.branchId == data.branchId &&
+            pAfter.createdBy == request.auth.uid &&
+            pAfter.createdByRole == u.role;
+        }
+
         function canCreatePurchaseSubItem(u, pId, iId, data) {
           return u.isActive == true &&
             hasValidPurchaseSubItem(pId, iId, data) &&
-            u.orgId == data.orgId &&
-            hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(data.orgId)).data) &&
-            existsAfter(/databases/$(database)/documents/purchases/$(pId)) &&
-            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.orgId == data.orgId &&
-            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.branchId == data.branchId &&
-            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.createdBy == request.auth.uid &&
-            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.createdByRole == u.role && (
+            u.orgId == data.orgId && (
               u.role == 'manager' ||
               (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
               (
@@ -1641,7 +1661,9 @@ service cloud.firestore {
                 branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
                 userHasSingleAssignedBranch(u, data.branchId)
               )
-            );
+            ) &&
+            hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(data.orgId)).data) &&
+            matchesPurchaseSubItemParent(u, pId, data);
         }
 
         allow get: if isSignedIn() && isValidId(purchaseId) && isValidId(itemId) && (
@@ -1668,7 +1690,7 @@ service cloud.firestore {
           );
 
         allow create: if isSignedIn() && isValidId(purchaseId) && isValidId(itemId) &&
-          hasValidUserDoc() &&
+          hasValidPurchaseSubItem(purchaseId, itemId, incoming()) &&
           canCreatePurchaseSubItem(getUserData(), purchaseId, itemId, incoming());
 
         allow update: if false;
@@ -1683,9 +1705,9 @@ service cloud.firestore {
     // Attachments Collection (Phase 4.4: Supports closingId & purchaseId attachments, URL allowlist, mandatory purchaseId existence, anti-Base64 guard, least privilege)
     match /attachments/{attachmentId} {
       function purchaseRefMatchesOrgBranch(purchaseId, orgId, branchId) {
-        return existsAfter(/databases/$(database)/documents/purchases/$(purchaseId)) &&
-          getAfter(/databases/$(database)/documents/purchases/$(purchaseId)).data.orgId == orgId &&
-          getAfter(/databases/$(database)/documents/purchases/$(purchaseId)).data.branchId == branchId;
+        let pAfter = getAfter(/databases/$(database)/documents/purchases/$(purchaseId)).data;
+        return pAfter.orgId == orgId &&
+          pAfter.branchId == branchId;
       }
 
       function isAllowedAttachmentUrl(url, maxLen) {
@@ -1747,11 +1769,9 @@ service cloud.firestore {
         return u.isActive == true &&
           isValidId(data.orgId) &&
           u.orgId == data.orgId &&
-          hasActiveOrgSubscription(data.orgId) &&
-          isBranchInOrg(data.branchId, data.orgId) &&
           hasValidAttachmentPayload(attachmentId, data) && (
             'purchaseId' in data ? (
-              purchaseRefMatchesOrgBranch(data.purchaseId, data.orgId, data.branchId) && (
+              (
                 u.role == 'manager' ||
                 (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
                 (
@@ -1759,11 +1779,18 @@ service cloud.firestore {
                   branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
                   userHasSingleAssignedBranch(u, data.branchId)
                 )
-              )
+              ) &&
+              hasActiveOrgSubscriptionDirect(data.orgId) &&
+              isBranchInOrgDirect(data.branchId, data.orgId) &&
+              purchaseRefMatchesOrgBranch(data.purchaseId, data.orgId, data.branchId)
             ) : (
-              u.role == 'manager' ||
-              (u.role == 'supervisor' && userHasPermission(u, 'canCreateClosing')) ||
-              (u.role in ['branch_manager', 'employee'] && userHasSingleAssignedBranch(u, data.branchId))
+              (
+                u.role == 'manager' ||
+                (u.role == 'supervisor' && userHasPermission(u, 'canCreateClosing')) ||
+                (u.role in ['branch_manager', 'employee'] && userHasSingleAssignedBranch(u, data.branchId))
+              ) &&
+              hasActiveOrgSubscriptionDirect(data.orgId) &&
+              isBranchInOrgDirect(data.branchId, data.orgId)
             )
           );
       }
@@ -1779,7 +1806,7 @@ service cloud.firestore {
       );
 
       allow create: if isSignedIn() && isValidId(attachmentId) &&
-        hasValidUserDoc() &&
+        hasValidAttachmentPayload(attachmentId, incoming()) &&
         canCreateAttachment(attachmentId, incoming());
 
       // Attachments are strictly immutable once uploaded
@@ -1924,6 +1951,57 @@ service cloud.firestore {
         );
     }
 
+    // Direct audit log validator exclusively for closing draft/submission writes
+    // (invoked only inside &&-only ternary branch with no enclosing || fallback;
+    // enforces orgId, status-to-action match, owner, permission, and branch isolation in a single getAfter)
+    function matchesClosingSubmissionAuditTarget(u, data) {
+      let cAfter = getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data;
+      return cAfter.employeeId == request.auth.uid &&
+        cAfter.orgId == data.orgId &&
+        cAfter.status == (data.action == 'CLOSING_DRAFT_SAVED' ? 'draft' : 'pending_review') && (
+          u.role == 'manager' ||
+          (u.role == 'supervisor' && userHasPermission(u, 'canCreateClosing')) ||
+          (
+            u.role in ['branch_manager', 'employee'] &&
+            u.get('permissions', {}).get('canCreateClosing', true) == true &&
+            userHasSingleAssignedBranch(u, cAfter.branchId)
+          )
+        );
+    }
+
+    function canCreateClosingSubmissionAuditLog(data) {
+      let u = getUserData();
+      return u.isActive == true &&
+        u.orgId == data.orgId &&
+        data.actorRole == u.role &&
+        u.role in ['manager', 'supervisor', 'branch_manager', 'employee'] &&
+        hasActiveOrgSubscriptionDirect(data.orgId) &&
+        matchesClosingSubmissionAuditTarget(u, data);
+    }
+
+    // Direct audit log validator exclusively for PURCHASE_CREATED writes
+    // (invoked only inside &&-only ternary branch with no enclosing || fallback)
+    function matchesPurchaseCreatedAuditTarget(u, data) {
+      let pAfter = getAfter(/databases/$(database)/documents/purchases/$(data.targetId)).data;
+      return pAfter.orgId == u.orgId &&
+        pAfter.createdBy == request.auth.uid &&
+        pAfter.createdByRole == u.role &&
+        (u.role != 'branch_manager' || userHasSingleAssignedBranch(u, pAfter.branchId));
+    }
+
+    function canCreatePurchaseAuditLog(data) {
+      let u = getUserData();
+      return u.isActive == true &&
+        u.orgId == data.orgId &&
+        data.actorRole == u.role && (
+          u.role == 'manager' ||
+          (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
+          (u.role == 'branch_manager' && branchManagerHasDefaultPermission(u, 'canManagePurchases'))
+        ) &&
+        hasActiveOrgSubscriptionDirect(data.orgId) &&
+        matchesPurchaseCreatedAuditTarget(u, data);
+    }
+
     // Audit Logs Collection (Anti-Forgery & Completely Immutable)
     match /auditLogs/{logId} {
       allow get: if isSignedIn() && isValidId(logId) &&
@@ -1939,24 +2017,33 @@ service cloud.firestore {
         incoming().actorName is string && incoming().actorName.size() >= 2 && incoming().actorName.size() <= 100 &&
         incoming().details is string && incoming().details.size() >= 5 && incoming().details.size() <= 1000 &&
         incoming().targetType in ['closing', 'branch', 'employee', 'organization', 'supplier', 'purchase'] &&
-        incoming().targetId is string && isValidId(incoming().targetId) &&
-        hasActiveOrgSubscription(incoming().orgId) && (
-          // Case 1: Invited Manager accepting approved organization invite (atomic with managerInvites claim)
-          (
-            incoming().action == 'ORGANIZATION_ESTABLISHED' &&
-            incoming().actorRole == 'manager' &&
-            incoming().targetType == 'organization' &&
-            incoming().targetId == incoming().orgId &&
-            isClaimingValidManagerInvite(incoming().orgId) &&
-            getAfter(/databases/$(database)/documents/organizations/$(incoming().orgId)).data.ownerId == request.auth.uid &&
-            existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-            getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.orgId == incoming().orgId &&
-            getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager'
-          ) ||
-          // Case 2: Established member operations
-          (
-            hasValidUserDoc() &&
-            canCreateMemberAuditLog(incoming())
+        incoming().targetId is string && isValidId(incoming().targetId) && (
+          incoming().targetType == 'closing' &&
+          incoming().action in ['CLOSING_SUBMITTED_FOR_REVIEW', 'CLOSING_DRAFT_SAVED'] ? (
+            canCreateClosingSubmissionAuditLog(incoming())
+          ) : incoming().targetType == 'purchase' &&
+          incoming().action == 'PURCHASE_CREATED' ? (
+            canCreatePurchaseAuditLog(incoming())
+          ) : (
+            hasActiveOrgSubscription(incoming().orgId) && (
+              // Case 1: Invited Manager accepting approved organization invite (atomic with managerInvites claim)
+              (
+                incoming().action == 'ORGANIZATION_ESTABLISHED' &&
+                incoming().actorRole == 'manager' &&
+                incoming().targetType == 'organization' &&
+                incoming().targetId == incoming().orgId &&
+                isClaimingValidManagerInvite(incoming().orgId) &&
+                getAfter(/databases/$(database)/documents/organizations/$(incoming().orgId)).data.ownerId == request.auth.uid &&
+                existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+                getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.orgId == incoming().orgId &&
+                getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager'
+              ) ||
+              // Case 2: Established member operations
+              (
+                hasValidUserDoc() &&
+                canCreateMemberAuditLog(incoming())
+              )
+            )
           )
         );
 
@@ -1997,12 +2084,10 @@ service cloud.firestore {
 
       allow create: if isSignedIn() && isValidId(closingId) &&
         hasValidClosingArchiveCreateBase(closingId, incoming()) &&
-        hasValidUserDoc() &&
         canCreateClosingArchive(closingId, incoming());
 
       allow update: if isSignedIn() && isValidId(closingId) &&
         hasValidClosingArchiveUpdateBase(closingId, incoming(), existing()) &&
-        hasValidUserDoc() &&
         canUpdateClosingArchive(closingId, incoming(), existing());
 
       allow delete: if isSuperAdmin() &&
@@ -2288,6 +2373,106 @@ service cloud.firestore {
         hasValidTenantNotificationFeeds(data);
     }
 
+    // Direct closing-submission notification validators (exclusively for CLOSING_SUBMITTED / CLOSING_RESUBMITTED;
+    // invoked only inside &&-only ternary branch with no enclosing || fallback)
+    function hasClosingSubmittedAfterDirect(data, orgId) {
+      return data.get('targetType', '') == 'closing' &&
+        isValidId(data.get('targetId', '')) &&
+        matchesClosingSubmittedAfter(data, orgId);
+    }
+
+    function hasValidClosingSubmitNotificationFeeds(data) {
+      let orgId = data.orgId;
+      let feeds = data.feedKeys;
+      return feeds is list &&
+        feeds.size() >= 1 &&
+        feeds.size() <= 4 &&
+        data.audienceScope == 'org_supervisor_permission' &&
+        'requiredPermission' in data &&
+        isAllowedNotificationPerm(data.requiredPermission) &&
+        (!('secondaryPermission' in data) || isAllowedNotificationPerm(data.secondaryPermission)) &&
+        ('org_perm:' + orgId + ':' + data.requiredPermission) in feeds &&
+        feeds.hasOnly([
+          'org_perm:' + orgId + ':' + data.requiredPermission,
+          ('secondaryPermission' in data ? 'org_perm:' + orgId + ':' + data.secondaryPermission : 'org_mgr:' + orgId),
+          'org_mgr:' + orgId,
+          ('branchId' in data && ('branch_mgr:' + orgId + ':' + data.branchId) in feeds && isBranchInOrgDirect(data.branchId, orgId) ? 'branch_mgr:' + orgId + ':' + data.branchId : 'org_mgr:' + orgId)
+        ]);
+    }
+
+    function canActorCreateClosingSubmitNotification(data) {
+      let u = getUserData();
+      let orgId = data.get('orgId', '');
+      let actorRole = data.get('actorRole', '');
+      return u.isActive == true &&
+        isValidId(orgId) &&
+        u.orgId == orgId &&
+        actorRole in ['manager', 'supervisor', 'branch_manager', 'employee'] &&
+        u.role == actorRole &&
+        data.audienceScope == 'org_supervisor_permission' && (
+          actorRole == 'manager' ? true :
+          actorRole == 'supervisor' ? (
+            userHasPermission(u, 'canCreateClosing') &&
+            data.get('requiredPermission', '') in ['canApproveClosings', 'canViewAllClosings']
+          ) : (
+            'branchId' in data &&
+            userHasSingleAssignedBranch(u, data.branchId) &&
+            u.get('permissions', {}).get('canCreateClosing', true) == true
+          )
+        ) &&
+        hasActiveOrgSubscriptionDirect(orgId) &&
+        hasClosingSubmittedAfterDirect(data, orgId) &&
+        hasValidClosingSubmitNotificationFeeds(data);
+    }
+
+    // Direct purchase-invoice notification validators (exclusively for PURCHASE_INVOICE_RECORDED / PURCHASE_REVIEW_NEEDED;
+    // invoked only inside &&-only ternary branch with no enclosing || fallback; ensures branch is read at most once)
+    function hasValidPurchaseNotificationFeeds(data, orgId, branchAllowed) {
+      let feeds = data.feedKeys;
+      return feeds is list &&
+        feeds.size() >= 1 &&
+        feeds.size() <= 4 &&
+        'requiredPermission' in data &&
+        isAllowedNotificationPerm(data.requiredPermission) &&
+        (!('secondaryPermission' in data) || isAllowedNotificationPerm(data.secondaryPermission)) &&
+        ('org_perm:' + orgId + ':' + data.requiredPermission) in feeds &&
+        feeds.hasOnly([
+          'org_perm:' + orgId + ':' + data.requiredPermission,
+          ('secondaryPermission' in data ? 'org_perm:' + orgId + ':' + data.secondaryPermission : 'org_mgr:' + orgId),
+          'org_mgr:' + orgId,
+          (branchAllowed ? 'branch_mgr:' + orgId + ':' + data.branchId : 'org_mgr:' + orgId)
+        ]);
+    }
+
+    function canActorCreatePurchaseNotification(data) {
+      let u = getUserData();
+      let orgId = data.get('orgId', '');
+      let actorRole = data.get('actorRole', '');
+      let hasBranchFeed = 'branchId' in data && data.feedKeys is list && ('branch_mgr:' + orgId + ':' + data.branchId) in data.feedKeys;
+      return u.isActive == true &&
+        isValidId(orgId) &&
+        u.orgId == orgId &&
+        actorRole in ['manager', 'supervisor', 'branch_manager'] &&
+        u.role == actorRole &&
+        data.audienceScope == 'org_supervisor_permission' &&
+        data.get('targetType', '') == 'purchase' && (
+          actorRole == 'manager' ? true :
+          actorRole == 'supervisor' ? (
+            userHasPermission(u, 'canManagePurchases') &&
+            'branchId' in data
+          ) : (
+            'branchId' in data &&
+            userHasSingleAssignedBranch(u, data.branchId) &&
+            branchManagerHasDefaultPermission(u, 'canManagePurchases')
+          )
+        ) &&
+        hasActiveOrgSubscriptionDirect(orgId) && (
+          (hasBranchFeed || actorRole == 'supervisor')
+            ? (isBranchInOrgDirect(data.branchId, orgId) && hasValidPurchaseNotificationFeeds(data, orgId, hasBranchFeed))
+            : hasValidPurchaseNotificationFeeds(data, orgId, false)
+        );
+    }
+
     function canTenantUserReadNotification(data, checkDataOrgSub) {
       let u = getUserData();
       let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
@@ -2389,8 +2574,16 @@ service cloud.firestore {
           incoming().get('actorRole', '') == 'super_admin' &&
           (!('relatedOrgId' in incoming()) || isValidId(incoming().relatedOrgId))
         ) : (
-          hasValidUserDoc() &&
-          canActorCreateTenantNotification(incoming())
+          incoming().get('category', '') == 'closings' &&
+          incoming().get('type', '') in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] ? (
+            canActorCreateClosingSubmitNotification(incoming())
+          ) : incoming().get('category', '') == 'purchases_suppliers' &&
+          incoming().get('type', '') in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] ? (
+            canActorCreatePurchaseNotification(incoming())
+          ) : (
+            hasValidUserDoc() &&
+            canActorCreateTenantNotification(incoming())
+          )
         )
       );
 

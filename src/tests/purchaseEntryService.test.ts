@@ -19,8 +19,10 @@ import { buildDefaultPermissionsForRole } from '../utils/permissions';
 import {
   formatPurchaseValidationError,
   isAllowedPurchaseAttachmentFile,
+  isValidFirestoreId,
   preparePurchaseSubmission,
 } from '../services/purchaseService';
+import { assertValidIsoCalendarDate } from '../services/excelReportService';
 import type { Branch, Supplier, UserProfile } from '../types';
 
 let passed = 0;
@@ -552,6 +554,113 @@ runTest('12. Rejects discountAmount exceeding 2 decimal places (Halala precision
   });
   assert.equal(res.isValid, false);
   assert.ok(res.errors.includes('discount_precision_exceeded'));
+});
+
+runTest('13. Phase 1: rejects invalid Firestore IDs for orgId, branch.id, supplier.id, and purchaseId', () => {
+  assert.equal(isValidFirestoreId('org_valid-123'), true);
+  assert.equal(isValidFirestoreId(''), false);
+  assert.equal(isValidFirestoreId('bad id'), false);
+  assert.equal(isValidFirestoreId('bad/id'), false);
+  assert.equal(isValidFirestoreId('..'), false);
+  assert.equal(isValidFirestoreId('a'.repeat(129)), false);
+
+  const badOrg = preparePurchaseSubmission({
+    userProfile: { ...managerProfile, orgId: 'org/bad' },
+    orgId: 'org/bad',
+    currency: 'SAR',
+    branch: { ...branchA1, orgId: 'org/bad' },
+    supplier: { ...supplierActive, orgId: 'org/bad' },
+    date: '2026-11-18',
+    paymentMethod: 'cash',
+    items: [{ name: 'صنف', quantity: 1, unitPrice: 10 }],
+  });
+  assert.equal(badOrg.ok, false);
+  if (!badOrg.ok) assert.ok(badOrg.errors.includes('invalid_org_id'));
+
+  const badBranchId = preparePurchaseSubmission({
+    userProfile: managerProfile,
+    orgId: 'org_a',
+    currency: 'SAR',
+    branch: { ...branchA1, id: 'br bad/1' },
+    supplier: supplierActive,
+    date: '2026-11-18',
+    paymentMethod: 'cash',
+    items: [{ name: 'صنف', quantity: 1, unitPrice: 10 }],
+  });
+  assert.equal(badBranchId.ok, false);
+  if (!badBranchId.ok) assert.ok(badBranchId.errors.includes('invalid_branch_id'));
+
+  const badSupplierId = preparePurchaseSubmission({
+    userProfile: managerProfile,
+    orgId: 'org_a',
+    currency: 'SAR',
+    branch: branchA1,
+    supplier: { ...supplierActive, id: 'sup.bad' },
+    date: '2026-11-18',
+    paymentMethod: 'cash',
+    items: [{ name: 'صنف', quantity: 1, unitPrice: 10 }],
+  });
+  assert.equal(badSupplierId.ok, false);
+  if (!badSupplierId.ok) assert.ok(badSupplierId.errors.includes('invalid_supplier_id'));
+
+  const badPurchaseId = preparePurchaseSubmission({
+    userProfile: managerProfile,
+    orgId: 'org_a',
+    currency: 'SAR',
+    branch: branchA1,
+    supplier: supplierActive,
+    date: '2026-11-18',
+    paymentMethod: 'cash',
+    items: [{ name: 'صنف', quantity: 1, unitPrice: 10 }],
+    purchaseId: 'pur/invalid',
+  });
+  assert.equal(badPurchaseId.ok, false);
+  if (!badPurchaseId.ok) assert.ok(badPurchaseId.errors.includes('invalid_purchase_id'));
+});
+
+runTest('14. Phase 1: clamps auditLog.actorName to 2..100 chars when displayName exceeds 100 chars', () => {
+  const longNameProfile: UserProfile = {
+    ...managerProfile,
+    displayName: 'م'.repeat(150),
+  };
+  const prepared = preparePurchaseSubmission({
+    userProfile: longNameProfile,
+    orgId: 'org_a',
+    currency: 'SAR',
+    branch: branchA1,
+    supplier: supplierActive,
+    date: '2026-11-18',
+    paymentMethod: 'cash',
+    items: [{ name: 'صنف', quantity: 1, unitPrice: 20 }],
+  });
+  assert.equal(prepared.ok, true);
+  if (!prepared.ok) return;
+  assert.ok(prepared.data.auditLog.actorName.length >= 2);
+  assert.ok(prepared.data.auditLog.actorName.length <= 100);
+
+  const sparseLongProfile: UserProfile = {
+    ...managerProfile,
+    displayName: 'أ' + ' '.repeat(120) + 'ب',
+  };
+  const preparedSparse = preparePurchaseSubmission({
+    userProfile: sparseLongProfile,
+    orgId: 'org_a',
+    currency: 'SAR',
+    branch: branchA1,
+    supplier: supplierActive,
+    date: '2026-11-18',
+    paymentMethod: 'cash',
+    items: [{ name: 'صنف', quantity: 1, unitPrice: 20 }],
+  });
+  assert.equal(preparedSparse.ok, true);
+  if (!preparedSparse.ok) return;
+  assert.equal(preparedSparse.data.auditLog.actorName, 'مستخدم النظام');
+});
+
+runTest('15. Phase 1: assertValidIsoCalendarDate trims whitespace and yields canonical YYYY-MM-DD', () => {
+  const parsed = assertValidIsoCalendarDate('  2026-11-19  ');
+  assert.equal(parsed.date, '2026-11-19');
+  assert.equal(parsed.yearMonth, '2026-11');
 });
 
 console.log('\n========================================================================');

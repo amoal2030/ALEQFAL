@@ -92,6 +92,12 @@ export interface SavedPurchaseRecord {
   attachmentsCount: number;
 }
 
+const SAFE_FIRESTORE_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+
+export function isValidFirestoreId(id: string | undefined | null): id is string {
+  return typeof id === 'string' && SAFE_FIRESTORE_ID_REGEX.test(id);
+}
+
 function generateSafeFirestoreId(prefix: string): string {
   const ts = Date.now().toString(36);
   const rand =
@@ -258,6 +264,14 @@ export function preparePurchaseSubmission(
     };
   }
 
+  if (!isValidFirestoreId(orgId)) {
+    return {
+      ok: false,
+      error: 'معرّف المؤسسة غير صالح.',
+      errors: ['invalid_org_id'],
+    };
+  }
+
   if (!canUserCreatePurchase(userProfile)) {
     return {
       ok: false,
@@ -271,6 +285,14 @@ export function preparePurchaseSubmission(
       ok: false,
       error: 'يرجى اختيار الفرع المرتبط بفاتورة المشتريات.',
       errors: ['branch_required'],
+    };
+  }
+
+  if (!isValidFirestoreId(branch.id)) {
+    return {
+      ok: false,
+      error: 'معرّف الفرع المختار غير صالح.',
+      errors: ['invalid_branch_id'],
     };
   }
 
@@ -295,6 +317,14 @@ export function preparePurchaseSubmission(
       ok: false,
       error: 'يرجى اختيار المورد من قائمة الموردين المسجلين.',
       errors: ['supplier_required'],
+    };
+  }
+
+  if (!isValidFirestoreId(supplier.id)) {
+    return {
+      ok: false,
+      error: 'معرّف المورد المختار غير صالح.',
+      errors: ['invalid_supplier_id'],
     };
   }
 
@@ -402,8 +432,16 @@ export function preparePurchaseSubmission(
 
   const nowIso = input.nowIso || new Date().toISOString();
   const purchaseId = input.purchaseId || generateSafeFirestoreId('pur');
+  if (!isValidFirestoreId(purchaseId)) {
+    return {
+      ok: false,
+      error: 'معرّف فاتورة المشتريات غير صالح.',
+      errors: ['invalid_purchase_id'],
+    };
+  }
   const actorNameRaw = (userProfile.displayName || userProfile.email || 'مستخدم').trim();
-  const actorName = actorNameRaw.length >= 2 ? actorNameRaw.slice(0, 100) : 'مستخدم النظام';
+  const actorNameCandidate = actorNameRaw.slice(0, 100).trim();
+  const actorName = actorNameCandidate.length >= 2 ? actorNameCandidate : 'مستخدم النظام';
   const safeBranchName = branch.name.trim().slice(0, 120);
   const safeSupplierName = supplier.name.trim().slice(0, 120);
 
@@ -524,7 +562,12 @@ export function preparePurchaseSubmission(
   };
 }
 
-function mapPurchaseFirestoreError(err: unknown, operation: OperationType, path: string): Error {
+function mapPurchaseFirestoreError(
+  err: unknown,
+  operation: OperationType,
+  path: string,
+  context?: Record<string, unknown>
+): Error {
   const code = (err as any)?.code || '';
   const rawMessage = err instanceof Error ? err.message : String(err);
 
@@ -533,6 +576,7 @@ function mapPurchaseFirestoreError(err: unknown, operation: OperationType, path:
     path,
     code,
     message: rawMessage,
+    ...(context ? { context } : {}),
   });
 
   if (code === 'permission-denied' || rawMessage.toLowerCase().includes('permission')) {
@@ -650,6 +694,21 @@ export async function savePurchaseInvoice(
     await batch.commit();
     return prepared.data;
   } catch (err) {
-    throw mapPurchaseFirestoreError(err, OperationType.CREATE, `purchases/${purchase.id}`);
+    throw mapPurchaseFirestoreError(err, OperationType.CREATE, `purchases/${purchase.id}`, {
+      orgId: purchase.orgId,
+      branchId: purchase.branchId,
+      supplierId: purchase.supplierId,
+      actorRole: purchase.createdByRole,
+      itemsCount: subItems.length,
+      attachmentsCount: attachments.length,
+      totalWrites: 3 + subItems.length + attachments.length,
+      collections: [
+        'purchases',
+        `purchases/items(${subItems.length})`,
+        ...(attachments.length > 0 ? [`attachments(${attachments.length})`] : []),
+        'auditLogs',
+        'notifications',
+      ],
+    });
   }
 }

@@ -2288,7 +2288,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
-    const { yearMonth } = assertValidIsoCalendarDate(data.date);
+    const { date: cleanDate, yearMonth } = assertValidIsoCalendarDate(data.date);
 
     const calc = calculateShiftTotals(data.cashSales, data.cardSales, data.expenses);
     if (!calc.isValid) {
@@ -2298,7 +2298,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const closingId = generateDeterministicClosingId(
       currentOrg.id,
       data.branchId,
-      data.date,
+      cleanDate,
       data.period
     );
     const closingDocRef = doc(db, 'closings', closingId);
@@ -2319,7 +2319,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           collection(db, 'closings'),
           where('orgId', '==', currentOrg.id),
           where('branchId', '==', data.branchId),
-          where('date', '==', data.date),
+          where('date', '==', cleanDate),
           where('period', '==', data.period)
         );
         const snap = await getDocs(q);
@@ -2337,7 +2337,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         throw new Error(
           `يوجد إقفال معتمد مسبقاً لهذا الفرع (${data.branchName}) للفترة ${
             data.period === 'morning' ? 'الصباحية' : 'المسائية'
-          } بتاريخ ${data.date}. لا يُسمح بتعديل الإقفال بعد اعتماده.`
+          } بتاريخ ${cleanDate}. لا يُسمح بتعديل الإقفال بعد اعتماده.`
         );
       }
       if (existingData.status === 'pending_review') {
@@ -2349,14 +2349,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // Ensure safeActorName has at least 2 characters as required by firestore.rules:
+    // Ensure safeActorName strictly complies with firestore.rules:
     // incoming().actorName is string && incoming().actorName.size() >= 2 && incoming().actorName.size() <= 100
-    let safeActorName = userProfile.displayName?.trim() || currentUser.email || 'موظف الصندوق';
+    let safeActorName = (
+      userProfile.displayName?.trim() ||
+      currentUser.email?.trim() ||
+      'موظف الصندوق'
+    )
+      .slice(0, 100)
+      .trim();
     if (safeActorName.length < 2) {
       safeActorName = 'موظف الصندوق';
     }
 
-    let safeEmployeeName = userProfile.displayName?.trim() || currentUser.email || 'موظف الصندوق';
+    let safeEmployeeName = (
+      userProfile.displayName?.trim() ||
+      currentUser.email?.trim() ||
+      'موظف الصندوق'
+    )
+      .slice(0, 100)
+      .trim();
     if (safeEmployeeName.length < 2) {
       safeEmployeeName = 'موظف الصندوق';
     }
@@ -2368,7 +2380,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       branchName: data.branchName,
       employeeId: currentUser.uid,
       employeeName: safeEmployeeName,
-      date: data.date,
+      date: cleanDate,
       period: data.period,
       cashSales: calc.cashSales,
       cardSales: calc.cardSales,
@@ -2394,7 +2406,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       targetId: closingId,
       details: `${data.status === 'draft' ? 'حفظ مسودة' : 'إرسال للمراجعة'} إقفال وردية ${
         data.period === 'morning' ? 'صباحية' : 'مسائية'
-      } لفرع ${data.branchName} بتاريخ ${data.date}. إجمالي المبيعات: ${calc.totalSales}`,
+      } لفرع ${data.branchName} بتاريخ ${cleanDate}. إجمالي المبيعات: ${calc.totalSales}`.slice(
+        0,
+        1000
+      ),
       timestamp: nowIso,
     };
 
@@ -2413,6 +2428,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Atomic batched write: creates closing, audit log, and pending_drive_sync archive index together
     const batch = writeBatch(db);
+    const batchedTargets: string[] = [
+      `closings/${closingId}:${existingData ? 'update' : 'create'}`,
+      `auditLogs/${logId}:create`,
+    ];
     batch.set(closingDocRef, newClosing);
     batch.set(auditLogRef, auditEntry);
     if (!existingArchive) {
@@ -2424,11 +2443,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         archiveStatus: 'pending_drive_sync',
         updatedAt: nowIso,
       });
+      batchedTargets.push(`closingArchives/${closingId}:create`);
     } else if (existingArchive.archiveStatus === 'pending_drive_sync') {
       batch.update(archiveDocRef, {
         archiveStatus: 'pending_drive_sync',
         updatedAt: nowIso,
       });
+      batchedTargets.push(`closingArchives/${closingId}:update`);
     }
 
     if (data.status === 'pending_review') {
@@ -2440,13 +2461,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         actorRole: userProfile.role,
         createdAt: nowIso,
       });
-      submitNotifs.forEach((n) => batch.set(doc(db, 'notifications', n.id), n));
+      submitNotifs.forEach((n) => {
+        batch.set(doc(db, 'notifications', n.id), n);
+        batchedTargets.push(`notifications/${n.id}:create`);
+      });
     }
 
     try {
       await batch.commit();
     } catch (err: any) {
-      console.error('Error committing shift closing batch:', err);
+      console.error('Error committing shift closing batch:', {
+        closingId,
+        orgId: currentOrg.id,
+        branchId: data.branchId,
+        status: data.status,
+        actorRole: userProfile.role,
+        totalWrites: batchedTargets.length,
+        batchedTargets,
+        code: err?.code || '',
+        message: err instanceof Error ? err.message : String(err),
+      });
       handleFirestoreError(err, OperationType.WRITE, `closings/${closingId}`);
     }
 

@@ -1,0 +1,2422 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Identity & Validation Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Sole authorized Super Admin verified via Firebase Auth token email + email_verified
+    function isSuperAdmin() {
+      return isSignedIn() &&
+        'email' in request.auth.token &&
+        'email_verified' in request.auth.token &&
+        request.auth.token.email is string &&
+        request.auth.token.email.trim().lower() == 'amoal2030@gmail.com' &&
+        request.auth.token.email_verified == true;
+    }
+
+    function isVerifiedEmailUser() {
+      return isSignedIn() &&
+        'email' in request.auth.token &&
+        'email_verified' in request.auth.token &&
+        request.auth.token.email is string &&
+        request.auth.token.email_verified == true &&
+        request.auth.token.email.trim().size() >= 3;
+    }
+
+    function authEmailLower() {
+      return request.auth.token.email.trim().lower();
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailDocId(val) {
+      return val is string &&
+        val.size() >= 3 &&
+        val.size() <= 254 &&
+        val == val.trim().lower() &&
+        val.matches('^[^\\s@/]+@[^\\s@/]+\\.[^\\s@/]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function hasValidUserDoc() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Active organization member (any of the 4 supported org roles)
+    function isOrgMember(targetOrgId) {
+      let u = getUserData();
+      return hasValidUserDoc() &&
+        u.isActive == true &&
+        u.orgId == targetOrgId;
+    }
+
+    // Active top-level manager of the organization
+    function isOrgManager(targetOrgId) {
+      let u = getUserData();
+      return hasValidUserDoc() &&
+        u.isActive == true &&
+        u.orgId == targetOrgId &&
+        u.role == 'manager';
+    }
+
+    // Explicit opt-in permission reader (fails closed when omitted or non-boolean)
+    function userHasPermission(u, permKey) {
+      let p = u.get('permissions', {});
+      return p is map && p.get(permKey, false) == true;
+    }
+
+    // Default-enabled permission reader for branch_manager (safely handles omitted/null permissions map, still fails closed on explicit false or invalid types)
+    function branchManagerHasDefaultPermission(u, permKey) {
+      let p = u.get('permissions', {});
+      return p == null || (p is map && (!(permKey in p) || p[permKey] == null || p[permKey] == true));
+    }
+
+    // Verifies single-branch assignment while preserving legacy scalar `branchId`, single-item `branchIds`, or empty/null `branchIds`
+    function userHasSingleAssignedBranch(u, targetBranchId) {
+      let rawBranchId = u.get('branchId', '');
+      let scalarClean = rawBranchId is string ? rawBranchId.trim() : '';
+      let scalarMatch = scalarClean == targetBranchId;
+      let hasBranchIds = 'branchIds' in u && u.branchIds is list && u.branchIds.size() > 0;
+      return targetBranchId is string &&
+        targetBranchId.size() > 0 && (
+          (
+            scalarMatch && (
+              !('branchIds' in u) ||
+              u.branchIds == null ||
+              (
+                u.branchIds is list && (
+                  u.branchIds.size() == 0 ||
+                  (u.branchIds.size() == 1 && u.branchIds[0] is string && u.branchIds[0].trim() == targetBranchId)
+                )
+              )
+            )
+          ) || (
+            scalarClean.size() == 0 &&
+            hasBranchIds &&
+            u.branchIds.size() == 1 &&
+            u.branchIds[0] is string &&
+            u.branchIds[0].trim() == targetBranchId
+          )
+        );
+    }
+
+    // Subscription enforcement helpers using Firestore server request.time
+    function hasAnySubscriptionField(org) {
+      return org.keys().hasAny([
+        'subscriptionPlan',
+        'subscriptionStatus',
+        'subscriptionStartAt',
+        'subscriptionEndAt',
+        'subscriptionUpdatedAt',
+        'subscriptionUpdatedBy',
+        'subscriptionNote'
+      ]);
+    }
+
+    function hasValidActiveSubscriptionConfig(org) {
+      return org.get('subscriptionPlan', '') in ['trial_7d', '1m', '3m', '6m', '1y'] &&
+        org.get('subscriptionStatus', '') == 'active' &&
+        org.get('subscriptionStartAt', null) is timestamp &&
+        org.get('subscriptionEndAt', null) is timestamp &&
+        request.time >= org.subscriptionStartAt &&
+        request.time < org.subscriptionEndAt;
+    }
+
+    function isNotPastDeactivationDue(org) {
+      return org.get('deactivationDueAt', null) == null ||
+        (org.deactivationDueAt is timestamp && request.time < org.deactivationDueAt);
+    }
+
+    // Preserves legacy organizations that have no subscription fields and are not suspended,
+    // while failing closed on any incomplete, malformed, expired, future-dated, or suspended subscription.
+    function isOrgSubscriptionAllowed(org) {
+      return org.get('isActive', true) == true && (
+        !hasAnySubscriptionField(org) ||
+        (hasValidActiveSubscriptionConfig(org) && isNotPastDeactivationDue(org))
+      );
+    }
+
+    function hasActiveOrgSubscription(targetOrgId) {
+      return isValidId(targetOrgId) &&
+        exists(/databases/$(database)/documents/organizations/$(targetOrgId)) &&
+        isOrgSubscriptionAllowed(get(/databases/$(database)/documents/organizations/$(targetOrgId)).data);
+    }
+
+    // Validation helper for Super Admin organization subscription writes
+    function hasValidSuperAdminSubscriptionPayload(data) {
+      return !hasAnySubscriptionField(data) || (
+        'subscriptionPlan' in data &&
+        data.subscriptionPlan in ['trial_7d', '1m', '3m', '6m', '1y'] &&
+        'subscriptionStatus' in data &&
+        data.subscriptionStatus in ['active', 'expired', 'suspended'] &&
+        'subscriptionStartAt' in data &&
+        data.subscriptionStartAt is timestamp &&
+        'subscriptionEndAt' in data &&
+        data.subscriptionEndAt is timestamp &&
+        data.subscriptionStartAt < data.subscriptionEndAt &&
+        (!('subscriptionUpdatedAt' in data) || data.subscriptionUpdatedAt is timestamp) &&
+        (!('subscriptionUpdatedBy' in data) || (data.subscriptionUpdatedBy is string && data.subscriptionUpdatedBy.size() <= 150)) &&
+        (!('subscriptionNote' in data) || (data.subscriptionNote is string && data.subscriptionNote.size() <= 500))
+      );
+    }
+
+    function hasValidBranchPricingPayload(data) {
+      return (!('branchPricingModel' in data) || data.branchPricingModel in ['per_branch_50_sar', 'per_extra_branch_50_sar']) &&
+        (!('includedBranchesCount' in data) || (data.includedBranchesCount is int && data.includedBranchesCount >= 0 && data.includedBranchesCount <= 1000)) &&
+        (!('extraBranchMonthlyFeeSar' in data) || (data.extraBranchMonthlyFeeSar is number && data.extraBranchMonthlyFeeSar >= 0 && data.extraBranchMonthlyFeeSar <= 100000)) &&
+        (!('extraBranchesCount' in data) || (data.extraBranchesCount is int && data.extraBranchesCount >= 0 && data.extraBranchesCount <= 1000)) &&
+        (!('extraBranchesMonthlyTotalSar' in data) || (data.extraBranchesMonthlyTotalSar is number && data.extraBranchesMonthlyTotalSar >= 0 && data.extraBranchesMonthlyTotalSar <= 10000000)) &&
+        (!('branchPricingUpdatedAt' in data) || data.branchPricingUpdatedAt is timestamp) &&
+        (!('branchPricingUpdatedBy' in data) || (data.branchPricingUpdatedBy is string && data.branchPricingUpdatedBy.size() <= 150)) &&
+        (!('branchPricingNote' in data) || (data.branchPricingNote is string && data.branchPricingNote.size() <= 500)) &&
+        (!('accountSetupFeeSar' in data) || (data.accountSetupFeeSar is number && data.accountSetupFeeSar >= 0 && data.accountSetupFeeSar <= 100000)) &&
+        (!('setupFeeStatus' in data) || data.setupFeeStatus in ['paid', 'unpaid', 'waived']) &&
+        (!('setupFeePaidAt' in data) || data.setupFeePaidAt == null || data.setupFeePaidAt is timestamp) &&
+        (!('reactivationFeeSar' in data) || (data.reactivationFeeSar is number && data.reactivationFeeSar >= 0 && data.reactivationFeeSar <= 100000)) &&
+        (!('reactivationFeeStatus' in data) || data.reactivationFeeStatus in ['paid', 'unpaid', 'waived']) &&
+        (!('reactivationFeePaidAt' in data) || data.reactivationFeePaidAt == null || data.reactivationFeePaidAt is timestamp) &&
+        (!('reactivatedAt' in data) || data.reactivatedAt == null || data.reactivatedAt is timestamp) &&
+        (!('reactivatedBy' in data) || data.reactivatedBy == null || (data.reactivatedBy is string && data.reactivatedBy.size() <= 150)) &&
+        (!('deactivationReason' in data) || data.deactivationReason == null || data.deactivationReason in ['no_paid_branches', 'manual_suspension', 'expired']) &&
+        (!('noPaidBranchGraceStartedAt' in data) || data.noPaidBranchGraceStartedAt == null || data.noPaidBranchGraceStartedAt is timestamp) &&
+        (!('deactivationDueAt' in data) || data.deactivationDueAt == null || data.deactivationDueAt is timestamp) &&
+        (!('deactivatedAt' in data) || data.deactivatedAt == null || data.deactivatedAt is timestamp);
+    }
+
+    function hasValidOrgReactivationTransition(nextData, prevData) {
+      return !('deactivationReason' in prevData) ||
+        prevData.deactivationReason != 'no_paid_branches' ||
+        ('isActive' in nextData && nextData.isActive == false) || (
+          (!('isActive' in nextData) || nextData.isActive == true) &&
+          'reactivationFeeStatus' in nextData &&
+          nextData.reactivationFeeStatus in ['paid', 'waived'] &&
+          (!('deactivationReason' in nextData) || nextData.deactivationReason == null) &&
+          (!('deactivationDueAt' in nextData) || nextData.deactivationDueAt == null)
+        );
+    }
+
+    function isClaimingValidManagerInvite(orgId) {
+      let email = authEmailLower();
+      let invBefore = get(/databases/$(database)/documents/managerInvites/$(email)).data;
+      let invAfter = getAfter(/databases/$(database)/documents/managerInvites/$(email)).data;
+      return isVerifiedEmailUser() &&
+        exists(/databases/$(database)/documents/managerInvites/$(email)) &&
+        invBefore.status == 'pending' &&
+        invBefore.role == 'manager' &&
+        invBefore.emailNormalized == email &&
+        invBefore.orgId == orgId &&
+        invAfter.status == 'accepted' &&
+        invAfter.acceptedByUid == request.auth.uid;
+    }
+
+    // Verifies a branch document exists and belongs to the target organization
+    function isBranchInOrg(branchId, targetOrgId) {
+      return isValidId(branchId) &&
+        exists(/databases/$(database)/documents/branches/$(branchId)) &&
+        get(/databases/$(database)/documents/branches/$(branchId)).data.orgId == targetOrgId;
+    }
+
+    // Verifies a supplier document exists and belongs to the target organization
+    function isSupplierInOrg(supplierId, targetOrgId) {
+      return isValidId(supplierId) &&
+        exists(/databases/$(database)/documents/suppliers/$(supplierId)) &&
+        get(/databases/$(database)/documents/suppliers/$(supplierId)).data.orgId == targetOrgId;
+    }
+
+    function supplierDocIsActiveInOrg(supplierId, targetOrgId) {
+      let s = get(/databases/$(database)/documents/suppliers/$(supplierId)).data;
+      return s.orgId == targetOrgId && s.isActive == true;
+    }
+
+    // Verifies a supplier document exists, belongs to targetOrgId, and is currently active
+    function isActiveSupplierInOrg(supplierId, targetOrgId) {
+      return isValidId(supplierId) &&
+        exists(/databases/$(database)/documents/suppliers/$(supplierId)) &&
+        supplierDocIsActiveInOrg(supplierId, targetOrgId);
+    }
+
+    function isValidCurrencyAmount(val) {
+      let scaled = val * 100;
+      return val is number &&
+        val >= -1000000000000 &&
+        val <= 1000000000000 &&
+        math.abs(scaled - math.round(scaled)) < 0.001;
+    }
+
+    function hasValidHalalaShiftAccounting(data) {
+      let cash = data.cashSales;
+      let card = data.cardSales;
+      let exp = data.expenses;
+      let tot = data.totalSales;
+      let rem = data.remainingInBox;
+      let net = data.netPeriod;
+      let cashH = math.round(cash * 100);
+      let cardH = math.round(card * 100);
+      let expH = math.round(exp * 100);
+      return isValidCurrencyAmount(cash) && cash >= 0 &&
+        isValidCurrencyAmount(card) && card >= 0 &&
+        isValidCurrencyAmount(exp) && exp >= 0 &&
+        isValidCurrencyAmount(tot) && tot >= 0 &&
+        isValidCurrencyAmount(rem) &&
+        isValidCurrencyAmount(net) &&
+        math.round(tot * 100) == cashH + cardH &&
+        math.round(rem * 100) == cashH - expH &&
+        math.round(net * 100) == (cashH + cardH) - expH;
+    }
+
+    function isValidYearMonth(ym) {
+      return ym is string && ym.matches('^\\d{4}-(0[1-9]|1[0-2])$');
+    }
+
+    function isValidCalendarDate(d) {
+      return d is string && d.size() == 10 && d.matches('^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$');
+    }
+
+    function isValidDriveId(val) {
+      return val is string &&
+        val.size() >= 1 &&
+        val.size() <= 256 &&
+        val.matches('^[a-zA-Z0-9._\\-]+$') &&
+        !val.matches('.*\\.\\..*');
+    }
+
+    function isValidIsoTimestamp(ts) {
+      return ts is string &&
+        ts.size() <= 40 &&
+        ts.matches('^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$');
+    }
+
+    function closingMatchesYearMonth(c, ym) {
+      return c.date is string &&
+        c.date.size() == 10 &&
+        c.date.matches('^' + ym + '-(0[1-9]|[12]\\d|3[01])$');
+    }
+
+    function hasNoDriveProofFields(data) {
+      return !data.keys().hasAny([
+        'driveExcelFileId',
+        'driveExcelFileName',
+        'driveExcelWebViewLink',
+        'driveMonthFolderId',
+        'drivePayloadHash',
+        'driveRevision',
+        'previousDriveExcelFileId',
+        'sourceCorrectionAt',
+        'archivedAt',
+        'archivedBy'
+      ]);
+    }
+
+    function isValidNonApprovedCreatorClosingData(c, targetOrgId, targetBranchId, ym) {
+      return c.orgId == targetOrgId &&
+        c.branchId == targetBranchId &&
+        c.employeeId == request.auth.uid &&
+        c.status in ['draft', 'pending_review', 'rejected'] &&
+        closingMatchesYearMonth(c, ym);
+    }
+
+    function isExistingClosingNonApprovedForCreator(closingId, targetOrgId, targetBranchId, ym) {
+      let c = get(/databases/$(database)/documents/closings/$(closingId)).data;
+      return isValidNonApprovedCreatorClosingData(c, targetOrgId, targetBranchId, ym);
+    }
+
+    function isAfterClosingNonApprovedForCreator(closingId, targetOrgId, targetBranchId, ym) {
+      let cAfter = getAfter(/databases/$(database)/documents/closings/$(closingId)).data;
+      return isValidNonApprovedCreatorClosingData(cAfter, targetOrgId, targetBranchId, ym);
+    }
+
+    function isValidArchiveError(val) {
+      return val is string && val.trim().size() >= 5 && val.size() <= 1000;
+    }
+
+    function hasValidArchivedDriveProof(data, cAfter) {
+      return data.keys().hasAll([
+          'driveExcelFileId',
+          'driveExcelFileName',
+          'driveMonthFolderId',
+          'drivePayloadHash',
+          'driveRevision',
+          'archivedAt',
+          'archivedBy'
+        ]) &&
+        isValidDriveId(data.driveExcelFileId) &&
+        data.driveExcelFileName is string &&
+        data.driveExcelFileName.trim().size() >= 5 &&
+        data.driveExcelFileName.size() <= 256 &&
+        data.driveExcelFileName.matches('^[^/\\\\]+\\.[xX][lL][sS][xX]$') &&
+        isValidDriveId(data.driveMonthFolderId) &&
+        data.drivePayloadHash is string &&
+        data.drivePayloadHash.size() == 64 &&
+        data.drivePayloadHash.matches('^[a-fA-F0-9]{64}$') &&
+        data.driveRevision is int &&
+        data.driveRevision >= 1 &&
+        data.driveRevision <= 100000 &&
+        isValidIsoTimestamp(data.archivedAt) &&
+        isValidId(data.archivedBy) &&
+        data.archivedBy == request.auth.uid &&
+        (!('driveExcelWebViewLink' in data) || (data.driveExcelWebViewLink is string && data.driveExcelWebViewLink.size() >= 12 && data.driveExcelWebViewLink.size() <= 512 && data.driveExcelWebViewLink.matches('^https://[a-zA-Z0-9.\\-]+/.*$'))) &&
+        (!('previousDriveExcelFileId' in data) || isValidDriveId(data.previousDriveExcelFileId)) &&
+        (
+          (!('correctedAt' in cAfter) && !('sourceCorrectionAt' in data)) ||
+          ('correctedAt' in cAfter && 'sourceCorrectionAt' in data && isValidIsoTimestamp(data.sourceCorrectionAt) && data.sourceCorrectionAt == cAfter.correctedAt)
+        ) &&
+        !('archiveError' in data);
+    }
+
+    function preservesPreviousArchiveProof(nextData, prevData) {
+      return prevData.keys().hasAll([
+          'driveExcelFileId',
+          'driveExcelFileName',
+          'driveMonthFolderId',
+          'drivePayloadHash',
+          'driveRevision',
+          'archivedAt',
+          'archivedBy'
+        ]) &&
+        nextData.driveExcelFileId == prevData.driveExcelFileId &&
+        nextData.driveExcelFileName == prevData.driveExcelFileName &&
+        nextData.driveMonthFolderId == prevData.driveMonthFolderId &&
+        nextData.drivePayloadHash == prevData.drivePayloadHash &&
+        nextData.driveRevision == prevData.driveRevision &&
+        nextData.archivedAt == prevData.archivedAt &&
+        nextData.archivedBy == prevData.archivedBy &&
+        (
+          (!('driveExcelWebViewLink' in prevData) && !('driveExcelWebViewLink' in nextData)) ||
+          ('driveExcelWebViewLink' in prevData && 'driveExcelWebViewLink' in nextData && nextData.driveExcelWebViewLink == prevData.driveExcelWebViewLink)
+        ) &&
+        (
+          (!('previousDriveExcelFileId' in prevData) && !('previousDriveExcelFileId' in nextData)) ||
+          ('previousDriveExcelFileId' in prevData && 'previousDriveExcelFileId' in nextData && nextData.previousDriveExcelFileId == prevData.previousDriveExcelFileId)
+        );
+    }
+
+    function preservesCurrentCorrectionRef(nextData, prevData, cAfter) {
+      return 'sourceCorrectionAt' in prevData &&
+        'sourceCorrectionAt' in nextData &&
+        isValidIsoTimestamp(nextData.sourceCorrectionAt) &&
+        nextData.sourceCorrectionAt == prevData.sourceCorrectionAt &&
+        'correctedAt' in cAfter &&
+        nextData.sourceCorrectionAt == cAfter.correctedAt;
+    }
+
+    function matchesFreshAdminCorrection(closingId, nextData, prevData, cAfter) {
+      let cBefore = get(/databases/$(database)/documents/closings/$(closingId)).data;
+      return cBefore.status == 'approved' &&
+        cAfter.status == 'approved' &&
+        'correctedBy' in cAfter &&
+        cAfter.correctedBy == request.auth.uid &&
+        'correctedAt' in cAfter &&
+        isValidIsoTimestamp(cAfter.correctedAt) &&
+        cAfter.correctedAt != cBefore.get('correctedAt', '') &&
+        cAfter.correctedAt != prevData.get('sourceCorrectionAt', '') &&
+        'sourceCorrectionAt' in nextData &&
+        nextData.sourceCorrectionAt == cAfter.correctedAt;
+    }
+
+    function isFreshAdminCorrectionForStale(closingId, nextData, prevData, cAfter) {
+      return exists(/databases/$(database)/documents/closings/$(closingId)) &&
+        matchesFreshAdminCorrection(closingId, nextData, prevData, cAfter);
+    }
+
+    function hasRequiredReArchiveProgression(nextData, prevData, cAfter) {
+      return 'driveRevision' in prevData && prevData.driveRevision is int &&
+        'drivePayloadHash' in prevData &&
+        'driveExcelFileId' in prevData &&
+        nextData.driveRevision >= prevData.driveRevision + 1 &&
+        nextData.drivePayloadHash != prevData.drivePayloadHash &&
+        nextData.driveExcelFileId != prevData.driveExcelFileId &&
+        'previousDriveExcelFileId' in nextData &&
+        nextData.previousDriveExcelFileId == prevData.driveExcelFileId &&
+        preservesCurrentCorrectionRef(nextData, prevData, cAfter);
+    }
+
+    function hasStatusRequiredFieldsOnCreate(data, cAfter) {
+      return (
+          data.archiveStatus == 'pending_drive_sync' &&
+          cAfter.status in ['draft', 'pending_review', 'rejected', 'approved'] &&
+          hasNoDriveProofFields(data) &&
+          !('archiveError' in data)
+        ) ||
+        (
+          data.archiveStatus == 'failed' &&
+          cAfter.status == 'approved' &&
+          hasNoDriveProofFields(data) &&
+          'archiveError' in data &&
+          isValidArchiveError(data.archiveError)
+        ) ||
+        (
+          data.archiveStatus == 'archived' &&
+          cAfter.status == 'approved' &&
+          !('previousDriveExcelFileId' in data) &&
+          hasValidArchivedDriveProof(data, cAfter)
+        );
+    }
+
+    function isValidManagerTransition(closingId, nextData, prevData, cAfter) {
+      let prevSt = prevData.archiveStatus;
+      let nextSt = nextData.archiveStatus;
+      return nextSt == 'pending_drive_sync' ? (
+        hasNoDriveProofFields(prevData) &&
+        hasNoDriveProofFields(nextData) &&
+        !('archiveError' in nextData) && (
+          (prevSt == 'pending_drive_sync' && cAfter.status in ['draft', 'pending_review', 'rejected', 'approved']) ||
+          (prevSt == 'failed' && cAfter.status == 'approved')
+        )
+      ) : nextSt == 'failed' ? (
+        cAfter.status == 'approved' &&
+        'archiveError' in nextData &&
+        isValidArchiveError(nextData.archiveError) && (
+          (prevSt == 'pending_drive_sync' && hasNoDriveProofFields(prevData) && hasNoDriveProofFields(nextData)) ||
+          (
+            prevSt == 'failed' && (
+              (hasNoDriveProofFields(prevData) && hasNoDriveProofFields(nextData)) ||
+              ('driveExcelFileId' in prevData && preservesPreviousArchiveProof(nextData, prevData) && preservesCurrentCorrectionRef(nextData, prevData, cAfter))
+            )
+          ) ||
+          (prevSt == 'stale' && preservesPreviousArchiveProof(nextData, prevData) && preservesCurrentCorrectionRef(nextData, prevData, cAfter))
+        )
+      ) : nextSt == 'archived' ? (
+        cAfter.status == 'approved' &&
+        hasValidArchivedDriveProof(nextData, cAfter) && (
+          (prevSt == 'pending_drive_sync' && hasNoDriveProofFields(prevData) && !('previousDriveExcelFileId' in nextData)) ||
+          (
+            prevSt == 'failed' && (
+              (hasNoDriveProofFields(prevData) && !('previousDriveExcelFileId' in nextData)) ||
+              ('driveExcelFileId' in prevData && hasRequiredReArchiveProgression(nextData, prevData, cAfter))
+            )
+          ) ||
+          (prevSt == 'stale' && hasRequiredReArchiveProgression(nextData, prevData, cAfter))
+        )
+      ) : nextSt == 'stale' ? (
+        (prevSt in ['archived', 'stale'] || (prevSt == 'failed' && 'driveExcelFileId' in prevData)) &&
+        !('archiveError' in nextData) &&
+        preservesPreviousArchiveProof(nextData, prevData) &&
+        isFreshAdminCorrectionForStale(closingId, nextData, prevData, cAfter)
+      ) : false;
+    }
+
+    function managerArchiveCreateMatchesClosing(closingId, data) {
+      let cAfter = getAfter(/databases/$(database)/documents/closings/$(closingId)).data;
+      return cAfter.orgId == data.orgId &&
+        cAfter.branchId == data.branchId &&
+        closingMatchesYearMonth(cAfter, data.yearMonth) &&
+        hasStatusRequiredFieldsOnCreate(data, cAfter);
+    }
+
+    function managerArchiveUpdateMatchesClosing(closingId, nextData, prevData) {
+      let cAfter = getAfter(/databases/$(database)/documents/closings/$(closingId)).data;
+      return cAfter.orgId == prevData.orgId &&
+        cAfter.branchId == prevData.branchId &&
+        closingMatchesYearMonth(cAfter, prevData.yearMonth) &&
+        isValidManagerTransition(closingId, nextData, prevData, cAfter);
+    }
+
+    function canReadClosingArchive(data, checkDataOrgSub) {
+      let u = getUserData();
+      let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
+      return u.isActive == true &&
+        u.orgId == data.orgId &&
+        hasActiveOrgSubscription(orgSubId) && (
+          u.role == 'manager' ||
+          (u.role == 'supervisor' && (userHasPermission(u, 'canViewAllClosings') || userHasPermission(u, 'canApproveClosings'))) ||
+          (u.role in ['branch_manager', 'employee'] && userHasSingleAssignedBranch(u, data.branchId))
+        );
+    }
+
+    function canCreateClosingArchive(closingId, data) {
+      let u = getUserData();
+      let isCreatorStaff = (u.role in ['branch_manager', 'employee'] && userHasSingleAssignedBranch(u, data.branchId)) ||
+        (u.role == 'supervisor' && (userHasPermission(u, 'canCreateClosing') || userHasPermission(u, 'canApproveClosings')));
+      return u.isActive == true &&
+        u.orgId == data.orgId &&
+        hasActiveOrgSubscription(data.orgId) && (
+          u.role == 'manager' ? (
+            data.keys().hasOnly([
+              'closingId', 'orgId', 'branchId', 'yearMonth', 'archiveStatus',
+              'driveExcelFileId', 'driveExcelFileName', 'driveExcelWebViewLink',
+              'driveMonthFolderId', 'drivePayloadHash', 'driveRevision',
+              'previousDriveExcelFileId', 'sourceCorrectionAt',
+              'archivedAt', 'archivedBy', 'archiveError', 'updatedAt'
+            ]) &&
+            data.archiveStatus in ['pending_drive_sync', 'archived', 'failed'] &&
+            existsAfter(/databases/$(database)/documents/closings/$(closingId)) &&
+            managerArchiveCreateMatchesClosing(closingId, data)
+          ) : isCreatorStaff ? (
+            data.keys().hasOnly([
+              'closingId', 'orgId', 'branchId', 'yearMonth', 'archiveStatus', 'updatedAt'
+            ]) &&
+            data.archiveStatus == 'pending_drive_sync' &&
+            (
+              !exists(/databases/$(database)/documents/closings/$(closingId)) ||
+              isExistingClosingNonApprovedForCreator(closingId, data.orgId, data.branchId, data.yearMonth)
+            ) &&
+            existsAfter(/databases/$(database)/documents/closings/$(closingId)) &&
+            isAfterClosingNonApprovedForCreator(closingId, data.orgId, data.branchId, data.yearMonth)
+          ) : false
+        );
+    }
+
+    function canUpdateClosingArchive(closingId, nextData, prevData) {
+      let u = getUserData();
+      let isCreatorStaff = (u.role in ['branch_manager', 'employee'] && userHasSingleAssignedBranch(u, prevData.branchId)) ||
+        (u.role == 'supervisor' && (userHasPermission(u, 'canCreateClosing') || userHasPermission(u, 'canApproveClosings')));
+      return u.isActive == true &&
+        u.orgId == prevData.orgId &&
+        hasActiveOrgSubscription(prevData.orgId) && (
+          u.role == 'manager' ? (
+            nextData.diff(prevData).affectedKeys().hasOnly([
+              'archiveStatus',
+              'driveExcelFileId', 'driveExcelFileName', 'driveExcelWebViewLink',
+              'driveMonthFolderId', 'drivePayloadHash', 'driveRevision',
+              'previousDriveExcelFileId', 'sourceCorrectionAt',
+              'archivedAt', 'archivedBy', 'archiveError', 'updatedAt'
+            ]) &&
+            nextData.archiveStatus in ['pending_drive_sync', 'archived', 'failed', 'stale'] &&
+            existsAfter(/databases/$(database)/documents/closings/$(closingId)) &&
+            managerArchiveUpdateMatchesClosing(closingId, nextData, prevData)
+          ) : isCreatorStaff ? (
+            prevData.branchId is string && prevData.branchId.size() > 0 &&
+            nextData.diff(prevData).affectedKeys().hasOnly(['archiveStatus', 'updatedAt']) &&
+            prevData.archiveStatus == 'pending_drive_sync' &&
+            nextData.archiveStatus == 'pending_drive_sync' &&
+            exists(/databases/$(database)/documents/closings/$(closingId)) &&
+            isExistingClosingNonApprovedForCreator(closingId, prevData.orgId, prevData.branchId, prevData.yearMonth) &&
+            existsAfter(/databases/$(database)/documents/closings/$(closingId)) &&
+            isAfterClosingNonApprovedForCreator(closingId, prevData.orgId, prevData.branchId, prevData.yearMonth)
+          ) : false
+        );
+    }
+
+    // Organizations Collection
+    match /organizations/{orgId} {
+      // Allow members to read their own organization doc (even if expired) so UI can show expiry/renewal info
+      allow get: if isSignedIn() && isValidId(orgId) && (
+        isSuperAdmin() ||
+        isOrgMember(orgId) ||
+        (
+          resource != null && (
+            resource.data.ownerId == request.auth.uid ||
+            (
+              isVerifiedEmailUser() &&
+              'ownerEmail' in resource.data &&
+              resource.data.ownerEmail is string &&
+              resource.data.ownerEmail.trim().lower() == authEmailLower()
+            )
+          )
+        )
+      );
+
+      allow list: if isSignedIn() && (
+        isSuperAdmin() ||
+        resource.data.ownerId == request.auth.uid
+      );
+
+      // Exclusive to verified Super Admin (no self-onboarding)
+      allow create: if isSuperAdmin() && isValidId(orgId) &&
+        incoming().keys().hasAll([
+          'id', 'name', 'activityType', 'currency', 'ownerEmail', 'ownerName',
+          'driveConnected', 'createdAt', 'updatedAt'
+        ]) &&
+        incoming().keys().hasOnly([
+          'id', 'name', 'taxNumber', 'commercialRegistration', 'activityType', 'currency',
+          'ownerId', 'ownerEmail', 'ownerName',
+          'driveConnected', 'driveWriteVerified', 'driveLastHealthStatus',
+          'isActive',
+          'subscriptionPlan', 'subscriptionStatus', 'subscriptionStartAt',
+          'subscriptionEndAt', 'subscriptionUpdatedAt', 'subscriptionUpdatedBy',
+          'subscriptionNote',
+          'branchPricingModel', 'includedBranchesCount', 'extraBranchMonthlyFeeSar',
+          'extraBranchesCount', 'extraBranchesMonthlyTotalSar',
+          'branchPricingUpdatedAt', 'branchPricingUpdatedBy', 'branchPricingNote',
+          'accountSetupFeeSar', 'setupFeeStatus', 'setupFeePaidAt',
+          'reactivationFeeSar', 'reactivationFeeStatus', 'reactivationFeePaidAt',
+          'reactivatedAt', 'reactivatedBy',
+          'deactivationReason', 'noPaidBranchGraceStartedAt', 'deactivationDueAt', 'deactivatedAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        incoming().id == orgId &&
+        incoming().name is string && incoming().name.size() >= 2 && incoming().name.size() <= 120 &&
+        (!('taxNumber' in incoming()) || (incoming().taxNumber is string && incoming().taxNumber.size() <= 40)) &&
+        incoming().activityType in ['retail', 'restaurant', 'supermarket', 'services', 'other'] &&
+        incoming().currency in ['SAR', 'AED', 'QAR', 'KWD', 'USD'] &&
+        incoming().ownerEmail is string && incoming().ownerEmail.trim().size() >= 3 && incoming().ownerEmail.size() <= 254 &&
+        incoming().ownerName is string && incoming().ownerName.trim().size() >= 1 && incoming().ownerName.size() <= 100 &&
+        (!('ownerId' in incoming()) || (incoming().ownerId is string && incoming().ownerId.size() <= 128)) &&
+        (!('commercialRegistration' in incoming()) || (incoming().commercialRegistration is string && incoming().commercialRegistration.size() <= 50)) &&
+        incoming().driveConnected == false &&
+        (!('isActive' in incoming()) || incoming().isActive is bool) &&
+        hasValidSuperAdminSubscriptionPayload(incoming()) &&
+        hasValidBranchPricingPayload(incoming());
+
+      allow update: if isSignedIn() && isValidId(orgId) && (
+        isSuperAdmin() ? (
+          // 1. Super Admin managing organization profile (name, taxNumber, commercialRegistration), status, owner binding, fees, and subscription fields
+          incoming().id == existing().id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'taxNumber', 'commercialRegistration', 'activityType', 'currency',
+            'ownerId', 'ownerEmail', 'ownerName', 'isActive',
+            'subscriptionPlan', 'subscriptionStatus', 'subscriptionStartAt',
+            'subscriptionEndAt', 'subscriptionUpdatedAt', 'subscriptionUpdatedBy',
+            'subscriptionNote',
+            'branchPricingModel', 'includedBranchesCount', 'extraBranchMonthlyFeeSar',
+            'extraBranchesCount', 'extraBranchesMonthlyTotalSar',
+            'branchPricingUpdatedAt', 'branchPricingUpdatedBy', 'branchPricingNote',
+            'accountSetupFeeSar', 'setupFeeStatus', 'setupFeePaidAt',
+            'reactivationFeeSar', 'reactivationFeeStatus', 'reactivationFeePaidAt',
+            'reactivatedAt', 'reactivatedBy',
+            'deactivationReason', 'noPaidBranchGraceStartedAt', 'deactivationDueAt', 'deactivatedAt',
+            'updatedAt'
+          ]) &&
+          incoming().name is string && incoming().name.size() >= 2 && incoming().name.size() <= 120 &&
+          (!('taxNumber' in incoming()) || (incoming().taxNumber is string && incoming().taxNumber.size() <= 40)) &&
+          incoming().activityType in ['retail', 'restaurant', 'supermarket', 'services', 'other'] &&
+          incoming().currency in ['SAR', 'AED', 'QAR', 'KWD', 'USD'] &&
+          incoming().ownerEmail is string && incoming().ownerEmail.trim().size() >= 3 && incoming().ownerEmail.size() <= 254 &&
+          incoming().ownerName is string && incoming().ownerName.trim().size() >= 1 && incoming().ownerName.size() <= 100 &&
+          (!('ownerId' in incoming()) || (incoming().ownerId is string && incoming().ownerId.size() <= 128)) &&
+          (!('commercialRegistration' in incoming()) || (incoming().commercialRegistration is string && incoming().commercialRegistration.size() <= 50)) &&
+          (!('isActive' in incoming()) || incoming().isActive is bool) &&
+          hasValidSuperAdminSubscriptionPayload(incoming()) &&
+          hasValidBranchPricingPayload(incoming()) &&
+          hasValidOrgReactivationTransition(incoming(), existing())
+        ) : hasValidUserDoc() ? (
+          // 2. Active Manager updating ONLY non-sensitive Google Drive link/cache metadata (strict allowlist; protects name, taxNumber, CR, fees, subscription & ownership)
+          isOrgManager(orgId) &&
+          hasActiveOrgSubscription(orgId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().id == existing().id &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'driveConnected',
+            'driveFolderId',
+            'driveFolderName',
+            'driveFolderLink',
+            'driveAccountEmail',
+            'driveAccountName',
+            'driveGoogleSub',
+            'driveLinkedAt',
+            'driveMonthFolderIds',
+            'driveWriteVerified',
+            'driveWriteVerifiedAt',
+            'driveLastHealthStatus',
+            'driveHealthError',
+            'updatedAt'
+          ])
+        ) : (
+          // 3. Atomic invite claim binding ownerId on first verified Google login of invited manager
+          isVerifiedEmailUser() &&
+          hasActiveOrgSubscription(orgId) &&
+          'ownerEmail' in existing() &&
+          existing().ownerEmail is string &&
+          existing().ownerEmail.trim().lower() == authEmailLower() &&
+          (!('ownerId' in existing()) || existing().ownerId == '' || existing().ownerId == request.auth.uid) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['ownerId', 'ownerName', 'updatedAt']) &&
+          incoming().ownerId == request.auth.uid &&
+          (!('ownerName' in incoming()) || (incoming().ownerName is string && incoming().ownerName.trim().size() >= 1 && incoming().ownerName.size() <= 100)) &&
+          isClaimingValidManagerInvite(orgId) &&
+          existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.orgId == orgId &&
+          getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager'
+        )
+      );
+
+      allow delete: if false;
+    }
+
+    // Manager Invites Collection (keyed by normalized lowercase Google email)
+    match /managerInvites/{inviteEmail} {
+      allow get: if isSignedIn() && isValidEmailDocId(inviteEmail) && (
+        isSuperAdmin() ||
+        (
+          isVerifiedEmailUser() &&
+          inviteEmail == authEmailLower() &&
+          (resource == null || resource.data.emailNormalized == authEmailLower())
+        )
+      );
+
+      allow list: if isSuperAdmin();
+
+      allow create: if isSuperAdmin() &&
+        isValidEmailDocId(inviteEmail) &&
+        incoming().keys().hasAll([
+          'id', 'email', 'emailNormalized', 'orgId', 'role', 'status',
+          'createdAt', 'createdBy', 'updatedAt'
+        ]) &&
+        incoming().keys().hasOnly([
+          'id', 'email', 'emailNormalized', 'orgId', 'orgName', 'managerName',
+          'role', 'status', 'createdAt', 'createdBy', 'updatedAt'
+        ]) &&
+        incoming().id == inviteEmail &&
+        incoming().emailNormalized == inviteEmail &&
+        incoming().email is string &&
+        incoming().email.trim().lower() == inviteEmail &&
+        isValidId(incoming().orgId) &&
+        existsAfter(/databases/$(database)/documents/organizations/$(incoming().orgId)) &&
+        incoming().role == 'manager' &&
+        incoming().status == 'pending' &&
+        (!('orgName' in incoming()) || (incoming().orgName is string && incoming().orgName.size() <= 120)) &&
+        (!('managerName' in incoming()) || (incoming().managerName is string && incoming().managerName.size() <= 100)) &&
+        incoming().createdBy is string && incoming().createdBy.size() >= 1 && incoming().createdBy.size() <= 150 &&
+        (incoming().createdAt is timestamp || isValidIsoTimestamp(incoming().createdAt)) &&
+        (incoming().updatedAt is timestamp || isValidIsoTimestamp(incoming().updatedAt));
+
+      allow update: if isSignedIn() && isValidEmailDocId(inviteEmail) && (
+        // 1. Super Admin modifying or cancelling an invite
+        (
+          isSuperAdmin() &&
+          incoming().id == existing().id &&
+          incoming().emailNormalized == existing().emailNormalized &&
+          incoming().email is string &&
+          incoming().email.trim().lower() == inviteEmail &&
+          incoming().role == 'manager' &&
+          incoming().status in ['pending', 'cancelled'] &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().createdBy == existing().createdBy &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'orgId', 'orgName', 'managerName', 'status', 'updatedAt', 'cancelledAt', 'email'
+          ]) &&
+          isValidId(incoming().orgId) &&
+          existsAfter(/databases/$(database)/documents/organizations/$(incoming().orgId)) &&
+          (!('orgName' in incoming()) || (incoming().orgName is string && incoming().orgName.size() <= 120)) &&
+          (!('managerName' in incoming()) || (incoming().managerName is string && incoming().managerName.size() <= 100)) &&
+          (incoming().updatedAt is timestamp || isValidIsoTimestamp(incoming().updatedAt)) &&
+          (!('cancelledAt' in incoming()) || incoming().cancelledAt is timestamp || isValidIsoTimestamp(incoming().cancelledAt))
+        ) ||
+        // 2. Verified invited Google user atomically accepting pending invite
+        (
+          isVerifiedEmailUser() &&
+          inviteEmail == authEmailLower() &&
+          existing().emailNormalized == authEmailLower() &&
+          existing().role == 'manager' &&
+          existing().status == 'pending' &&
+          incoming().status == 'accepted' &&
+          incoming().acceptedByUid == request.auth.uid &&
+          incoming().acceptedAt == request.time &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'acceptedByUid', 'acceptedAt', 'updatedAt'
+          ]) &&
+          hasActiveOrgSubscription(existing().orgId) &&
+          !exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.uid == request.auth.uid &&
+          getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.orgId == existing().orgId &&
+          getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager' &&
+          getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.isActive == true &&
+          exists(/databases/$(database)/documents/organizations/$(existing().orgId)) &&
+          getAfter(/databases/$(database)/documents/organizations/$(existing().orgId)).data.ownerId == request.auth.uid
+        )
+      );
+
+      allow delete: if false;
+    }
+
+    function isValidManagerPermissionsMap(perms) {
+      return perms is map &&
+        perms.keys().hasAll([
+          'canCreateClosing', 'canViewAllClosings', 'canApproveClosings',
+          'canManageBranches', 'canManageEmployees', 'canExportReports'
+        ]) &&
+        perms.keys().hasOnly([
+          'canCreateClosing', 'canViewAllClosings', 'canApproveClosings',
+          'canManageBranches', 'canManageEmployees', 'canExportReports',
+          'canManagePurchases', 'canManageSuppliers', 'canViewSuppliers',
+          'canViewFinancialReports'
+        ]) &&
+        perms.canCreateClosing == true &&
+        perms.canViewAllClosings == true &&
+        perms.canApproveClosings == true &&
+        perms.canManageBranches == true &&
+        perms.canManageEmployees == true &&
+        perms.canExportReports == true &&
+        (!('canManagePurchases' in perms) || perms.canManagePurchases == true) &&
+        (!('canManageSuppliers' in perms) || perms.canManageSuppliers == true) &&
+        (!('canViewSuppliers' in perms) || perms.canViewSuppliers == true) &&
+        (!('canViewFinancialReports' in perms) || perms.canViewFinancialReports == true);
+    }
+
+    function hasValidOptionalPermissionTypes(perms) {
+      return perms is map &&
+        perms.keys().hasOnly([
+          'canCreateClosing', 'canViewAllClosings', 'canApproveClosings',
+          'canManageBranches', 'canManageEmployees', 'canExportReports',
+          'canManagePurchases', 'canManageSuppliers', 'canViewSuppliers',
+          'canViewFinancialReports'
+        ]) &&
+        perms.get('canCreateClosing', false) is bool &&
+        perms.get('canViewAllClosings', false) is bool &&
+        perms.get('canApproveClosings', false) is bool &&
+        perms.get('canManageBranches', false) is bool &&
+        perms.get('canManageEmployees', false) is bool &&
+        perms.get('canExportReports', false) is bool &&
+        perms.get('canManagePurchases', false) is bool &&
+        perms.get('canManageSuppliers', false) is bool &&
+        perms.get('canViewSuppliers', false) is bool &&
+        perms.get('canViewFinancialReports', false) is bool;
+    }
+
+    function hasSafeNonManagerPermissions(role, perms) {
+      return hasValidOptionalPermissionTypes(perms) &&
+        perms.get('canManageBranches', false) == false &&
+        perms.get('canManageEmployees', false) == false && (
+          role == 'supervisor' || (
+            perms.get('canViewAllClosings', false) == false &&
+            perms.get('canApproveClosings', false) == false &&
+            perms.get('canExportReports', false) == false &&
+            perms.get('canManageSuppliers', false) == false &&
+            perms.get('canViewFinancialReports', false) == false && (
+              role == 'branch_manager' || (
+                perms.get('canManagePurchases', false) == false &&
+                perms.get('canViewSuppliers', false) == false
+              )
+            )
+          )
+        );
+    }
+
+    function hasValidStaffBranchBinding(data) {
+      return (data.role == 'supervisor' && (
+          !('branchId' in data) ||
+          data.branchId == '' ||
+          isBranchInOrg(data.branchId, data.orgId)
+        ) && (
+          !('branchIds' in data) ||
+          (data.branchIds is list && data.branchIds.size() == 0)
+        )) || (
+          data.role in ['branch_manager', 'employee'] &&
+          'branchId' in data &&
+          isBranchInOrg(data.branchId, data.orgId) && (
+            !('branchIds' in data) || (
+              data.branchIds is list &&
+              data.branchIds.size() == 1 &&
+              data.branchIds[0] == data.branchId
+            )
+          )
+        );
+    }
+
+    function isValidUserEmailString(val) {
+      return val is string &&
+        val.trim().size() >= 3 &&
+        val.size() <= 254 &&
+        val.trim().lower().matches('^[^\\s@/]+@[^\\s@/]+\\.[^\\s@/]+$');
+    }
+
+    function isValidStaffArchiveState(data) {
+      return (!('isArchived' in data) || data.isArchived is bool) &&
+        (!('archivedAt' in data) || (data.archivedAt is string && data.archivedAt.size() >= 10 && data.archivedAt.size() <= 64)) &&
+        (!('archivedBy' in data) || (data.archivedBy is string && data.archivedBy.size() >= 1 && data.archivedBy.size() <= 128)) && (
+          !('isArchived' in data) ||
+          data.isArchived == false ||
+          (data.isActive == false && 'archivedAt' in data && data.archivedBy == request.auth.uid)
+        ) && (
+          data.isActive == false ||
+          !('isArchived' in data) ||
+          data.isArchived == false
+        );
+    }
+
+    function isValidInvitedManagerUserCreate(userId, data) {
+      return request.auth.uid == userId &&
+        isVerifiedEmailUser() &&
+        data.keys().hasAll(['uid', 'orgId', 'email', 'displayName', 'role', 'isActive', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'orgId', 'email', 'displayName', 'role', 'isActive', 'permissions', 'phone', 'createdAt']) &&
+        data.uid == request.auth.uid &&
+        isValidId(data.orgId) &&
+        data.role == 'manager' &&
+        data.isActive == true &&
+        data.email is string &&
+        data.email.size() <= 254 &&
+        data.email.trim().lower() == authEmailLower() &&
+        data.displayName is string &&
+        data.displayName.trim().size() >= 1 &&
+        data.displayName.size() <= 100 &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 25)) &&
+        (!('permissions' in data) || isValidManagerPermissionsMap(data.permissions)) &&
+        (data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt)) &&
+        hasActiveOrgSubscription(data.orgId) &&
+        isClaimingValidManagerInvite(data.orgId) &&
+        getAfter(/databases/$(database)/documents/organizations/$(data.orgId)).data.ownerId == request.auth.uid;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      // User can always get their own identity doc; active managers can get other org users while org subscription is active.
+      allow get: if isSignedIn() && isValidId(userId) && (
+        isSuperAdmin() ||
+        request.auth.uid == userId ||
+        (
+          resource != null &&
+          hasValidUserDoc() &&
+          isOrgManager(existing().orgId) &&
+          hasActiveOrgSubscription(existing().orgId)
+        )
+      );
+
+      allow list: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          hasValidUserDoc() && (
+            resource.data.uid == request.auth.uid ||
+            (
+              isOrgManager(resource.data.orgId) &&
+              hasActiveOrgSubscription(getUserData().orgId)
+            )
+          )
+        )
+      );
+
+      // Invite-based manager onboarding OR active manager provisioning supervisor / branch_manager / employee under active subscription
+      allow create: if isSignedIn() && isValidId(userId) && (
+        isValidInvitedManagerUserCreate(userId, incoming()) ||
+        (
+          hasValidUserDoc() &&
+          isOrgManager(incoming().orgId) &&
+          hasActiveOrgSubscription(incoming().orgId) &&
+          incoming().role in ['supervisor', 'branch_manager', 'employee'] &&
+          incoming().uid == userId &&
+          isValidUserEmailString(incoming().email) &&
+          incoming().displayName is string &&
+          incoming().displayName.trim().size() >= 1 &&
+          incoming().displayName.size() <= 100 &&
+          (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25)) &&
+          incoming().isActive is bool &&
+          (!('isArchived' in incoming()) || incoming().isArchived == false) &&
+          hasValidStaffBranchBinding(incoming()) &&
+          (!('permissions' in incoming()) || hasSafeNonManagerPermissions(incoming().role, incoming().permissions))
+        )
+      );
+
+      // Harden user updates: requires active org subscription + strict allowlist + blocks self-privilege escalation and promotion to manager/super_admin
+      allow update: if isSignedIn() && isValidId(userId) &&
+        incoming().role in ['manager', 'supervisor', 'branch_manager', 'employee'] && (
+        request.auth.uid == userId ? (
+          // Case 1: Active user self-updating displayName or phone ONLY (blocks disabled users, role changes, and permissions tampering)
+          existing().isActive == true &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone']) &&
+          incoming().role == existing().role &&
+          incoming().orgId == existing().orgId &&
+          incoming().isActive == existing().isActive &&
+          incoming().displayName is string &&
+          incoming().displayName.size() >= 1 &&
+          incoming().displayName.size() <= 100 &&
+          (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25)) &&
+          hasActiveOrgSubscription(existing().orgId)
+        ) : (
+          // Case 2: Active manager updating org staff (supervisor / branch_manager / employee) profile, role, single branch, permissions, status, or soft-archive
+          existing().role in ['supervisor', 'branch_manager', 'employee'] &&
+          incoming().role in ['supervisor', 'branch_manager', 'employee'] &&
+          incoming().orgId == existing().orgId &&
+          incoming().uid == existing().uid &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'role', 'branchId', 'branchIds', 'branchName', 'permissions', 'isActive',
+            'displayName', 'phone', 'email', 'isArchived', 'archivedAt', 'archivedBy', 'updatedAt'
+          ]) &&
+          isOrgManager(existing().orgId) &&
+          hasActiveOrgSubscription(existing().orgId) &&
+          isValidUserEmailString(incoming().email) &&
+          incoming().displayName is string &&
+          incoming().displayName.trim().size() >= 1 &&
+          incoming().displayName.size() <= 100 &&
+          (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25)) &&
+          incoming().isActive is bool &&
+          isValidStaffArchiveState(incoming()) &&
+          hasValidStaffBranchBinding(incoming()) &&
+          (!('permissions' in incoming()) || hasSafeNonManagerPermissions(incoming().role, incoming().permissions))
+        )
+      );
+
+      allow delete: if false;
+    }
+
+    function hasValidBranchBillingFields(data) {
+      return (!('code' in data) || (data.code is string && data.code.size() <= 20)) &&
+        (!('address' in data) || (data.address is string && data.address.size() <= 255)) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 25)) &&
+        (!('lifecycleStatus' in data) || data.lifecycleStatus in ['active', 'suspended', 'purged_from_db']) &&
+        (!('subscriptionStartAt' in data) || data.subscriptionStartAt == null || data.subscriptionStartAt is timestamp) &&
+        (!('feeDueAt' in data) || data.feeDueAt == null || data.feeDueAt is timestamp) &&
+        (!('monthlyFeeSar' in data) || (data.monthlyFeeSar is number && data.monthlyFeeSar >= 0 && data.monthlyFeeSar <= 100000)) &&
+        (!('paymentStatus' in data) || data.paymentStatus in ['paid', 'unpaid', 'overdue', 'exempt']) &&
+        (!('lastPaidAt' in data) || data.lastPaidAt == null || data.lastPaidAt is timestamp) &&
+        (!('lastPaidBy' in data) || data.lastPaidBy == null || (data.lastPaidBy is string && data.lastPaidBy.size() <= 150)) &&
+        (!('paymentNote' in data) || data.paymentNote == null || (data.paymentNote is string && data.paymentNote.size() <= 500)) &&
+        (!('suspendedAt' in data) || data.suspendedAt == null || data.suspendedAt is timestamp) &&
+        (!('suspendedBy' in data) || data.suspendedBy == null || (data.suspendedBy is string && data.suspendedBy.size() <= 150)) &&
+        (!('suspensionReason' in data) || data.suspensionReason == null || (data.suspensionReason is string && data.suspensionReason.size() <= 500)) &&
+        (!('gracePeriodEndsAt' in data) || data.gracePeriodEndsAt == null || data.gracePeriodEndsAt is timestamp) &&
+        (!('driveBackupVerified' in data) || data.driveBackupVerified is bool) &&
+        (!('driveBackupVerifiedAt' in data) || data.driveBackupVerifiedAt == null || data.driveBackupVerifiedAt is timestamp) &&
+        (!('driveBackupVerifiedBy' in data) || data.driveBackupVerifiedBy == null || (data.driveBackupVerifiedBy is string && data.driveBackupVerifiedBy.size() <= 150)) &&
+        (!('driveBackupArchivedClosingsCount' in data) || (data.driveBackupArchivedClosingsCount is int && data.driveBackupArchivedClosingsCount >= 0)) &&
+        (!('purgedFromDbAt' in data) || data.purgedFromDbAt == null || data.purgedFromDbAt is timestamp) &&
+        (!('purgedFromDbBy' in data) || data.purgedFromDbBy == null || (data.purgedFromDbBy is string && data.purgedFromDbBy.size() <= 150));
+    }
+
+    function isBranchGraceExpiredData(b) {
+      return b.isActive == false &&
+        'lifecycleStatus' in b && b.lifecycleStatus in ['suspended', 'purged_from_db'] &&
+        'suspendedAt' in b && b.suspendedAt is timestamp &&
+        'gracePeriodEndsAt' in b && b.gracePeriodEndsAt is timestamp &&
+        b.gracePeriodEndsAt >= b.suspendedAt + duration.value(30, 'd') &&
+        request.time >= b.gracePeriodEndsAt;
+    }
+
+    function isBranchGraceExpiredForInspection(branchId) {
+      return isValidId(branchId) &&
+        exists(/databases/$(database)/documents/branches/$(branchId)) &&
+        isBranchGraceExpiredData(get(/databases/$(database)/documents/branches/$(branchId)).data);
+    }
+
+    function isBranchEligibleForDbPurgeData(b) {
+      return b.isActive == false &&
+        'lifecycleStatus' in b && b.lifecycleStatus == 'suspended' &&
+        'suspendedAt' in b && b.suspendedAt is timestamp &&
+        'gracePeriodEndsAt' in b && b.gracePeriodEndsAt is timestamp &&
+        b.gracePeriodEndsAt >= b.suspendedAt + duration.value(30, 'd') &&
+        request.time >= b.gracePeriodEndsAt &&
+        'driveBackupVerified' in b && b.driveBackupVerified == true &&
+        'driveBackupVerifiedAt' in b && b.driveBackupVerifiedAt is timestamp;
+    }
+
+    function isBranchEligibleForDbPurge(branchId) {
+      return isValidId(branchId) &&
+        exists(/databases/$(database)/documents/branches/$(branchId)) &&
+        isBranchEligibleForDbPurgeData(get(/databases/$(database)/documents/branches/$(branchId)).data);
+    }
+
+    function hasValidBranchLifecycleState(nextData) {
+      return (
+        nextData.isActive == true &&
+        (!('lifecycleStatus' in nextData) || nextData.lifecycleStatus == 'active') &&
+        (!('driveBackupVerified' in nextData) || nextData.driveBackupVerified == false)
+      ) || (
+        nextData.isActive == false &&
+        'lifecycleStatus' in nextData &&
+        nextData.lifecycleStatus in ['suspended', 'purged_from_db'] &&
+        'suspendedAt' in nextData && nextData.suspendedAt is timestamp &&
+        'gracePeriodEndsAt' in nextData && nextData.gracePeriodEndsAt is timestamp &&
+        nextData.gracePeriodEndsAt >= nextData.suspendedAt + duration.value(30, 'd') &&
+        (
+          !('driveBackupVerified' in nextData) ||
+          nextData.driveBackupVerified == false || (
+            nextData.driveBackupVerified == true &&
+            'driveBackupVerifiedAt' in nextData &&
+            nextData.driveBackupVerifiedAt is timestamp &&
+            request.time >= nextData.gracePeriodEndsAt
+          )
+        )
+      );
+    }
+
+    // Branches Collection
+    // Branch creation, billing, suspension, and verified DB purge are strictly restricted to verified Super Admin (amoal2030@gmail.com).
+    match /branches/{branchId} {
+      allow get: if isSignedIn() && isValidId(branchId) && (
+        isSuperAdmin() ||
+        (isOrgMember(resource.data.orgId) && hasActiveOrgSubscription(resource.data.orgId))
+      );
+      allow list: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          hasValidUserDoc() &&
+          getUserData().isActive == true &&
+          resource.data.orgId == getUserData().orgId &&
+          hasActiveOrgSubscription(getUserData().orgId)
+        )
+      );
+
+      allow create: if isSignedIn() && isValidId(branchId) &&
+        isSuperAdmin() &&
+        incoming().keys().hasAll(['id', 'orgId', 'name', 'isActive']) &&
+        incoming().keys().hasOnly([
+          'id', 'orgId', 'name', 'code', 'address', 'phone', 'isActive',
+          'driveFolderId', 'driveFolderName', 'driveFolderLink',
+          'lifecycleStatus', 'subscriptionStartAt', 'feeDueAt', 'monthlyFeeSar',
+          'paymentStatus', 'lastPaidAt', 'lastPaidBy', 'paymentNote',
+          'createdAt', 'updatedAt'
+        ]) &&
+        incoming().id == branchId &&
+        isValidId(incoming().orgId) &&
+        existsAfter(/databases/$(database)/documents/organizations/$(incoming().orgId)) &&
+        incoming().name is string && incoming().name.size() >= 2 && incoming().name.size() <= 100 &&
+        incoming().isActive == true &&
+        hasValidBranchBillingFields(incoming());
+
+      allow update: if isSignedIn() && isValidId(branchId) && (
+        // 1. Verified Super Admin managing branch lifecycle, billing/payment dates, 30-day suspension grace, and verified Drive backup attestation
+        (
+          isSuperAdmin() &&
+          incoming().id == existing().id &&
+          incoming().orgId == existing().orgId &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'code', 'address', 'phone', 'isActive', 'lifecycleStatus',
+            'subscriptionStartAt', 'feeDueAt', 'monthlyFeeSar',
+            'paymentStatus', 'lastPaidAt', 'lastPaidBy', 'paymentNote',
+            'suspendedAt', 'suspendedBy', 'suspensionReason', 'gracePeriodEndsAt',
+            'driveBackupVerified', 'driveBackupVerifiedAt', 'driveBackupVerifiedBy', 'driveBackupArchivedClosingsCount',
+            'purgedFromDbAt', 'purgedFromDbBy', 'updatedAt'
+          ]) &&
+          incoming().name is string && incoming().name.size() >= 2 && incoming().name.size() <= 100 &&
+          incoming().isActive is bool &&
+          hasValidBranchBillingFields(incoming()) &&
+          hasValidBranchLifecycleState(incoming())
+        ) ||
+        // 2. Active org managers may sync ONLY Google Drive folder metadata for existing active org branches.
+        (
+          isOrgManager(existing().orgId) &&
+          hasActiveOrgSubscription(existing().orgId) &&
+          existing().isActive == true &&
+          incoming().orgId == existing().orgId &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'driveFolderId', 'driveFolderName', 'driveFolderLink'
+          ])
+        )
+      );
+
+      allow delete: if isSuperAdmin() &&
+        isValidId(branchId) &&
+        isBranchEligibleForDbPurgeData(existing());
+    }
+
+    function hasImmutableClosingIdentity(nextData, prevData) {
+      return nextData.orgId == prevData.orgId &&
+        nextData.branchId == prevData.branchId &&
+        nextData.employeeId == prevData.employeeId &&
+        nextData.date == prevData.date &&
+        nextData.period == prevData.period &&
+        nextData.createdAt == prevData.createdAt;
+    }
+
+    function canReadClosing(u, data, checkDataOrgSub) {
+      let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
+      return u.isActive == true &&
+        u.orgId == data.orgId &&
+        hasActiveOrgSubscription(orgSubId) && (
+          u.role == 'manager' ||
+          (
+            u.role == 'supervisor' && (
+              userHasPermission(u, 'canViewAllClosings') ||
+              userHasPermission(u, 'canApproveClosings') ||
+              userHasPermission(u, 'canViewFinancialReports') ||
+              userHasPermission(u, 'canExportReports') ||
+              data.employeeId == request.auth.uid
+            )
+          ) ||
+          (
+            u.role in ['branch_manager', 'employee'] &&
+            userHasSingleAssignedBranch(u, data.branchId)
+          )
+        );
+    }
+
+    function canCreateClosing(u, data) {
+      return u.isActive == true &&
+        u.orgId == data.orgId &&
+        hasActiveOrgSubscription(data.orgId) &&
+        isBranchInOrg(data.branchId, data.orgId) &&
+        data.employeeId == request.auth.uid &&
+        data.period in ['morning', 'evening'] &&
+        data.cashSales >= 0 &&
+        data.cardSales >= 0 &&
+        data.expenses >= 0 &&
+        data.status in ['draft', 'pending_review'] && (
+          u.role == 'manager' ||
+          (u.role == 'supervisor' && userHasPermission(u, 'canCreateClosing')) ||
+          (
+            u.role == 'branch_manager' &&
+            u.get('permissions', {}).get('canCreateClosing', true) == true &&
+            userHasSingleAssignedBranch(u, data.branchId)
+          ) ||
+          (
+            u.role == 'employee' &&
+            u.get('permissions', {}).get('canCreateClosing', true) == true &&
+            userHasSingleAssignedBranch(u, data.branchId)
+          )
+        );
+    }
+
+    function canUpdateClosing(nextData, prevData) {
+      let u = getUserData();
+      let orgId = prevData.orgId;
+      let isMember = u.isActive == true && u.orgId == orgId;
+      let isManager = u.role == 'manager';
+      let canApprove = isManager || (u.role == 'supervisor' && userHasPermission(u, 'canApproveClosings'));
+      let canEditOwn = isManager ||
+        (u.role == 'supervisor' && userHasPermission(u, 'canCreateClosing')) ||
+        (u.role in ['branch_manager', 'employee'] && u.get('permissions', {}).get('canCreateClosing', true) == true && userHasSingleAssignedBranch(u, prevData.branchId));
+      let prevVals = nextData.previousValues;
+      return isMember &&
+        hasActiveOrgSubscription(orgId) &&
+        hasImmutableClosingIdentity(nextData, prevData) && (
+          prevData.status != 'approved' ? (
+            (canApprove && nextData.status in ['approved', 'rejected']) ||
+            (canEditOwn && prevData.employeeId == request.auth.uid && nextData.status in ['draft', 'pending_review'])
+          ) : (
+            // Admin correction on approved closings remains strictly limited to top-level org manager
+            nextData.status == 'approved' &&
+            isManager &&
+            nextData.correctedBy == request.auth.uid &&
+            nextData.correctionReason is string && nextData.correctionReason.size() >= 5 &&
+            prevVals is map &&
+            prevVals.cashSales == prevData.cashSales &&
+            prevVals.cardSales == prevData.cardSales &&
+            prevVals.expenses == prevData.expenses &&
+            prevVals.totalSales == prevData.totalSales &&
+            hasValidHalalaShiftAccounting(nextData)
+          )
+        );
+    }
+
+    // Shift Closings Collection
+    // Strictly enforces role + single-branch isolation on reads & writes
+    // Super Admin can read/delete ONLY records belonging to a branch whose 30-day suspension grace expired AND Drive backup is verified.
+    match /closings/{closingId} {
+      allow get: if isSignedIn() && isValidId(closingId) && (
+        (hasValidUserDoc() && canReadClosing(getUserData(), existing(), true)) ||
+        (isSuperAdmin() && isBranchGraceExpiredForInspection(existing().branchId))
+      );
+
+      allow list: if isSignedIn() && (
+        (hasValidUserDoc() && canReadClosing(getUserData(), existing(), false)) ||
+        (isSuperAdmin() && isBranchGraceExpiredForInspection(existing().branchId))
+      );
+
+      allow create: if isSignedIn() && isValidId(closingId) &&
+        hasValidUserDoc() &&
+        canCreateClosing(getUserData(), incoming());
+
+      allow update: if isSignedIn() && isValidId(closingId) &&
+        hasValidUserDoc() &&
+        canUpdateClosing(incoming(), existing());
+
+      allow delete: if isSuperAdmin() &&
+        isValidId(closingId) &&
+        isBranchEligibleForDbPurge(existing().branchId) && (
+          existing().status != 'approved' || (
+            exists(/databases/$(database)/documents/closingArchives/$(closingId)) &&
+            get(/databases/$(database)/documents/closingArchives/$(closingId)).data.archiveStatus == 'archived'
+          )
+        );
+    }
+
+    // Suppliers Collection (Phase 4.4: Organization-isolated, soft-deactivated only, zero delete)
+    match /suppliers/{supplierId} {
+      function hasValidSupplierFields(data) {
+        return data.keys().hasAll(['id', 'orgId', 'name', 'isActive', 'createdBy', 'createdAt', 'updatedAt']) &&
+          data.keys().hasOnly([
+            'id', 'orgId', 'name', 'contactPerson', 'companyName',
+            'taxNumber', 'phone', 'email', 'address', 'notes',
+            'openingBalance', 'isActive', 'createdBy', 'createdAt', 'updatedAt'
+          ]) &&
+          data.name is string && data.name.trim().size() >= 2 && data.name.size() <= 120 &&
+          (!('contactPerson' in data) || (data.contactPerson is string && data.contactPerson.size() <= 120)) &&
+          (!('companyName' in data) || (data.companyName is string && data.companyName.size() <= 150)) &&
+          (!('taxNumber' in data) || (data.taxNumber is string && data.taxNumber.size() <= 40)) &&
+          (!('phone' in data) || (data.phone is string && data.phone.size() <= 25)) &&
+          (!('email' in data) || (data.email is string && data.email.size() <= 254)) &&
+          (!('address' in data) || (data.address is string && data.address.size() <= 255)) &&
+          (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000)) &&
+          (!('openingBalance' in data) || isValidCurrencyAmount(data.openingBalance)) &&
+          data.isActive is bool &&
+          (data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt)) &&
+          (data.updatedAt is timestamp || isValidIsoTimestamp(data.updatedAt));
+      }
+
+      function canReadSuppliers(u, data, checkDataOrgSub, isGet) {
+        let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
+        return u.isActive == true &&
+          u.orgId == data.orgId &&
+          hasActiveOrgSubscription(orgSubId) && (
+            u.role == 'manager' ||
+            (
+              u.role == 'branch_manager' &&
+              branchManagerHasDefaultPermission(u, 'canViewSuppliers') &&
+              (!isGet || data.isActive == true)
+            ) ||
+            (
+              u.role == 'supervisor' && (
+                userHasPermission(u, 'canManageSuppliers') ||
+                userHasPermission(u, 'canViewSuppliers')
+              )
+            )
+          );
+      }
+
+      function canCreateSupplier(supplierId, data) {
+        let u = getUserData();
+        return u.isActive == true &&
+          isValidId(data.orgId) &&
+          u.orgId == data.orgId &&
+          hasActiveOrgSubscription(data.orgId) &&
+          data.id == supplierId &&
+          data.createdBy == request.auth.uid &&
+          hasValidSupplierFields(data) && (
+            u.role == 'manager' ||
+            (u.role == 'supervisor' && userHasPermission(u, 'canManageSuppliers'))
+          );
+      }
+
+      function canUpdateSupplier(nextData, prevData) {
+        let u = getUserData();
+        return u.isActive == true &&
+          u.orgId == prevData.orgId &&
+          u.role == 'manager' &&
+          hasActiveOrgSubscription(prevData.orgId) &&
+          nextData.id == prevData.id &&
+          nextData.orgId == prevData.orgId &&
+          nextData.createdBy == prevData.createdBy &&
+          nextData.createdAt == prevData.createdAt &&
+          nextData.diff(prevData).affectedKeys().hasOnly([
+            'name', 'contactPerson', 'companyName', 'taxNumber',
+            'phone', 'email', 'address', 'notes', 'openingBalance',
+            'isActive', 'updatedAt'
+          ]) &&
+          hasValidSupplierFields(nextData);
+      }
+
+      allow get: if isSignedIn() && isValidId(supplierId) &&
+        hasValidUserDoc() &&
+        canReadSuppliers(getUserData(), existing(), true, true);
+
+      allow list: if isSignedIn() &&
+        hasValidUserDoc() &&
+        canReadSuppliers(getUserData(), existing(), false, false);
+
+      allow create: if isSignedIn() && isValidId(supplierId) &&
+        hasValidUserDoc() &&
+        canCreateSupplier(supplierId, incoming());
+
+      allow update: if isSignedIn() && isValidId(supplierId) &&
+        hasValidUserDoc() &&
+        canUpdateSupplier(incoming(), existing());
+
+      allow delete: if isSignedIn() && isValidId(supplierId) &&
+        hasValidUserDoc() &&
+        getUserData().isActive == true &&
+        getUserData().role == 'manager' &&
+        getUserData().orgId == existing().orgId &&
+        hasActiveOrgSubscription(existing().orgId);
+    }
+
+    // Purchases Collection (Phase 4.4 Security Hardened: explicit item/attachment validation up to proven 1,000-expr safe limits, exact Halala VAT & amount==subtotalAmount)
+    match /purchases/{purchaseId} {
+      function hasActiveOrgSubFast(org) {
+        return org.get('isActive', true) == true && (
+          (
+            org.get('subscriptionStatus', '') == 'active' &&
+            org.get('subscriptionPlan', '') in ['trial_7d', '1m', '3m', '6m', '1y'] &&
+            org.get('subscriptionStartAt', null) is timestamp &&
+            org.get('subscriptionEndAt', null) is timestamp &&
+            request.time >= org.subscriptionStartAt &&
+            request.time < org.subscriptionEndAt &&
+            (org.get('deactivationDueAt', null) == null || (org.deactivationDueAt is timestamp && request.time < org.deactivationDueAt))
+          ) ||
+          !hasAnySubscriptionField(org)
+        );
+      }
+
+      function isOkItem(it) {
+        return it is map &&
+          it.size() == 5 &&
+          it.id is string && it.id.trim().size() > 0 && it.id.size() <= 128 &&
+          it.name is string && it.name.trim().size() > 0 && it.name.size() <= 200 &&
+          it.quantity is number && it.quantity > 0 &&
+          it.unitPrice is number && it.unitPrice >= 0 && math.abs(it.unitPrice * 100 - math.round(it.unitPrice * 100)) < 0.001 &&
+          it.total is number && it.total >= 0 && math.abs(it.total * 100 - math.round(it.quantity * it.unitPrice * 100.0)) < 0.001;
+      }
+
+      function isOkAtt(aid, pOrg, pBr, pId) {
+        return isValidId(aid) &&
+          getAfter(/databases/$(database)/documents/attachments/$(aid)).data.orgId == pOrg &&
+          getAfter(/databases/$(database)/documents/attachments/$(aid)).data.branchId == pBr &&
+          getAfter(/databases/$(database)/documents/attachments/$(aid)).data.purchaseId == pId;
+      }
+
+      function hasValidPurchaseFields(data) {
+        return data.keys().hasOnly([
+            'id', 'orgId', 'branchId', 'branchName', 'supplierId', 'supplierName',
+            'taxNumber', 'invoiceNumber', 'date', 'items',
+            'amount', 'subtotalAmount', 'discountAmount', 'vatRate', 'vatAmount', 'totalAmount',
+            'paymentMethod', 'notes', 'attachmentIds',
+            'createdBy', 'createdByName', 'createdByRole', 'createdAt', 'updatedAt'
+          ]) &&
+          isValidCalendarDate(data.date) &&
+          data.paymentMethod in ['cash', 'card', 'transfer', 'credit'] &&
+          (!('branchName' in data) || (data.branchName is string && data.branchName.size() <= 120)) &&
+          (!('supplierName' in data) || (data.supplierName is string && data.supplierName.size() <= 120)) &&
+          (!('taxNumber' in data) || (data.taxNumber is string && data.taxNumber.size() <= 40)) &&
+          (!('invoiceNumber' in data) || (data.invoiceNumber is string && data.invoiceNumber.size() <= 80)) &&
+          (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000)) &&
+          (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120)) &&
+          (data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt)) &&
+          (data.updatedAt is timestamp || isValidIsoTimestamp(data.updatedAt)) &&
+          data.amount >= 0 && data.amount <= 1000000000000 &&
+          math.abs(data.amount * 100 - math.round(data.amount * 100)) < 0.001 &&
+          (!('subtotalAmount' in data) || data.subtotalAmount == data.amount) &&
+          (!('discountAmount' in data) || (data.discountAmount >= 0 && data.discountAmount <= data.amount && math.abs(data.discountAmount * 100 - math.round(data.discountAmount * 100)) < 0.001)) &&
+          (
+            'vatRate' in data
+              ? (
+                  data.vatRate >= 0 && data.vatRate <= 100 &&
+                  math.abs(data.vatRate * 100 - math.round(data.vatRate * 100)) < 0.001 &&
+                  math.abs(data.get('vatAmount', 0) * 100 - math.floor((math.round((data.amount - data.get('discountAmount', 0)) * 100) * math.round(data.vatRate * 100) + 5000) / 10000)) < 0.001
+                )
+              : (!('vatAmount' in data) || (data.vatAmount >= 0 && data.vatAmount <= 1000000000000 && math.abs(data.vatAmount * 100 - math.round(data.vatAmount * 100)) < 0.001))
+          ) &&
+          data.totalAmount <= 1000000000000 &&
+          math.abs(data.totalAmount * 100 - (math.round(data.amount * 100) - math.round(data.get('discountAmount', 0) * 100) + math.round(data.get('vatAmount', 0) * 100))) < 0.001 &&
+          (!('items' in data) || (
+            data.items is list &&
+            data.items.size() <= 1 && (
+              data.items.size() == 0 || (
+                isOkItem(data.items[0]) &&
+                math.round(data.items[0].total * 100) == math.round(data.amount * 100)
+              )
+            )
+          )) &&
+          (!('attachmentIds' in data) || (
+            data.attachmentIds is list &&
+            data.attachmentIds.size() <= 1 && (
+              data.attachmentIds.size() == 0 ||
+              isOkAtt(data.attachmentIds[0], data.orgId, data.branchId, data.id)
+            )
+          ));
+      }
+
+      function canReadPurchase(u, data, checkDataOrgSub) {
+        let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
+        return u.isActive == true &&
+          u.orgId == data.orgId &&
+          hasActiveOrgSubscription(orgSubId) && (
+            u.role == 'manager' ||
+            (
+              u.role == 'supervisor' && (
+                userHasPermission(u, 'canManagePurchases') ||
+                userHasPermission(u, 'canViewFinancialReports') ||
+                userHasPermission(u, 'canExportReports')
+              )
+            ) ||
+            (
+              u.role == 'branch_manager' &&
+              userHasSingleAssignedBranch(u, data.branchId)
+            )
+          );
+      }
+
+      function canCreatePurchase(u, purchaseId, data) {
+        return u.isActive == true &&
+          u.orgId == data.orgId &&
+          hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(data.orgId)).data) &&
+          data.id == purchaseId &&
+          isValidId(data.branchId) &&
+          get(/databases/$(database)/documents/branches/$(data.branchId)).data.orgId == data.orgId &&
+          isValidId(data.supplierId) &&
+          supplierDocIsActiveInOrg(data.supplierId, data.orgId) &&
+          data.createdBy == request.auth.uid &&
+          data.createdByRole == u.role && (
+            u.role == 'manager' ||
+            (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
+            (
+              u.role == 'branch_manager' &&
+              branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
+              userHasSingleAssignedBranch(u, data.branchId)
+            )
+          ) &&
+          hasValidPurchaseFields(data);
+      }
+
+      function canUpdatePurchase(u, nextData, prevData) {
+        return u.isActive == true &&
+          u.orgId == prevData.orgId &&
+          u.role == 'manager' &&
+          hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(prevData.orgId)).data) &&
+          nextData.id == prevData.id &&
+          nextData.orgId == prevData.orgId &&
+          nextData.branchId == prevData.branchId &&
+          nextData.createdBy == prevData.createdBy &&
+          nextData.createdByRole == prevData.createdByRole &&
+          nextData.createdAt == prevData.createdAt &&
+          nextData.diff(prevData).affectedKeys().hasOnly([
+            'supplierId', 'supplierName', 'branchName', 'taxNumber', 'invoiceNumber',
+            'date', 'items', 'amount', 'subtotalAmount', 'discountAmount',
+            'vatRate', 'vatAmount', 'totalAmount', 'paymentMethod',
+            'notes', 'attachmentIds', 'updatedAt'
+          ]) &&
+          isValidId(nextData.supplierId) &&
+          (
+            nextData.supplierId == prevData.supplierId
+              ? get(/databases/$(database)/documents/suppliers/$(nextData.supplierId)).data.orgId == prevData.orgId
+              : supplierDocIsActiveInOrg(nextData.supplierId, prevData.orgId)
+          ) &&
+          hasValidPurchaseFields(nextData);
+      }
+
+      allow get: if isSignedIn() && isValidId(purchaseId) && (
+        (hasValidUserDoc() && canReadPurchase(getUserData(), existing(), true)) ||
+        (isSuperAdmin() && isBranchGraceExpiredForInspection(existing().branchId))
+      );
+
+      allow list: if isSignedIn() && (
+        (hasValidUserDoc() && canReadPurchase(getUserData(), existing(), false)) ||
+        (isSuperAdmin() && isBranchGraceExpiredForInspection(existing().branchId))
+      );
+
+      allow create: if isSignedIn() && isValidId(purchaseId) &&
+        hasValidUserDoc() &&
+        canCreatePurchase(getUserData(), purchaseId, incoming());
+
+      allow update: if isSignedIn() && isValidId(purchaseId) &&
+        canUpdatePurchase(getUserData(), incoming(), existing());
+
+      allow delete: if isSuperAdmin() &&
+        isValidId(purchaseId) &&
+        isBranchEligibleForDbPurge(existing().branchId);
+
+      // Subcollection for multi-line purchase invoice items (up to 100 items: item_0 .. item_99)
+      match /items/{itemId} {
+        function hasValidPurchaseSubItem(pId, iId, data) {
+          return data.keys().hasAll([
+              'id', 'purchaseId', 'orgId', 'branchId', 'lineIndex',
+              'name', 'quantity', 'unitPrice', 'total', 'createdBy', 'createdAt'
+            ]) &&
+            data.keys().hasOnly([
+              'id', 'purchaseId', 'orgId', 'branchId', 'lineIndex',
+              'name', 'quantity', 'unitPrice', 'total', 'createdBy', 'createdAt'
+            ]) &&
+            data.id == iId &&
+            data.purchaseId == pId &&
+            isValidId(data.orgId) &&
+            isValidId(data.branchId) &&
+            data.lineIndex is int &&
+            data.lineIndex >= 0 &&
+            data.lineIndex < 100 &&
+            iId == ('item_' + string(data.lineIndex)) &&
+            data.name is string && data.name.trim().size() > 0 && data.name.size() <= 200 &&
+            data.quantity is number && data.quantity > 0 && data.quantity <= 1000000000 &&
+            data.unitPrice is number && data.unitPrice >= 0 && data.unitPrice <= 1000000000 &&
+            math.abs(data.unitPrice * 100 - math.round(data.unitPrice * 100)) < 0.001 &&
+            data.total is number && data.total >= 0 && data.total <= 1000000000000 &&
+            math.abs(data.total * 100 - math.round(data.quantity * data.unitPrice * 100.0)) < 0.001 &&
+            data.createdBy == request.auth.uid &&
+            (data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt));
+        }
+
+        function canCreatePurchaseSubItem(u, pId, iId, data) {
+          return u.isActive == true &&
+            hasValidPurchaseSubItem(pId, iId, data) &&
+            u.orgId == data.orgId &&
+            hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(data.orgId)).data) &&
+            existsAfter(/databases/$(database)/documents/purchases/$(pId)) &&
+            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.orgId == data.orgId &&
+            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.branchId == data.branchId &&
+            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.createdBy == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/purchases/$(pId)).data.createdByRole == u.role && (
+              u.role == 'manager' ||
+              (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
+              (
+                u.role == 'branch_manager' &&
+                branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
+                userHasSingleAssignedBranch(u, data.branchId)
+              )
+            );
+        }
+
+        allow get: if isSignedIn() && isValidId(purchaseId) && isValidId(itemId) && (
+          (hasValidUserDoc() && canReadPurchase(getUserData(), existing(), true)) ||
+          (isSuperAdmin() && isBranchGraceExpiredForInspection(existing().branchId))
+        );
+
+        allow list: if isSignedIn() && isValidId(purchaseId) &&
+          exists(/databases/$(database)/documents/purchases/$(purchaseId)) && (
+            (
+              hasValidUserDoc() &&
+              canReadPurchase(
+                getUserData(),
+                get(/databases/$(database)/documents/purchases/$(purchaseId)).data,
+                true
+              )
+            ) ||
+            (
+              isSuperAdmin() &&
+              isBranchGraceExpiredForInspection(
+                get(/databases/$(database)/documents/purchases/$(purchaseId)).data.branchId
+              )
+            )
+          );
+
+        allow create: if isSignedIn() && isValidId(purchaseId) && isValidId(itemId) &&
+          hasValidUserDoc() &&
+          canCreatePurchaseSubItem(getUserData(), purchaseId, itemId, incoming());
+
+        allow update: if false;
+
+        allow delete: if isSuperAdmin() &&
+          isValidId(purchaseId) &&
+          isValidId(itemId) &&
+          isBranchEligibleForDbPurge(existing().branchId);
+      }
+    }
+
+    // Attachments Collection (Phase 4.4: Supports closingId & purchaseId attachments, URL allowlist, mandatory purchaseId existence, anti-Base64 guard, least privilege)
+    match /attachments/{attachmentId} {
+      function purchaseRefMatchesOrgBranch(purchaseId, orgId, branchId) {
+        return existsAfter(/databases/$(database)/documents/purchases/$(purchaseId)) &&
+          getAfter(/databases/$(database)/documents/purchases/$(purchaseId)).data.orgId == orgId &&
+          getAfter(/databases/$(database)/documents/purchases/$(purchaseId)).data.branchId == branchId;
+      }
+
+      function isAllowedAttachmentUrl(url, maxLen) {
+        return url is string &&
+          url.size() <= maxLen && (
+            url == '' ||
+            url.matches('^https://(drive\\.google\\.com|docs\\.google\\.com|firebasestorage\\.googleapis\\.com|storage\\.googleapis\\.com)/.*$')
+          );
+      }
+
+      function hasValidAttachmentPayload(attachmentId, data) {
+        return data.keys().hasAll(['id', 'orgId', 'branchId', 'fileName', 'uploadedBy']) &&
+          data.keys().hasOnly([
+            'id', 'orgId', 'branchId', 'closingId', 'purchaseId',
+            'fileName', 'fileSize', 'mimeType', 'fileUrl',
+            'driveFileId', 'driveWebViewLink',
+            'uploadedBy', 'uploadedByName', 'uploadedAt', 'createdAt'
+          ]) &&
+          data.id == attachmentId &&
+          data.uploadedBy == request.auth.uid &&
+          data.fileName is string && data.fileName.trim().size() >= 1 && data.fileName.size() <= 255 &&
+          (!('fileSize' in data) || (data.fileSize is number && data.fileSize >= 0 && data.fileSize <= 52428800)) &&
+          (!('mimeType' in data) || (data.mimeType is string && data.mimeType.size() <= 100)) &&
+          (!('fileUrl' in data) || isAllowedAttachmentUrl(data.fileUrl, 1024)) &&
+          (!('driveFileId' in data) || isValidDriveId(data.driveFileId)) &&
+          (!('driveWebViewLink' in data) || isAllowedAttachmentUrl(data.driveWebViewLink, 512)) &&
+          (!('uploadedByName' in data) || (data.uploadedByName is string && data.uploadedByName.size() <= 120)) &&
+          (!('uploadedAt' in data) || data.uploadedAt is timestamp || isValidIsoTimestamp(data.uploadedAt)) &&
+          (!('createdAt' in data) || data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt)) &&
+          (!('closingId' in data) || isValidId(data.closingId)) &&
+          (!('purchaseId' in data) || (isValidId(data.purchaseId) && !('closingId' in data)));
+      }
+
+      function canReadAttachment(u, data, checkDataOrgSub) {
+        let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
+        return u.isActive == true &&
+          u.orgId == data.orgId &&
+          hasActiveOrgSubscription(orgSubId) && (
+            'purchaseId' in data ? (
+              u.role == 'manager' ||
+              (
+                u.role == 'supervisor' && (
+                  userHasPermission(u, 'canManagePurchases') ||
+                  userHasPermission(u, 'canViewFinancialReports') ||
+                  userHasPermission(u, 'canExportReports')
+                )
+              ) ||
+              (u.role == 'branch_manager' && userHasSingleAssignedBranch(u, data.branchId))
+            ) : (
+              u.role == 'manager' ||
+              (u.role == 'supervisor' && (userHasPermission(u, 'canViewAllClosings') || userHasPermission(u, 'canApproveClosings'))) ||
+              data.uploadedBy == request.auth.uid
+            )
+          );
+      }
+
+      function canCreateAttachment(attachmentId, data) {
+        let u = getUserData();
+        return u.isActive == true &&
+          isValidId(data.orgId) &&
+          u.orgId == data.orgId &&
+          hasActiveOrgSubscription(data.orgId) &&
+          isBranchInOrg(data.branchId, data.orgId) &&
+          hasValidAttachmentPayload(attachmentId, data) && (
+            'purchaseId' in data ? (
+              purchaseRefMatchesOrgBranch(data.purchaseId, data.orgId, data.branchId) && (
+                u.role == 'manager' ||
+                (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
+                (
+                  u.role == 'branch_manager' &&
+                  branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
+                  userHasSingleAssignedBranch(u, data.branchId)
+                )
+              )
+            ) : (
+              u.role == 'manager' ||
+              (u.role == 'supervisor' && userHasPermission(u, 'canCreateClosing')) ||
+              (u.role in ['branch_manager', 'employee'] && userHasSingleAssignedBranch(u, data.branchId))
+            )
+          );
+      }
+
+      allow get: if isSignedIn() && isValidId(attachmentId) && (
+        (hasValidUserDoc() && canReadAttachment(getUserData(), existing(), true)) ||
+        (isSuperAdmin() && isBranchGraceExpiredForInspection(existing().branchId))
+      );
+
+      allow list: if isSignedIn() && (
+        (hasValidUserDoc() && canReadAttachment(getUserData(), existing(), false)) ||
+        (isSuperAdmin() && isBranchGraceExpiredForInspection(existing().branchId))
+      );
+
+      allow create: if isSignedIn() && isValidId(attachmentId) &&
+        hasValidUserDoc() &&
+        canCreateAttachment(attachmentId, incoming());
+
+      // Attachments are strictly immutable once uploaded
+      allow update: if false;
+
+      allow delete: if isSignedIn() && isValidId(attachmentId) && (
+        (
+          hasActiveOrgSubscription(existing().orgId) && (
+            isOrgManager(existing().orgId) ||
+            (isOrgMember(existing().orgId) && existing().uploadedBy == request.auth.uid)
+          )
+        ) ||
+        (isSuperAdmin() && isBranchEligibleForDbPurge(existing().branchId))
+      );
+    }
+
+    function canCreateMemberAuditLog(data) {
+      let u = getUserData();
+      return u.isActive == true &&
+        u.orgId == data.orgId &&
+        data.actorRole == u.role && (
+          // Organization staff/manager submitting or saving own shift closing
+          (
+            u.role in ['manager', 'supervisor', 'branch_manager', 'employee'] &&
+            data.action in ['CLOSING_SUBMITTED_FOR_REVIEW', 'CLOSING_DRAFT_SAVED'] &&
+            data.targetType == 'closing' &&
+            getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data.employeeId == request.auth.uid
+          ) ||
+          // Closing approval / rejection by manager OR supervisor explicitly granted canApproveClosings
+          (
+            (u.role == 'manager' || (u.role == 'supervisor' && userHasPermission(u, 'canApproveClosings'))) &&
+            data.targetType == 'closing' &&
+            data.action in ['CLOSING_APPROVED', 'CLOSING_REJECTED_FOR_REVISION'] &&
+            get(/databases/$(database)/documents/closings/$(data.targetId)).data.status == 'pending_review' &&
+            getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data.status == (data.action == 'CLOSING_APPROVED' ? 'approved' : 'rejected') &&
+            getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data.reviewedBy == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data.orgId == u.orgId
+          ) ||
+          // Supplier & Purchase audit events
+          (
+            data.action == 'SUPPLIER_CREATED' &&
+            data.targetType == 'supplier' &&
+            (u.role == 'manager' || (u.role == 'supervisor' && userHasPermission(u, 'canManageSuppliers'))) &&
+            existsAfter(/databases/$(database)/documents/suppliers/$(data.targetId)) &&
+            getAfter(/databases/$(database)/documents/suppliers/$(data.targetId)).data.orgId == u.orgId
+          ) ||
+          (
+            u.role == 'manager' &&
+            data.action in ['SUPPLIER_UPDATED', 'SUPPLIER_STATUS_TOGGLED'] &&
+            data.targetType == 'supplier' &&
+            existsAfter(/databases/$(database)/documents/suppliers/$(data.targetId)) &&
+            getAfter(/databases/$(database)/documents/suppliers/$(data.targetId)).data.orgId == u.orgId
+          ) ||
+          (
+            u.role == 'manager' &&
+            data.action == 'SUPPLIER_DELETED' &&
+            data.targetType == 'supplier' &&
+            exists(/databases/$(database)/documents/suppliers/$(data.targetId)) &&
+            get(/databases/$(database)/documents/suppliers/$(data.targetId)).data.orgId == u.orgId &&
+            !existsAfter(/databases/$(database)/documents/suppliers/$(data.targetId))
+          ) ||
+          (
+            data.action == 'PURCHASE_CREATED' &&
+            data.targetType == 'purchase' &&
+            (
+              u.role == 'manager' ||
+              (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
+              (u.role == 'branch_manager' && branchManagerHasDefaultPermission(u, 'canManagePurchases'))
+            ) &&
+            existsAfter(/databases/$(database)/documents/purchases/$(data.targetId)) &&
+            getAfter(/databases/$(database)/documents/purchases/$(data.targetId)).data.orgId == u.orgId &&
+            (u.role != 'branch_manager' || userHasSingleAssignedBranch(u, getAfter(/databases/$(database)/documents/purchases/$(data.targetId)).data.branchId))
+          ) ||
+          (
+            u.role == 'manager' &&
+            data.action == 'PURCHASE_UPDATED' &&
+            data.targetType == 'purchase' &&
+            existsAfter(/databases/$(database)/documents/purchases/$(data.targetId)) &&
+            getAfter(/databases/$(database)/documents/purchases/$(data.targetId)).data.orgId == u.orgId
+          ) ||
+          // Top-level Manager exclusive actions
+          (
+            u.role == 'manager' && (
+              (
+                data.action == 'EMPLOYEE_PROVISIONED' &&
+                data.targetType == 'employee' &&
+                !exists(/databases/$(database)/documents/users/$(data.targetId)) &&
+                existsAfter(/databases/$(database)/documents/users/$(data.targetId)) &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.orgId == u.orgId &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.role in ['supervisor', 'branch_manager', 'employee']
+              ) ||
+              (
+                data.action in ['EMPLOYEE_ACTIVATED', 'EMPLOYEE_DISABLED'] &&
+                data.targetType == 'employee' &&
+                get(/databases/$(database)/documents/users/$(data.targetId)).data.isActive == (data.action == 'EMPLOYEE_DISABLED') &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.isActive == (data.action == 'EMPLOYEE_ACTIVATED') &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.orgId == u.orgId
+              ) ||
+              (
+                data.action == 'CLOSING_ADMIN_CORRECTED' &&
+                data.targetType == 'closing' &&
+                exists(/databases/$(database)/documents/closings/$(data.targetId)) &&
+                get(/databases/$(database)/documents/closings/$(data.targetId)).data.status == 'approved' &&
+                getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data.status == 'approved' &&
+                getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data.correctedBy == request.auth.uid &&
+                getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data.orgId == u.orgId &&
+                data.previousValues is map &&
+                data.newValues is map
+              ) ||
+              (
+                data.action == 'EMPLOYEE_BRANCH_CHANGED' &&
+                data.targetType == 'employee' &&
+                exists(/databases/$(database)/documents/users/$(data.targetId)) &&
+                get(/databases/$(database)/documents/users/$(data.targetId)).data.orgId == u.orgId &&
+                get(/databases/$(database)/documents/users/$(data.targetId)).data.role in ['supervisor', 'branch_manager', 'employee'] &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.orgId == u.orgId &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.role in ['supervisor', 'branch_manager', 'employee'] &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.branchId != get(/databases/$(database)/documents/users/$(data.targetId)).data.get('branchId', '') &&
+                isBranchInOrg(getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.branchId, u.orgId)
+              ) ||
+              (
+                data.action in ['EMPLOYEE_ROLE_PERMISSIONS_UPDATED', 'EMPLOYEE_UPDATED', 'EMPLOYEE_PASSWORD_RESET_SENT'] &&
+                data.targetType == 'employee' &&
+                exists(/databases/$(database)/documents/users/$(data.targetId)) &&
+                get(/databases/$(database)/documents/users/$(data.targetId)).data.orgId == u.orgId &&
+                get(/databases/$(database)/documents/users/$(data.targetId)).data.role in ['supervisor', 'branch_manager', 'employee'] &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.orgId == u.orgId &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.role in ['supervisor', 'branch_manager', 'employee']
+              ) ||
+              (
+                data.action == 'EMPLOYEE_ARCHIVED' &&
+                data.targetType == 'employee' &&
+                exists(/databases/$(database)/documents/users/$(data.targetId)) &&
+                get(/databases/$(database)/documents/users/$(data.targetId)).data.orgId == u.orgId &&
+                get(/databases/$(database)/documents/users/$(data.targetId)).data.role in ['supervisor', 'branch_manager', 'employee'] &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.orgId == u.orgId &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.isActive == false &&
+                getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.isArchived == true
+              )
+            )
+          )
+        );
+    }
+
+    // Audit Logs Collection (Anti-Forgery & Completely Immutable)
+    match /auditLogs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) &&
+        isOrgManager(resource.data.orgId) &&
+        hasActiveOrgSubscription(resource.data.orgId);
+
+      allow list: if isSignedIn() && hasValidUserDoc() &&
+        isOrgManager(resource.data.orgId) &&
+        hasActiveOrgSubscription(getUserData().orgId);
+
+      allow create: if isSignedIn() && isValidId(logId) &&
+        incoming().actorId == request.auth.uid &&
+        incoming().actorName is string && incoming().actorName.size() >= 2 && incoming().actorName.size() <= 100 &&
+        incoming().details is string && incoming().details.size() >= 5 && incoming().details.size() <= 1000 &&
+        incoming().targetType in ['closing', 'branch', 'employee', 'organization', 'supplier', 'purchase'] &&
+        incoming().targetId is string && isValidId(incoming().targetId) &&
+        hasActiveOrgSubscription(incoming().orgId) && (
+          // Case 1: Invited Manager accepting approved organization invite (atomic with managerInvites claim)
+          (
+            incoming().action == 'ORGANIZATION_ESTABLISHED' &&
+            incoming().actorRole == 'manager' &&
+            incoming().targetType == 'organization' &&
+            incoming().targetId == incoming().orgId &&
+            isClaimingValidManagerInvite(incoming().orgId) &&
+            getAfter(/databases/$(database)/documents/organizations/$(incoming().orgId)).data.ownerId == request.auth.uid &&
+            existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.orgId == incoming().orgId &&
+            getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager'
+          ) ||
+          // Case 2: Established member operations
+          (
+            hasValidUserDoc() &&
+            canCreateMemberAuditLog(incoming())
+          )
+        );
+
+      // STRICT IMMUTABILITY: No one can ever edit or delete an audit log
+      allow update, delete: if false;
+    }
+
+    function hasValidClosingArchiveCreateBase(closingId, nextData) {
+      return nextData.keys().hasAll(['closingId', 'orgId', 'branchId', 'yearMonth', 'archiveStatus', 'updatedAt']) &&
+        nextData.closingId == closingId &&
+        isValidId(nextData.orgId) &&
+        isValidId(nextData.branchId) &&
+        isValidYearMonth(nextData.yearMonth) &&
+        isValidIsoTimestamp(nextData.updatedAt);
+    }
+
+    function hasValidClosingArchiveUpdateBase(closingId, nextData, prevData) {
+      return nextData.keys().hasAll(['closingId', 'orgId', 'branchId', 'yearMonth', 'archiveStatus', 'updatedAt']) &&
+        nextData.closingId == closingId &&
+        nextData.closingId == prevData.closingId &&
+        nextData.orgId == prevData.orgId &&
+        nextData.branchId == prevData.branchId &&
+        nextData.yearMonth == prevData.yearMonth &&
+        isValidIsoTimestamp(nextData.updatedAt);
+    }
+
+    // Closing Archives Index Collection
+    match /closingArchives/{closingId} {
+      allow get: if isSignedIn() && isValidId(closingId) && (
+        (hasValidUserDoc() && canReadClosingArchive(existing(), true)) ||
+        (isSuperAdmin() && isBranchGraceExpiredForInspection(existing().branchId))
+      );
+
+      allow list: if isSignedIn() && (
+        (hasValidUserDoc() && canReadClosingArchive(existing(), false)) ||
+        (isSuperAdmin() && isBranchGraceExpiredForInspection(existing().branchId))
+      );
+
+      allow create: if isSignedIn() && isValidId(closingId) &&
+        hasValidClosingArchiveCreateBase(closingId, incoming()) &&
+        hasValidUserDoc() &&
+        canCreateClosingArchive(closingId, incoming());
+
+      allow update: if isSignedIn() && isValidId(closingId) &&
+        hasValidClosingArchiveUpdateBase(closingId, incoming(), existing()) &&
+        hasValidUserDoc() &&
+        canUpdateClosingArchive(closingId, incoming(), existing());
+
+      allow delete: if isSuperAdmin() &&
+        isValidId(closingId) &&
+        isBranchEligibleForDbPurge(existing().branchId) && (
+          !exists(/databases/$(database)/documents/closings/$(closingId)) ||
+          existing().archiveStatus == 'archived'
+        );
+    }
+
+    // Platform Audit Logs Collection (Exclusive to verified Super Admin amoal2030@gmail.com & strictly immutable)
+    match /platformAuditLogs/{logId} {
+      allow get, list: if isSuperAdmin();
+
+      allow create: if isSuperAdmin() &&
+        isValidId(logId) &&
+        incoming().keys().hasAll([
+          'id', 'actorEmail', 'actorUid', 'action', 'targetType', 'targetId', 'details', 'timestamp'
+        ]) &&
+        incoming().keys().hasOnly([
+          'id', 'actorEmail', 'actorUid', 'action', 'targetType', 'targetId', 'orgId', 'details', 'metadata', 'timestamp'
+        ]) &&
+        incoming().id == logId &&
+        incoming().actorUid == request.auth.uid &&
+        incoming().actorEmail is string &&
+        incoming().actorEmail.trim().lower() == authEmailLower() &&
+        incoming().action is string && incoming().action.size() >= 3 && incoming().action.size() <= 80 &&
+        incoming().targetType in ['organization', 'branch', 'invite', 'billing'] &&
+        incoming().targetId is string && incoming().targetId.size() >= 1 && incoming().targetId.size() <= 254 &&
+        (!('orgId' in incoming()) || isValidId(incoming().orgId)) &&
+        incoming().details is string && incoming().details.size() >= 5 && incoming().details.size() <= 1000 &&
+        (!('metadata' in incoming()) || incoming().metadata is map) &&
+        isValidIsoTimestamp(incoming().timestamp);
+
+      allow update, delete: if false;
+    }
+
+    // Notifications Collection Helpers (Phase 4.6 — Role-Scoped, Anti-Spoofing & Tenant-Isolated)
+    function hasValidNotificationShape(notificationId, data) {
+      return data.keys().hasOnly([
+          'id', 'dedupKey', 'category', 'type', 'severity', 'audienceScope',
+          'orgId', 'relatedOrgId', 'branchId', 'branchName', 'recipientUid',
+          'requiredPermission', 'secondaryPermission', 'feedKeys',
+          'actorUid', 'actorName', 'actorRole', 'title', 'body',
+          'targetType', 'targetId', 'navTarget', 'readBy', 'isRead', 'readAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.get('id', '') == notificationId &&
+        data.get('dedupKey', '') is string && data.dedupKey.size() >= 3 && data.dedupKey.size() <= 200 &&
+        data.get('category', '') in ['employees', 'closings', 'schedule_requests', 'purchases_suppliers', 'org_branches', 'security_admin'] &&
+        data.get('type', '') is string && data.type.size() >= 3 && data.type.size() <= 80 &&
+        data.get('severity', '') in ['info', 'success', 'warning', 'critical'] &&
+        data.get('audienceScope', '') in ['user', 'org_manager', 'org_supervisor_permission', 'branch_manager', 'super_admin'] &&
+        data.get('actorUid', '') == request.auth.uid &&
+        data.get('actorName', '') is string && data.actorName.size() >= 1 && data.actorName.size() <= 120 &&
+        data.get('title', '') is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+        data.get('body', '') is string && data.body.size() >= 1 && data.body.size() <= 1000 &&
+        (!('branchName' in data) || (data.branchName is string && data.branchName.size() <= 120)) &&
+        (!('targetType' in data) || data.targetType in ['employee', 'closing', 'schedule_request', 'purchase', 'supplier', 'branch', 'organization', 'drive', 'security']) &&
+        (!('targetId' in data) || (data.targetId is string && data.targetId.size() <= 254)) &&
+        (!('navTarget' in data) || data.navTarget is map) &&
+        data.get('readBy', null) == {} &&
+        data.get('isRead', false) == false &&
+        !('readAt' in data) &&
+        isValidIsoTimestamp(data.get('createdAt', '')) &&
+        isValidIsoTimestamp(data.get('updatedAt', ''));
+    }
+
+    function isAllowedNotificationPerm(perm) {
+      return perm in [
+        'canApproveClosings',
+        'canViewAllClosings',
+        'canManagePurchases',
+        'canManageSuppliers',
+        'canViewSuppliers',
+        'canViewFinancialReports'
+      ];
+    }
+
+    function userBelongsToOrgAfter(targetUid, orgId) {
+      return (exists(/databases/$(database)/documents/users/$(targetUid)) &&
+          get(/databases/$(database)/documents/users/$(targetUid)).data.orgId == orgId) ||
+        (existsAfter(/databases/$(database)/documents/users/$(targetUid)) &&
+          getAfter(/databases/$(database)/documents/users/$(targetUid)).data.orgId == orgId);
+    }
+
+    function hasValidTenantNotificationFeeds(data) {
+      let orgId = data.orgId;
+      let scope = data.audienceScope;
+      let feeds = data.feedKeys;
+      return feeds is list &&
+        feeds.size() >= 1 &&
+        feeds.size() <= 4 && (
+          scope == 'user' ? (
+            'recipientUid' in data &&
+            isValidId(data.recipientUid) &&
+            feeds == ['user:' + orgId + ':' + data.recipientUid] &&
+            userBelongsToOrgAfter(data.recipientUid, orgId)
+          ) : scope == 'org_manager' ? (
+            feeds == ['org_mgr:' + orgId]
+          ) : scope == 'branch_manager' ? (
+            'branchId' in data &&
+            isBranchInOrg(data.branchId, orgId) && (
+              feeds == ['branch_mgr:' + orgId + ':' + data.branchId] ||
+              feeds == ['branch_mgr:' + orgId + ':' + data.branchId, 'org_mgr:' + orgId]
+            )
+          ) : scope == 'org_supervisor_permission' && (
+            'requiredPermission' in data &&
+            isAllowedNotificationPerm(data.requiredPermission) &&
+            (!('secondaryPermission' in data) || isAllowedNotificationPerm(data.secondaryPermission)) &&
+            ('org_perm:' + orgId + ':' + data.requiredPermission) in feeds &&
+            feeds.hasOnly([
+              'org_perm:' + orgId + ':' + data.requiredPermission,
+              ('secondaryPermission' in data ? 'org_perm:' + orgId + ':' + data.secondaryPermission : 'org_mgr:' + orgId),
+              'org_mgr:' + orgId,
+              ('branchId' in data && ('branch_mgr:' + orgId + ':' + data.branchId) in feeds && isBranchInOrg(data.branchId, orgId) ? 'branch_mgr:' + orgId + ':' + data.branchId : 'org_mgr:' + orgId)
+            ])
+          )
+        );
+    }
+
+    function matchesClosingSubmittedAfter(data, orgId) {
+      let c = getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data;
+      return c.orgId == orgId &&
+        c.branchId == data.branchId &&
+        c.employeeId == request.auth.uid &&
+        c.status == 'pending_review';
+    }
+
+    function hasClosingSubmittedAfter(data, orgId) {
+      return data.get('targetType', '') == 'closing' &&
+        isValidId(data.get('targetId', '')) &&
+        existsAfter(/databases/$(database)/documents/closings/$(data.targetId)) &&
+        matchesClosingSubmittedAfter(data, orgId);
+    }
+
+    function matchesClosingReviewedAfter(data, orgId) {
+      let c = getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data;
+      return c.orgId == orgId &&
+        c.reviewedBy == request.auth.uid &&
+        c.status == (data.type == 'CLOSING_APPROVED' ? 'approved' : 'rejected') && (
+          data.audienceScope == 'branch_manager'
+            ? ('branchId' in data && data.branchId == c.branchId)
+            : (data.audienceScope == 'user' && 'recipientUid' in data && data.recipientUid == c.employeeId)
+        );
+    }
+
+    function hasClosingReviewedAfter(data, orgId) {
+      return data.get('targetType', '') == 'closing' &&
+        'targetId' in data && isValidId(data.targetId) &&
+        existsAfter(/databases/$(database)/documents/closings/$(data.targetId)) &&
+        matchesClosingReviewedAfter(data, orgId);
+    }
+
+    function matchesClosingCorrectedAfter(data, orgId) {
+      let c = getAfter(/databases/$(database)/documents/closings/$(data.targetId)).data;
+      return c.orgId == orgId &&
+        c.correctedBy == request.auth.uid &&
+        c.status == 'approved';
+    }
+
+    function hasClosingCorrectedAfter(data, orgId) {
+      return data.get('targetType', '') == 'closing' &&
+        'targetId' in data && isValidId(data.targetId) &&
+        existsAfter(/databases/$(database)/documents/closings/$(data.targetId)) &&
+        matchesClosingCorrectedAfter(data, orgId);
+    }
+
+    function hasEmployeeTargetAfter(data, orgId) {
+      return data.get('targetType', '') == 'employee' &&
+        'targetId' in data && isValidId(data.targetId) &&
+        existsAfter(/databases/$(database)/documents/users/$(data.targetId)) &&
+        getAfter(/databases/$(database)/documents/users/$(data.targetId)).data.orgId == orgId;
+    }
+
+    function isSecurityAccessDeniedAlert(data) {
+      return data.type == 'SECURITY_ACCESS_DENIED_ALERT' &&
+        data.audienceScope == 'org_manager' &&
+        data.get('targetType', '') == 'security' &&
+        data.get('targetId', '') == request.auth.uid;
+    }
+
+    function canManagerCreateTenantNotification(data, orgId) {
+      let cat = data.category;
+      let t = data.type;
+      return cat == 'closings' ? (
+          (t in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] && data.audienceScope == 'org_supervisor_permission' && hasClosingSubmittedAfter(data, orgId)) ||
+          (t in ['CLOSING_APPROVED', 'CLOSING_REJECTED'] && data.audienceScope in ['user', 'branch_manager'] && hasClosingReviewedAfter(data, orgId)) ||
+          (t == 'CLOSING_ADMIN_CORRECTED' && data.audienceScope in ['user', 'org_manager'] && hasClosingCorrectedAfter(data, orgId))
+        ) : cat == 'employees' ? (
+          t in ['EMPLOYEE_CREATED', 'EMPLOYEE_DISABLED', 'EMPLOYEE_REACTIVATED', 'EMPLOYEE_ARCHIVED', 'EMPLOYEE_BRANCH_CHANGED', 'EMPLOYEE_ROLE_PERMISSIONS_UPDATED'] &&
+          data.audienceScope in ['org_manager', 'user'] &&
+          hasEmployeeTargetAfter(data, orgId)
+        ) : cat == 'org_branches' ? (
+          t in ['ORG_SUBSCRIPTION_EXPIRING', 'ORG_NO_PAID_BRANCH_WARNING', 'BRANCH_SUSPENDED_GRACE_WARNING', 'BRANCH_GRACE_EXPIRED_WARNING'] &&
+          data.audienceScope == 'org_manager'
+        ) : cat == 'security_admin' ? (
+          (t in ['SECURITY_DRIVE_HEALTH_FAILED', 'SECURITY_DRIVE_DISCONNECTED'] && data.audienceScope == 'org_manager') ||
+          isSecurityAccessDeniedAlert(data) ||
+          (t == 'CLOSING_ADMIN_CORRECTED' && data.audienceScope == 'org_manager' && hasClosingCorrectedAfter(data, orgId)) ||
+          (
+            (
+              (t in ['EMPLOYEE_DISABLED', 'EMPLOYEE_ARCHIVED', 'EMPLOYEE_ROLE_PERMISSIONS_UPDATED'] && data.audienceScope == 'user') ||
+              (t == 'SECURITY_PASSWORD_RESET_SENT' && data.audienceScope == 'org_manager')
+            ) && hasEmployeeTargetAfter(data, orgId)
+          )
+        ) : cat == 'purchases_suppliers' ? (
+          data.audienceScope == 'org_supervisor_permission' && (
+            (t in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] && data.get('targetType', '') == 'purchase') ||
+            (t == 'SUPPLIER_ADDED' && data.get('targetType', '') == 'supplier')
+          )
+        ) : cat == 'schedule_requests' && (
+          t in [
+            'SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE',
+            'SCHEDULE_REQUEST_APPROVED', 'SCHEDULE_REQUEST_REJECTED', 'SCHEDULE_SWAP_CONFIRMED', 'SCHEDULE_SWAP_DECLINED'
+          ] &&
+          data.audienceScope in ['branch_manager', 'user'] &&
+          data.get('targetType', '') == 'schedule_request'
+        );
+    }
+
+    function canSupervisorCreateTenantNotification(u, data, orgId) {
+      let cat = data.category;
+      let t = data.type;
+      return cat == 'closings' ? (
+          (t in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] && userHasPermission(u, 'canCreateClosing') && data.audienceScope == 'org_supervisor_permission' && data.get('requiredPermission', '') in ['canApproveClosings', 'canViewAllClosings'] && hasClosingSubmittedAfter(data, orgId)) ||
+          (t in ['CLOSING_APPROVED', 'CLOSING_REJECTED'] && userHasPermission(u, 'canApproveClosings') && data.audienceScope in ['user', 'branch_manager'] && hasClosingReviewedAfter(data, orgId))
+        ) : cat == 'purchases_suppliers' ? (
+          data.audienceScope == 'org_supervisor_permission' && (
+            (t in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] && userHasPermission(u, 'canManagePurchases') && data.get('targetType', '') == 'purchase' && 'branchId' in data && isBranchInOrg(data.branchId, orgId)) ||
+            (t == 'SUPPLIER_ADDED' && userHasPermission(u, 'canManageSuppliers') && data.get('targetType', '') == 'supplier')
+          )
+        ) : cat == 'schedule_requests' ? (
+          t in ['SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE'] &&
+          data.audienceScope in ['branch_manager', 'user'] &&
+          data.get('targetType', '') == 'schedule_request' &&
+          'branchId' in data &&
+          isBranchInOrg(data.branchId, orgId)
+        ) : cat == 'security_admin' && isSecurityAccessDeniedAlert(data);
+    }
+
+    function canBranchStaffCreateTenantNotification(u, data, orgId, actorRole) {
+      let cat = data.category;
+      let t = data.type;
+      return cat == 'security_admin' ? isSecurityAccessDeniedAlert(data) : (
+        'branchId' in data &&
+        userHasSingleAssignedBranch(u, data.branchId) && (
+          cat == 'closings' ? (
+            t in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] &&
+            u.get('permissions', {}).get('canCreateClosing', true) == true &&
+            data.audienceScope == 'org_supervisor_permission' &&
+            hasClosingSubmittedAfter(data, orgId)
+          ) : cat == 'schedule_requests' ? (
+            t in ['SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE'] &&
+            data.audienceScope in ['branch_manager', 'user'] &&
+            data.get('targetType', '') == 'schedule_request'
+          ) : (
+            actorRole == 'branch_manager' &&
+            cat == 'purchases_suppliers' &&
+            t in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] &&
+            branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
+            data.audienceScope == 'org_supervisor_permission' &&
+            data.get('targetType', '') == 'purchase'
+          )
+        )
+      );
+    }
+
+    function canActorCreateTenantNotification(data) {
+      let u = getUserData();
+      let orgId = data.get('orgId', '');
+      let actorRole = data.get('actorRole', '');
+      return u.isActive == true &&
+        isValidId(orgId) &&
+        u.orgId == orgId &&
+        actorRole in ['manager', 'supervisor', 'branch_manager', 'employee'] &&
+        u.role == actorRole && (
+          actorRole == 'manager' ? canManagerCreateTenantNotification(data, orgId) :
+          actorRole == 'supervisor' ? canSupervisorCreateTenantNotification(u, data, orgId) :
+          canBranchStaffCreateTenantNotification(u, data, orgId, actorRole)
+        ) &&
+        hasActiveOrgSubscription(orgId) &&
+        hasValidTenantNotificationFeeds(data);
+    }
+
+    function canTenantUserReadNotification(data, checkDataOrgSub) {
+      let u = getUserData();
+      let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
+      return u.isActive == true &&
+        u.orgId == data.orgId &&
+        data.audienceScope != 'super_admin' &&
+        hasActiveOrgSubscription(orgSubId) && (
+          (data.audienceScope == 'user' && 'recipientUid' in data && data.recipientUid == request.auth.uid) ||
+          (u.role == 'manager' && ('org_mgr:' + u.orgId) in data.feedKeys) ||
+          (
+            u.role == 'branch_manager' &&
+            'branchId' in data &&
+            data.branchId is string &&
+            userHasSingleAssignedBranch(u, data.branchId) &&
+            ('branch_mgr:' + u.orgId + ':' + data.branchId) in data.feedKeys
+          ) ||
+          (
+            u.role == 'supervisor' &&
+            data.audienceScope == 'org_supervisor_permission' && (
+              (
+                'requiredPermission' in data &&
+                data.requiredPermission is string &&
+                userHasPermission(u, data.requiredPermission) &&
+                ('org_perm:' + u.orgId + ':' + data.requiredPermission) in data.feedKeys
+              ) ||
+              (
+                'secondaryPermission' in data &&
+                data.secondaryPermission is string &&
+                userHasPermission(u, data.secondaryPermission) &&
+                ('org_perm:' + u.orgId + ':' + data.secondaryPermission) in data.feedKeys
+              )
+            )
+          )
+        );
+    }
+
+    function canReadNotificationDoc(data, checkDataOrgSub) {
+      return (
+        isSuperAdmin() &&
+        data.audienceScope == 'super_admin' &&
+        data.orgId == 'platform' &&
+        'super_admin' in data.feedKeys
+      ) || (
+        hasValidUserDoc() &&
+        canTenantUserReadNotification(data, checkDataOrgSub)
+      );
+    }
+
+    function canListTenantNotificationDoc(data) {
+      let u = getUserData();
+      return u.isActive == true &&
+        hasActiveOrgSubscription(u.orgId) && (
+          ('user:' + u.orgId + ':' + request.auth.uid) in data.feedKeys ||
+          (u.role == 'manager' && ('org_mgr:' + u.orgId) in data.feedKeys) ||
+          (
+            u.role == 'branch_manager' &&
+            'branchId' in u &&
+            u.branchId is string &&
+            u.branchId.size() > 0 &&
+            (!('branchIds' in u) || u.branchIds == null || (u.branchIds is list && (u.branchIds.size() == 0 || (u.branchIds.size() == 1 && u.branchIds[0] == u.branchId)))) &&
+            ('branch_mgr:' + u.orgId + ':' + u.branchId) in data.feedKeys
+          ) ||
+          (
+            u.role == 'supervisor' && (
+              (userHasPermission(u, 'canApproveClosings') && ('org_perm:' + u.orgId + ':canApproveClosings') in data.feedKeys) ||
+              (userHasPermission(u, 'canViewAllClosings') && ('org_perm:' + u.orgId + ':canViewAllClosings') in data.feedKeys) ||
+              (userHasPermission(u, 'canManagePurchases') && ('org_perm:' + u.orgId + ':canManagePurchases') in data.feedKeys) ||
+              (userHasPermission(u, 'canManageSuppliers') && ('org_perm:' + u.orgId + ':canManageSuppliers') in data.feedKeys) ||
+              (userHasPermission(u, 'canViewSuppliers') && ('org_perm:' + u.orgId + ':canViewSuppliers') in data.feedKeys) ||
+              (userHasPermission(u, 'canViewFinancialReports') && ('org_perm:' + u.orgId + ':canViewFinancialReports') in data.feedKeys)
+            )
+          )
+        );
+    }
+
+    function canListNotificationDoc(data) {
+      return (
+        isSuperAdmin() &&
+        'super_admin' in data.feedKeys
+      ) || (
+        hasValidUserDoc() &&
+        canListTenantNotificationDoc(data)
+      );
+    }
+
+    match /notifications/{notificationId} {
+      allow get: if isSignedIn() && isValidId(notificationId) &&
+        canReadNotificationDoc(existing(), true);
+
+      allow list: if isSignedIn() &&
+        canListNotificationDoc(existing());
+
+      allow create: if isSignedIn() && isValidId(notificationId) &&
+        hasValidNotificationShape(notificationId, incoming()) && (
+        incoming().get('audienceScope', '') == 'super_admin' ? (
+          isSuperAdmin() &&
+          incoming().get('orgId', '') == 'platform' &&
+          incoming().get('feedKeys', []) == ['super_admin'] &&
+          incoming().get('actorRole', '') == 'super_admin' &&
+          (!('relatedOrgId' in incoming()) || isValidId(incoming().relatedOrgId))
+        ) : (
+          hasValidUserDoc() &&
+          canActorCreateTenantNotification(incoming())
+        )
+      );
+
+      allow update: if isSignedIn() && isValidId(notificationId) &&
+        canReadNotificationDoc(existing(), true) &&
+        incoming().id == existing().id &&
+        incoming().orgId == existing().orgId &&
+        incoming().feedKeys == existing().feedKeys &&
+        incoming().audienceScope == existing().audienceScope &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['readBy', 'updatedAt', 'isRead', 'readAt']) &&
+        incoming().readBy is map &&
+        incoming().readBy.diff(existing().get('readBy', {})).affectedKeys().hasOnly([request.auth.uid]) &&
+        incoming().readBy[request.auth.uid] is string &&
+        isValidIsoTimestamp(incoming().readBy[request.auth.uid]) &&
+        isValidIsoTimestamp(incoming().updatedAt) &&
+        (
+          !incoming().diff(existing()).affectedKeys().hasAny(['isRead', 'readAt']) || (
+            existing().audienceScope == 'user' &&
+            'recipientUid' in existing() &&
+            existing().recipientUid == request.auth.uid &&
+            incoming().isRead == true &&
+            (!('readAt' in incoming()) || isValidIsoTimestamp(incoming().readAt))
+          )
+        );
+
+      allow delete: if false;
+    }
+  }
+}
