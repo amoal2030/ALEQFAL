@@ -149,10 +149,26 @@ service cloud.firestore {
         (org.deactivationDueAt is timestamp && request.time < org.deactivationDueAt);
     }
 
+    // Official Permanent Billing Exemption helper (zero extra Firestore reads; fails closed unless BOTH ownerId and normalized ownerEmail match)
+    function isOrgPermanentlyBillingExempt(org) {
+      return org.get('billingExempt', false) == true &&
+        org.get('billingExemptScope', '') == 'full_permanent' &&
+        'ownerId' in org && org.ownerId is string && org.ownerId.trim().size() > 0 &&
+        'billingExemptVerifiedOwnerId' in org &&
+        org.billingExemptVerifiedOwnerId is string &&
+        org.billingExemptVerifiedOwnerId == org.ownerId &&
+        'ownerEmail' in org && org.ownerEmail is string && org.ownerEmail.trim().size() >= 3 &&
+        'billingExemptVerifiedOwnerEmail' in org &&
+        org.billingExemptVerifiedOwnerEmail is string &&
+        org.billingExemptVerifiedOwnerEmail == org.ownerEmail.trim().lower();
+    }
+
     // Preserves legacy organizations that have no subscription fields and are not suspended,
-    // while failing closed on any incomplete, malformed, expired, future-dated, or suspended subscription.
+    // supports official Super-Admin-verified permanent billing exemptions,
+    // and fails closed on manual suspension (isActive == false) or invalid/expired subscriptions.
     function isOrgSubscriptionAllowed(org) {
       return org.get('isActive', true) == true && (
+        isOrgPermanentlyBillingExempt(org) ||
         !hasAnySubscriptionField(org) ||
         (hasValidActiveSubscriptionConfig(org) && isNotPastDeactivationDue(org))
       );
@@ -189,7 +205,7 @@ service cloud.firestore {
       );
     }
 
-    function hasValidBranchPricingPayload(data) {
+    function hasValidBranchPricingCoreFields(data) {
       return (!('branchPricingModel' in data) || data.branchPricingModel in ['per_branch_50_sar', 'per_extra_branch_50_sar']) &&
         (!('includedBranchesCount' in data) || (data.includedBranchesCount is int && data.includedBranchesCount >= 0 && data.includedBranchesCount <= 1000)) &&
         (!('extraBranchMonthlyFeeSar' in data) || (data.extraBranchMonthlyFeeSar is number && data.extraBranchMonthlyFeeSar >= 0 && data.extraBranchMonthlyFeeSar <= 100000)) &&
@@ -197,8 +213,11 @@ service cloud.firestore {
         (!('extraBranchesMonthlyTotalSar' in data) || (data.extraBranchesMonthlyTotalSar is number && data.extraBranchesMonthlyTotalSar >= 0 && data.extraBranchesMonthlyTotalSar <= 10000000)) &&
         (!('branchPricingUpdatedAt' in data) || data.branchPricingUpdatedAt is timestamp) &&
         (!('branchPricingUpdatedBy' in data) || (data.branchPricingUpdatedBy is string && data.branchPricingUpdatedBy.size() <= 150)) &&
-        (!('branchPricingNote' in data) || (data.branchPricingNote is string && data.branchPricingNote.size() <= 500)) &&
-        (!('accountSetupFeeSar' in data) || (data.accountSetupFeeSar is number && data.accountSetupFeeSar >= 0 && data.accountSetupFeeSar <= 100000)) &&
+        (!('branchPricingNote' in data) || (data.branchPricingNote is string && data.branchPricingNote.size() <= 500));
+    }
+
+    function hasValidOrgFeeAndDeactivationFields(data) {
+      return (!('accountSetupFeeSar' in data) || (data.accountSetupFeeSar is number && data.accountSetupFeeSar >= 0 && data.accountSetupFeeSar <= 100000)) &&
         (!('setupFeeStatus' in data) || data.setupFeeStatus in ['paid', 'unpaid', 'waived']) &&
         (!('setupFeePaidAt' in data) || data.setupFeePaidAt == null || data.setupFeePaidAt is timestamp) &&
         (!('reactivationFeeSar' in data) || (data.reactivationFeeSar is number && data.reactivationFeeSar >= 0 && data.reactivationFeeSar <= 100000)) &&
@@ -212,15 +231,220 @@ service cloud.firestore {
         (!('deactivatedAt' in data) || data.deactivatedAt == null || data.deactivatedAt is timestamp);
     }
 
+    function hasValidBranchPricingPayload(data) {
+      return hasValidBranchPricingCoreFields(data) && hasValidOrgFeeAndDeactivationFields(data);
+    }
+
     function hasValidOrgReactivationTransition(nextData, prevData) {
       return !('deactivationReason' in prevData) ||
         prevData.deactivationReason != 'no_paid_branches' ||
         ('isActive' in nextData && nextData.isActive == false) || (
           (!('isActive' in nextData) || nextData.isActive == true) &&
-          'reactivationFeeStatus' in nextData &&
-          nextData.reactivationFeeStatus in ['paid', 'waived'] &&
+          (
+            isOrgPermanentlyBillingExempt(nextData) ||
+            (
+              'reactivationFeeStatus' in nextData &&
+              nextData.reactivationFeeStatus in ['paid', 'waived']
+            )
+          ) &&
           (!('deactivationReason' in nextData) || nextData.deactivationReason == null) &&
           (!('deactivationDueAt' in nextData) || nextData.deactivationDueAt == null)
+        );
+    }
+
+    // Permanent Billing Exemption governance & bidirectional atomic audit coupling (Super Admin only)
+    function hasBillingExemptionFieldsModified(changed) {
+      return changed.hasAny([
+        'billingExempt',
+        'billingExemptScope',
+        'billingExemptReason',
+        'billingExemptGrantedAt',
+        'billingExemptGrantedBy',
+        'billingExemptVerifiedOwnerId',
+        'billingExemptVerifiedOwnerEmail',
+        'billingExemptRevokedAt',
+        'billingExemptRevokedBy',
+        'billingExemptRevokeReason',
+        'billingExemptLastAuditLogId'
+      ]);
+    }
+
+    function hasValidBillingExemptionPayloadTypes(data) {
+      return (!('billingExempt' in data) || data.billingExempt is bool) &&
+        (!('billingExemptScope' in data) || data.billingExemptScope == null || data.billingExemptScope == 'full_permanent') &&
+        (!('billingExemptReason' in data) || data.billingExemptReason == null || (data.billingExemptReason is string && data.billingExemptReason.trim().size() >= 5 && data.billingExemptReason.size() <= 500)) &&
+        (!('billingExemptGrantedAt' in data) || data.billingExemptGrantedAt == null || data.billingExemptGrantedAt is timestamp) &&
+        (!('billingExemptGrantedBy' in data) || data.billingExemptGrantedBy == null || (data.billingExemptGrantedBy is string && data.billingExemptGrantedBy.size() <= 150)) &&
+        (!('billingExemptVerifiedOwnerId' in data) || data.billingExemptVerifiedOwnerId == null || (data.billingExemptVerifiedOwnerId is string && data.billingExemptVerifiedOwnerId.size() <= 128)) &&
+        (!('billingExemptVerifiedOwnerEmail' in data) || data.billingExemptVerifiedOwnerEmail == null || (data.billingExemptVerifiedOwnerEmail is string && data.billingExemptVerifiedOwnerEmail.size() <= 254)) &&
+        (!('billingExemptRevokedAt' in data) || data.billingExemptRevokedAt == null || data.billingExemptRevokedAt is timestamp) &&
+        (!('billingExemptRevokedBy' in data) || data.billingExemptRevokedBy == null || (data.billingExemptRevokedBy is string && data.billingExemptRevokedBy.size() <= 150)) &&
+        (!('billingExemptRevokeReason' in data) || data.billingExemptRevokeReason == null || (data.billingExemptRevokeReason is string && data.billingExemptRevokeReason.trim().size() >= 5 && data.billingExemptRevokeReason.size() <= 500)) &&
+        (!('billingExemptLastAuditLogId' in data) || data.billingExemptLastAuditLogId == null || isValidId(data.billingExemptLastAuditLogId));
+    }
+
+    function isVerifiedOrgOwnerDoc(orgId, ownerUid, ownerEmailLower) {
+      let u = get(/databases/$(database)/documents/users/$(ownerUid)).data;
+      return isValidId(ownerUid) &&
+        exists(/databases/$(database)/documents/users/$(ownerUid)) &&
+        u.orgId == orgId &&
+        u.role == 'manager' &&
+        'email' in u &&
+        u.email is string &&
+        u.email.trim().lower() == ownerEmailLower;
+    }
+
+    function hasAtomicBillingExemptionAuditLog(orgId, logId, expectedAction) {
+      let logAfter = getAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)).data;
+      return isValidId(logId) &&
+        !exists(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        existsAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        logAfter.id == logId &&
+        logAfter.orgId == orgId &&
+        logAfter.targetId == orgId &&
+        logAfter.action == expectedAction &&
+        logAfter.actorUid == request.auth.uid;
+    }
+
+    function hasValidOrgCoreProfileFields(next) {
+      return next.name is string && next.name.size() >= 2 && next.name.size() <= 120 &&
+        (!('taxNumber' in next) || (next.taxNumber is string && next.taxNumber.size() <= 40)) &&
+        next.activityType in ['retail', 'restaurant', 'supermarket', 'services', 'other'] &&
+        next.currency in ['SAR', 'AED', 'QAR', 'KWD', 'USD'] &&
+        next.ownerEmail is string && next.ownerEmail.trim().size() >= 3 && next.ownerEmail.size() <= 254 &&
+        next.ownerName is string && next.ownerName.trim().size() >= 1 && next.ownerName.size() <= 100 &&
+        (!('ownerId' in next) || (next.ownerId is string && next.ownerId.size() <= 128)) &&
+        (!('commercialRegistration' in next) || (next.commercialRegistration is string && next.commercialRegistration.size() <= 50)) &&
+        (!('isActive' in next) || next.isActive is bool);
+    }
+
+    // 1B. Super Admin atomic Permanent Billing Exemption GRANT body
+    function canSuperAdminGrantOrgBillingExemption(orgId, next, prev) {
+      let nextAuditId = next.get('billingExemptLastAuditLogId', '');
+      return hasValidBillingExemptionPayloadTypes(next) &&
+        nextAuditId is string &&
+        isValidId(nextAuditId) &&
+        nextAuditId != prev.get('billingExemptLastAuditLogId', '') &&
+        !isOrgPermanentlyBillingExempt(prev) &&
+        isOrgPermanentlyBillingExempt(next) &&
+        'billingExemptReason' in next &&
+        next.billingExemptReason is string &&
+        next.billingExemptReason.trim().size() >= 5 &&
+        'billingExemptGrantedAt' in next &&
+        next.billingExemptGrantedAt is timestamp &&
+        'billingExemptGrantedBy' in next &&
+        next.billingExemptGrantedBy is string &&
+        next.billingExemptGrantedBy.trim().lower() == authEmailLower() &&
+        isVerifiedOrgOwnerDoc(orgId, next.ownerId, next.ownerEmail.trim().lower()) &&
+        hasAtomicBillingExemptionAuditLog(orgId, nextAuditId, 'ORG_BILLING_EXEMPTION_GRANTED');
+    }
+
+    // 1C. Super Admin atomic Permanent Billing Exemption REVOKE body
+    function canSuperAdminRevokeOrgBillingExemption(orgId, next, prev) {
+      let nextAuditId = next.get('billingExemptLastAuditLogId', '');
+      return prev.get('billingExempt', false) == true &&
+        next.get('billingExempt', false) == false &&
+        hasValidBillingExemptionPayloadTypes(next) &&
+        nextAuditId is string &&
+        isValidId(nextAuditId) &&
+        nextAuditId != prev.get('billingExemptLastAuditLogId', '') &&
+        'billingExemptRevokedAt' in next &&
+        next.billingExemptRevokedAt is timestamp &&
+        'billingExemptRevokedBy' in next &&
+        next.billingExemptRevokedBy is string &&
+        next.billingExemptRevokedBy.trim().lower() == authEmailLower() &&
+        'billingExemptRevokeReason' in next &&
+        next.billingExemptRevokeReason is string &&
+        next.billingExemptRevokeReason.trim().size() >= 5 &&
+        hasAtomicBillingExemptionAuditLog(orgId, nextAuditId, 'ORG_BILLING_EXEMPTION_REVOKED');
+    }
+
+    // Super Admin organization update dispatcher with ternary guards (prevents CEL pre-read expansion and evaluates only affected field groups)
+    function canSuperAdminUpdateOrg(orgId, next, prev) {
+      let changed = next.diff(prev).affectedKeys();
+      return (next.id == prev.id && next.createdAt == prev.createdAt) ? (
+        changed.hasOnly([
+          'name', 'taxNumber', 'commercialRegistration', 'activityType', 'currency',
+          'ownerId', 'ownerEmail', 'ownerName', 'isActive',
+          'subscriptionPlan', 'subscriptionStatus', 'subscriptionStartAt',
+          'subscriptionEndAt', 'subscriptionUpdatedAt', 'subscriptionUpdatedBy',
+          'subscriptionNote',
+          'branchPricingModel', 'includedBranchesCount', 'extraBranchMonthlyFeeSar',
+          'extraBranchesCount', 'extraBranchesMonthlyTotalSar',
+          'branchPricingUpdatedAt', 'branchPricingUpdatedBy', 'branchPricingNote',
+          'accountSetupFeeSar', 'setupFeeStatus', 'setupFeePaidAt',
+          'reactivationFeeSar', 'reactivationFeeStatus', 'reactivationFeePaidAt',
+          'reactivatedAt', 'reactivatedBy',
+          'deactivationReason', 'noPaidBranchGraceStartedAt', 'deactivationDueAt', 'deactivatedAt',
+          'billingExempt', 'billingExemptScope', 'billingExemptReason',
+          'billingExemptGrantedAt', 'billingExemptGrantedBy',
+          'billingExemptVerifiedOwnerId', 'billingExemptVerifiedOwnerEmail',
+          'billingExemptRevokedAt', 'billingExemptRevokedBy', 'billingExemptRevokeReason',
+          'billingExemptLastAuditLogId',
+          'updatedAt'
+        ]) ? (
+          (
+            changed.hasAny([
+              'name', 'taxNumber', 'commercialRegistration', 'activityType', 'currency',
+              'ownerId', 'ownerEmail', 'ownerName', 'isActive'
+            ]) ? hasValidOrgCoreProfileFields(next) : true
+          ) &&
+          (
+            changed.hasAny([
+              'subscriptionPlan', 'subscriptionStatus', 'subscriptionStartAt',
+              'subscriptionEndAt', 'subscriptionUpdatedAt', 'subscriptionUpdatedBy', 'subscriptionNote'
+            ]) ? hasValidSuperAdminSubscriptionPayload(next) : true
+          ) &&
+          (
+            changed.hasAny([
+              'branchPricingModel', 'includedBranchesCount', 'extraBranchMonthlyFeeSar',
+              'extraBranchesCount', 'extraBranchesMonthlyTotalSar',
+              'branchPricingUpdatedAt', 'branchPricingUpdatedBy', 'branchPricingNote'
+            ]) ? hasValidBranchPricingCoreFields(next) : true
+          ) &&
+          (
+            changed.hasAny([
+              'accountSetupFeeSar', 'setupFeeStatus', 'setupFeePaidAt',
+              'reactivationFeeSar', 'reactivationFeeStatus', 'reactivationFeePaidAt',
+              'reactivatedAt', 'reactivatedBy',
+              'deactivationReason', 'noPaidBranchGraceStartedAt', 'deactivationDueAt', 'deactivatedAt'
+            ]) ? hasValidOrgFeeAndDeactivationFields(next) : true
+          ) &&
+          (
+            prev.get('deactivationReason', '') == 'no_paid_branches'
+              ? hasValidOrgReactivationTransition(next, prev)
+              : true
+          ) &&
+          (
+            hasBillingExemptionFieldsModified(changed) ? (
+              next.get('billingExempt', false) == true
+                ? canSuperAdminGrantOrgBillingExemption(orgId, next, prev)
+                : canSuperAdminRevokeOrgBillingExemption(orgId, next, prev)
+            ) : (
+              next.get('billingExempt', false) == true
+                ? isOrgPermanentlyBillingExempt(next)
+                : true
+            )
+          )
+        ) : false
+      ) : false;
+    }
+
+    function hasValidOrgExemptionTransitionForAudit(logId, orgId, action) {
+      let orgBefore = get(/databases/$(database)/documents/organizations/$(orgId)).data;
+      let orgAfter = getAfter(/databases/$(database)/documents/organizations/$(orgId)).data;
+      return exists(/databases/$(database)/documents/organizations/$(orgId)) &&
+        orgBefore.get('billingExemptLastAuditLogId', '') != logId &&
+        orgAfter.get('billingExemptLastAuditLogId', '') == logId && (
+          (
+            action == 'ORG_BILLING_EXEMPTION_GRANTED' &&
+            !isOrgPermanentlyBillingExempt(orgBefore) &&
+            isOrgPermanentlyBillingExempt(orgAfter)
+          ) || (
+            action == 'ORG_BILLING_EXEMPTION_REVOKED' &&
+            orgBefore.get('billingExempt', false) == true &&
+            orgAfter.get('billingExempt', false) == false
+          )
         );
     }
 
@@ -683,43 +907,15 @@ service cloud.firestore {
 
       allow update: if isSignedIn() && isValidId(orgId) && (
         isSuperAdmin() ? (
-          // 1. Super Admin managing organization profile (name, taxNumber, commercialRegistration), status, owner binding, fees, and subscription fields
-          incoming().id == existing().id &&
-          incoming().createdAt == existing().createdAt &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'name', 'taxNumber', 'commercialRegistration', 'activityType', 'currency',
-            'ownerId', 'ownerEmail', 'ownerName', 'isActive',
-            'subscriptionPlan', 'subscriptionStatus', 'subscriptionStartAt',
-            'subscriptionEndAt', 'subscriptionUpdatedAt', 'subscriptionUpdatedBy',
-            'subscriptionNote',
-            'branchPricingModel', 'includedBranchesCount', 'extraBranchMonthlyFeeSar',
-            'extraBranchesCount', 'extraBranchesMonthlyTotalSar',
-            'branchPricingUpdatedAt', 'branchPricingUpdatedBy', 'branchPricingNote',
-            'accountSetupFeeSar', 'setupFeeStatus', 'setupFeePaidAt',
-            'reactivationFeeSar', 'reactivationFeeStatus', 'reactivationFeePaidAt',
-            'reactivatedAt', 'reactivatedBy',
-            'deactivationReason', 'noPaidBranchGraceStartedAt', 'deactivationDueAt', 'deactivatedAt',
-            'updatedAt'
-          ]) &&
-          incoming().name is string && incoming().name.size() >= 2 && incoming().name.size() <= 120 &&
-          (!('taxNumber' in incoming()) || (incoming().taxNumber is string && incoming().taxNumber.size() <= 40)) &&
-          incoming().activityType in ['retail', 'restaurant', 'supermarket', 'services', 'other'] &&
-          incoming().currency in ['SAR', 'AED', 'QAR', 'KWD', 'USD'] &&
-          incoming().ownerEmail is string && incoming().ownerEmail.trim().size() >= 3 && incoming().ownerEmail.size() <= 254 &&
-          incoming().ownerName is string && incoming().ownerName.trim().size() >= 1 && incoming().ownerName.size() <= 100 &&
-          (!('ownerId' in incoming()) || (incoming().ownerId is string && incoming().ownerId.size() <= 128)) &&
-          (!('commercialRegistration' in incoming()) || (incoming().commercialRegistration is string && incoming().commercialRegistration.size() <= 50)) &&
-          (!('isActive' in incoming()) || incoming().isActive is bool) &&
-          hasValidSuperAdminSubscriptionPayload(incoming()) &&
-          hasValidBranchPricingPayload(incoming()) &&
-          hasValidOrgReactivationTransition(incoming(), existing())
+          // 1. Super Admin managing organization profile, status, owner binding, fees, exemption, and subscription fields
+          canSuperAdminUpdateOrg(orgId, request.resource.data, resource.data)
         ) : hasValidUserDoc() ? (
           // 2. Active Manager updating ONLY non-sensitive Google Drive link/cache metadata (strict allowlist; protects name, taxNumber, CR, fees, subscription & ownership)
           isOrgManager(orgId) &&
           hasActiveOrgSubscription(orgId) &&
-          incoming().ownerId == existing().ownerId &&
-          incoming().id == existing().id &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
+          request.resource.data.ownerId == resource.data.ownerId &&
+          request.resource.data.id == resource.data.id &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'driveConnected',
             'driveFolderId',
             'driveFolderName',
@@ -739,13 +935,13 @@ service cloud.firestore {
           // 3. Atomic invite claim binding ownerId on first verified Google login of invited manager
           isVerifiedEmailUser() &&
           hasActiveOrgSubscription(orgId) &&
-          'ownerEmail' in existing() &&
-          existing().ownerEmail is string &&
-          existing().ownerEmail.trim().lower() == authEmailLower() &&
-          (!('ownerId' in existing()) || existing().ownerId == '' || existing().ownerId == request.auth.uid) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['ownerId', 'ownerName', 'updatedAt']) &&
-          incoming().ownerId == request.auth.uid &&
-          (!('ownerName' in incoming()) || (incoming().ownerName is string && incoming().ownerName.trim().size() >= 1 && incoming().ownerName.size() <= 100)) &&
+          'ownerEmail' in resource.data &&
+          resource.data.ownerEmail is string &&
+          resource.data.ownerEmail.trim().lower() == authEmailLower() &&
+          (!('ownerId' in resource.data) || resource.data.ownerId == '' || resource.data.ownerId == request.auth.uid) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerId', 'ownerName', 'updatedAt']) &&
+          request.resource.data.ownerId == request.auth.uid &&
+          (!('ownerName' in request.resource.data) || (request.resource.data.ownerName is string && request.resource.data.ownerName.trim().size() >= 1 && request.resource.data.ownerName.size() <= 100)) &&
           isClaimingValidManagerInvite(orgId) &&
           existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
           getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.orgId == orgId &&
@@ -972,6 +1168,31 @@ service cloud.firestore {
         getAfter(/databases/$(database)/documents/organizations/$(data.orgId)).data.ownerId == request.auth.uid;
     }
 
+    function canManagerUpdateStaffProfile(next, prev) {
+      let changed = next.diff(prev).affectedKeys();
+      return (
+        prev.role in ['supervisor', 'branch_manager', 'employee'] &&
+        next.role in ['supervisor', 'branch_manager', 'employee'] &&
+        next.orgId == prev.orgId &&
+        next.uid == prev.uid
+      ) ? (
+        changed.hasOnly([
+          'role', 'branchId', 'branchIds', 'branchName', 'permissions', 'isActive',
+          'displayName', 'phone', 'email', 'isArchived', 'archivedAt', 'archivedBy', 'updatedAt'
+        ]) ? (
+          isOrgManager(prev.orgId) &&
+          hasActiveOrgSubscription(prev.orgId) &&
+          (changed.hasAny(['email']) ? isValidUserEmailString(next.email) : true) &&
+          (changed.hasAny(['displayName']) ? (next.displayName is string && next.displayName.trim().size() >= 1 && next.displayName.size() <= 100) : true) &&
+          (changed.hasAny(['phone']) ? (!('phone' in next) || (next.phone is string && next.phone.size() <= 25)) : true) &&
+          next.isActive is bool &&
+          (changed.hasAny(['isActive', 'isArchived', 'archivedAt', 'archivedBy']) ? isValidStaffArchiveState(next) : true) &&
+          (changed.hasAny(['role', 'branchId', 'branchIds']) ? hasValidStaffBranchBinding(next) : true) &&
+          (changed.hasAny(['role', 'permissions']) ? (!('permissions' in next) || hasSafeNonManagerPermissions(next.role, next.permissions)) : true)
+        ) : false
+      ) : false;
+    }
+
     // Users Collection
     match /users/{userId} {
       // User can always get their own identity doc; active managers can get other org users while org subscription is active.
@@ -1021,41 +1242,21 @@ service cloud.firestore {
       );
 
       // Harden user updates: requires active org subscription + strict allowlist + blocks self-privilege escalation and promotion to manager/super_admin
-      allow update: if isSignedIn() && isValidId(userId) &&
-        incoming().role in ['manager', 'supervisor', 'branch_manager', 'employee'] && (
+      allow update: if isSignedIn() && isValidId(userId) && (
         request.auth.uid == userId ? (
           // Case 1: Active user self-updating displayName or phone ONLY (blocks disabled users, role changes, and permissions tampering)
-          existing().isActive == true &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone']) &&
-          incoming().role == existing().role &&
-          incoming().orgId == existing().orgId &&
-          incoming().isActive == existing().isActive &&
-          incoming().displayName is string &&
-          incoming().displayName.size() >= 1 &&
-          incoming().displayName.size() <= 100 &&
-          (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25)) &&
-          hasActiveOrgSubscription(existing().orgId)
+          (resource.data.isActive == true && request.resource.data.role == resource.data.role && request.resource.data.orgId == resource.data.orgId && request.resource.data.isActive == resource.data.isActive) ? (
+            request.resource.data.role in ['manager', 'supervisor', 'branch_manager', 'employee'] &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'phone']) &&
+            request.resource.data.displayName is string &&
+            request.resource.data.displayName.size() >= 1 &&
+            request.resource.data.displayName.size() <= 100 &&
+            (!('phone' in request.resource.data) || (request.resource.data.phone is string && request.resource.data.phone.size() <= 25)) &&
+            hasActiveOrgSubscription(resource.data.orgId)
+          ) : false
         ) : (
           // Case 2: Active manager updating org staff (supervisor / branch_manager / employee) profile, role, single branch, permissions, status, or soft-archive
-          existing().role in ['supervisor', 'branch_manager', 'employee'] &&
-          incoming().role in ['supervisor', 'branch_manager', 'employee'] &&
-          incoming().orgId == existing().orgId &&
-          incoming().uid == existing().uid &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'role', 'branchId', 'branchIds', 'branchName', 'permissions', 'isActive',
-            'displayName', 'phone', 'email', 'isArchived', 'archivedAt', 'archivedBy', 'updatedAt'
-          ]) &&
-          isOrgManager(existing().orgId) &&
-          hasActiveOrgSubscription(existing().orgId) &&
-          isValidUserEmailString(incoming().email) &&
-          incoming().displayName is string &&
-          incoming().displayName.trim().size() >= 1 &&
-          incoming().displayName.size() <= 100 &&
-          (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25)) &&
-          incoming().isActive is bool &&
-          isValidStaffArchiveState(incoming()) &&
-          hasValidStaffBranchBinding(incoming()) &&
-          (!('permissions' in incoming()) || hasSafeNonManagerPermissions(incoming().role, incoming().permissions))
+          canManagerUpdateStaffProfile(request.resource.data, resource.data)
         )
       );
 
@@ -1177,12 +1378,11 @@ service cloud.firestore {
         hasValidBranchBillingFields(incoming());
 
       allow update: if isSignedIn() && isValidId(branchId) && (
-        // 1. Verified Super Admin managing branch lifecycle, billing/payment dates, 30-day suspension grace, and verified Drive backup attestation
-        (
-          isSuperAdmin() &&
-          incoming().id == existing().id &&
-          incoming().orgId == existing().orgId &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
+        isSuperAdmin() ? (
+          // 1. Verified Super Admin managing branch lifecycle, billing/payment dates, 30-day suspension grace, and verified Drive backup attestation
+          request.resource.data.id == resource.data.id &&
+          request.resource.data.orgId == resource.data.orgId &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'name', 'code', 'address', 'phone', 'isActive', 'lifecycleStatus',
             'subscriptionStartAt', 'feeDueAt', 'monthlyFeeSar',
             'paymentStatus', 'lastPaidAt', 'lastPaidBy', 'paymentNote',
@@ -1190,18 +1390,17 @@ service cloud.firestore {
             'driveBackupVerified', 'driveBackupVerifiedAt', 'driveBackupVerifiedBy', 'driveBackupArchivedClosingsCount',
             'purgedFromDbAt', 'purgedFromDbBy', 'updatedAt'
           ]) &&
-          incoming().name is string && incoming().name.size() >= 2 && incoming().name.size() <= 100 &&
-          incoming().isActive is bool &&
-          hasValidBranchBillingFields(incoming()) &&
-          hasValidBranchLifecycleState(incoming())
-        ) ||
-        // 2. Active org managers may sync ONLY Google Drive folder metadata for existing active org branches.
-        (
-          isOrgManager(existing().orgId) &&
-          hasActiveOrgSubscription(existing().orgId) &&
-          existing().isActive == true &&
-          incoming().orgId == existing().orgId &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
+          request.resource.data.name is string && request.resource.data.name.size() >= 2 && request.resource.data.name.size() <= 100 &&
+          request.resource.data.isActive is bool &&
+          hasValidBranchBillingFields(request.resource.data) &&
+          hasValidBranchLifecycleState(request.resource.data)
+        ) : (
+          // 2. Active org managers may sync ONLY Google Drive folder metadata for existing active org branches.
+          isOrgManager(resource.data.orgId) &&
+          hasActiveOrgSubscription(resource.data.orgId) &&
+          resource.data.isActive == true &&
+          request.resource.data.orgId == resource.data.orgId &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'driveFolderId', 'driveFolderName', 'driveFolderLink'
           ])
         )
@@ -1436,6 +1635,7 @@ service cloud.firestore {
     match /purchases/{purchaseId} {
       function hasActiveOrgSubFast(org) {
         return org.get('isActive', true) == true && (
+          isOrgPermanentlyBillingExempt(org) ||
           (
             org.get('subscriptionStatus', '') == 'active' &&
             org.get('subscriptionPlan', '') in ['trial_7d', '1m', '3m', '6m', '1y'] &&
@@ -2120,7 +2320,15 @@ service cloud.firestore {
         (!('orgId' in incoming()) || isValidId(incoming().orgId)) &&
         incoming().details is string && incoming().details.size() >= 5 && incoming().details.size() <= 1000 &&
         (!('metadata' in incoming()) || incoming().metadata is map) &&
-        isValidIsoTimestamp(incoming().timestamp);
+        isValidIsoTimestamp(incoming().timestamp) && (
+          !(incoming().action in ['ORG_BILLING_EXEMPTION_GRANTED', 'ORG_BILLING_EXEMPTION_REVOKED']) || (
+            'orgId' in incoming() &&
+            isValidId(incoming().orgId) &&
+            incoming().targetId == incoming().orgId &&
+            incoming().targetType in ['organization', 'billing'] &&
+            hasValidOrgExemptionTransitionForAudit(logId, incoming().orgId, incoming().action)
+          )
+        );
 
       allow update, delete: if false;
     }

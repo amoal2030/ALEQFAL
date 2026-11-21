@@ -55,12 +55,13 @@ export const SubscriptionBlockedView: React.FC = () => {
   const [langMenuOpen, setLangMenuOpen] = useState(false);
 
   const blockType = subscriptionBlockReason || 'expired';
-  const isNoPaidBranches = blockType === 'no_paid_branches';
+  const isBillingExemptOrg = Boolean(subscriptionEvaluation?.isBillingExempt);
+  const isNoPaidBranches = !isBillingExemptOrg && blockType === 'no_paid_branches';
 
   const statusTitle =
-    blockType === 'no_paid_branches'
+    isNoPaidBranches
       ? t('subNoPaidBranchesTitle')
-      : blockType === 'suspended'
+      : blockType === 'suspended' || isBillingExemptOrg
       ? t('subSuspendedTitle')
       : blockType === 'not_started'
       ? t('subNotStartedTitle')
@@ -68,7 +69,9 @@ export const SubscriptionBlockedView: React.FC = () => {
 
   const statusDescription = isEmployee
     ? t('subBlockedDescEmployee')
-    : blockType === 'no_paid_branches'
+    : isBillingExemptOrg
+    ? t('subSuspendedDescManager')
+    : isNoPaidBranches
     ? t('subNoPaidBranchesDescManager')
     : blockType === 'suspended'
     ? t('subSuspendedDescManager')
@@ -81,53 +84,84 @@ export const SubscriptionBlockedView: React.FC = () => {
     return d.toISOString().slice(0, 10);
   };
 
-  const whatsappRequest = useMemo(
-    () =>
-      isNoPaidBranches
-        ? buildReactivationSubscriptionWhatsApp({
-            orgName: currentOrg?.name || 'AL EQFAL',
-            orgId: currentOrg?.id,
-            managerName:
-              userProfile?.displayName ||
-              currentOrg?.ownerName ||
-              currentUser?.displayName ||
-              currentUser?.email ||
-              '—',
-            managerEmail: currentUser?.email || currentOrg?.ownerEmail || '—',
-            reactivationFeeSar: currentOrg?.reactivationFeeSar ?? ORG_REACTIVATION_FEE_SAR,
-            branchMonthlyFeeSar: currentOrg?.extraBranchMonthlyFeeSar ?? BRANCH_MONTHLY_FEE_SAR,
-            language,
-          })
-        : buildRenewalSubscriptionWhatsApp({
-            orgName: currentOrg?.name || 'AL EQFAL',
-            orgId: currentOrg?.id,
-            managerName:
-              userProfile?.displayName ||
-              currentOrg?.ownerName ||
-              currentUser?.displayName ||
-              currentUser?.email ||
-              '—',
-            managerEmail: currentUser?.email || currentOrg?.ownerEmail || '—',
-            plan: selectedPlan,
-            currentEndAt: currentOrg?.subscriptionEndAt,
-            language,
-          }),
-    [
-      isNoPaidBranches,
-      currentOrg?.name,
-      currentOrg?.id,
-      currentOrg?.ownerName,
-      currentOrg?.ownerEmail,
-      currentOrg?.subscriptionEndAt,
-      currentOrg?.reactivationFeeSar,
-      currentOrg?.extraBranchMonthlyFeeSar,
-      userProfile?.displayName,
-      currentUser?.displayName,
-      currentUser?.email,
-      selectedPlan,
-      language,
-    ]
-  );
+  const whatsappRequest = useMemo(() => {
+    const orgName = currentOrg?.name || 'AL EQFAL';
+    const managerName =
+      userProfile?.displayName ||
+      currentOrg?.ownerName ||
+      currentUser?.displayName ||
+      currentUser?.email ||
+      '—';
+    const managerEmail = currentUser?.email || currentOrg?.ownerEmail || '—';
+
+    if (isBillingExemptOrg) {
+      const msg =
+        language === 'en'
+          ? [
+              'Hello AL EQFAL Management,',
+              'Our permanently billing-exempt organization is currently suspended administratively and we request review/reactivation:',
+              `- Organization: ${orgName}${currentOrg?.id ? ` (${currentOrg.id})` : ''}`,
+              `- Manager: ${managerName} (${managerEmail})`,
+              '- Account Tier: Permanent Full Billing Exemption (0 SAR)',
+            ].join('\n')
+          : language === 'ur'
+          ? [
+              'السلام علیکم الاقفال انتظامیہ،',
+              'ہمارا مستقل فیس مستثنیٰ ادارہ اس وقت انتظامی طور پر معطل ہے، برائے مہربانی جائزہ اور بحالی کی درخواست ہے:',
+              `- ادارہ: ${orgName}${currentOrg?.id ? ` (${currentOrg.id})` : ''}`,
+              `- منیجر: ${managerName} (${managerEmail})`,
+              '- اکاؤنٹ کی قسم: مستقل مکمل فیس استثنیٰ (0 ریال)',
+            ].join('\n')
+          : [
+              'السلام عليكم إدارة نظام الإقفال AL EQFAL،',
+              'مؤسستنا المشمولة بالإعفاء الدائم الشامل موقوفة إدارياً حالياً ونرجو المراجعة وإعادة التفعيل:',
+              `- اسم المؤسسة: ${orgName}${currentOrg?.id ? ` (${currentOrg.id})` : ''}`,
+              `- المدير: ${managerName} (${managerEmail})`,
+              '- تصنيف الحساب: إعفاء دائم شامل (0 ر.س)',
+            ].join('\n');
+      return {
+        phoneLocal: SUBSCRIPTION_WHATSAPP_LOCAL,
+        phoneIntl: '966541821068',
+        message: msg,
+        url: `https://wa.me/966541821068?text=${encodeURIComponent(msg)}`,
+      };
+    }
+
+    return isNoPaidBranches
+      ? buildReactivationSubscriptionWhatsApp({
+          orgName,
+          orgId: currentOrg?.id,
+          managerName,
+          managerEmail,
+          reactivationFeeSar: currentOrg?.reactivationFeeSar ?? ORG_REACTIVATION_FEE_SAR,
+          branchMonthlyFeeSar: currentOrg?.extraBranchMonthlyFeeSar ?? BRANCH_MONTHLY_FEE_SAR,
+          language,
+        })
+      : buildRenewalSubscriptionWhatsApp({
+          orgName,
+          orgId: currentOrg?.id,
+          managerName,
+          managerEmail,
+          plan: selectedPlan,
+          currentEndAt: currentOrg?.subscriptionEndAt,
+          language,
+        });
+  }, [
+    isBillingExemptOrg,
+    isNoPaidBranches,
+    currentOrg?.name,
+    currentOrg?.id,
+    currentOrg?.ownerName,
+    currentOrg?.ownerEmail,
+    currentOrg?.subscriptionEndAt,
+    currentOrg?.reactivationFeeSar,
+    currentOrg?.extraBranchMonthlyFeeSar,
+    userProfile?.displayName,
+    currentUser?.displayName,
+    currentUser?.email,
+    selectedPlan,
+    language,
+  ]);
 
   const handleCopyMessage = async () => {
     try {
@@ -155,14 +189,14 @@ export const SubscriptionBlockedView: React.FC = () => {
   ];
 
   const IconComponent =
-    blockType === 'suspended' || blockType === 'no_paid_branches'
+    blockType === 'suspended' || blockType === 'no_paid_branches' || isBillingExemptOrg
       ? ShieldAlert
       : blockType === 'not_started'
       ? Clock
       : CalendarX2;
 
   const iconColors =
-    blockType === 'suspended' || blockType === 'no_paid_branches'
+    blockType === 'suspended' || blockType === 'no_paid_branches' || isBillingExemptOrg
       ? 'bg-rose-500/10 border-rose-500/30 text-rose-600 dark:text-rose-400'
       : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400';
 
@@ -275,13 +309,19 @@ export const SubscriptionBlockedView: React.FC = () => {
                 {t('subPlanLabel')}
               </span>
               <span className="font-bold text-[#0B1B32] dark:text-white text-sm">
-                {subscriptionEvaluation?.plan
+                {isBillingExemptOrg
+                  ? language === 'en'
+                    ? 'Permanent Full Exemption (0 SAR)'
+                    : language === 'ur'
+                    ? 'مستقل مکمل استثنیٰ (0 ریال)'
+                    : 'إعفاء دائم شامل (0 ر.س)'
+                  : subscriptionEvaluation?.plan
                   ? getSubscriptionPlanLabel(subscriptionEvaluation.plan, language)
                   : '—'}
               </span>
             </div>
 
-            {blockType === 'not_started' && subscriptionEvaluation?.startDate && (
+            {!isBillingExemptOrg && blockType === 'not_started' && subscriptionEvaluation?.startDate && (
               <div>
                 <span className="text-slate-500 dark:text-slate-400 block mb-0.5">
                   {t('subStartDateLabel')}
@@ -292,7 +332,7 @@ export const SubscriptionBlockedView: React.FC = () => {
               </div>
             )}
 
-            {subscriptionEvaluation?.endDate && (
+            {!isBillingExemptOrg && subscriptionEvaluation?.endDate && (
               <div>
                 <span className="text-slate-500 dark:text-slate-400 block mb-0.5">
                   {t('subEndDateLabel')}
@@ -329,7 +369,7 @@ export const SubscriptionBlockedView: React.FC = () => {
           {/* Manager / Invited Owner Renewal or Reactivation Flow */}
           {!isEmployee ? (
             <div className="space-y-4">
-              {!isNoPaidBranches && (
+              {!isNoPaidBranches && !isBillingExemptOrg && (
                 <div className="space-y-2">
                   <label className="block text-xs font-bold text-[#0B1B32] dark:text-slate-200">
                     {t('subSelectDuration')}
@@ -378,7 +418,7 @@ export const SubscriptionBlockedView: React.FC = () => {
                   className="flex-1 inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm text-white bg-[#1764FF] hover:bg-[#1052D8] transition-colors shadow-xs"
                 >
                   <MessageCircle className="w-4 h-4 shrink-0" />
-                  <span>{isNoPaidBranches ? t('subRequestReactivation') : t('subRenewNow')}</span>
+                  <span>{isNoPaidBranches || isBillingExemptOrg ? t('subRequestReactivation') : t('subRenewNow')}</span>
                   <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                 </a>
 

@@ -46,6 +46,8 @@ export interface ExtraBranchPricingEvaluation {
   estimatedMonthlyExtraFeeSar: number;
   estimatedMonthlyBranchTotalSar: number;
   isLegacyExempt: boolean;
+  isBillingExempt: boolean;
+  isFeeExempt: boolean;
   autoBillingEnabled: false;
   pricingSummary: string;
 }
@@ -70,6 +72,8 @@ export interface BranchBillingAndGraceEvaluation {
 
 export interface OrgNoPaidBranchGraceEvaluation {
   isLegacyExempt: boolean;
+  isBillingExempt: boolean;
+  isFeeExempt: boolean;
   activeBranchesCount: number;
   paidBranchesCount: number;
   inGrace: boolean;
@@ -121,7 +125,7 @@ export function isBranchCountedAsPaid(
     Branch,
     'isActive' | 'lifecycleStatus' | 'paymentStatus' | 'feeDueAt'
   > | null | undefined,
-  org: Pick<
+  org: (Pick<
     Organization,
     | 'isActive'
     | 'subscriptionPlan'
@@ -132,7 +136,18 @@ export function isBranchCountedAsPaid(
     | 'noPaidBranchGraceStartedAt'
     | 'deactivationDueAt'
     | 'branchPricingModel'
-  > | null | undefined,
+  > &
+    Partial<
+      Pick<
+        Organization,
+        | 'ownerId'
+        | 'ownerEmail'
+        | 'billingExempt'
+        | 'billingExemptScope'
+        | 'billingExemptVerifiedOwnerId'
+        | 'billingExemptVerifiedOwnerEmail'
+      >
+    >) | null | undefined,
   nowInput: Date = new Date()
 ): boolean {
   if (!branch || isBranchSuspendedOrPurged(branch)) {
@@ -142,7 +157,7 @@ export function isBranchCountedAsPaid(
   const now = toValidDate(nowInput) || new Date();
   const subEval = evaluateOrganizationSubscription(org, now);
 
-  if (org && subEval.isLegacy) {
+  if (org && subEval.isFeeExempt) {
     return true;
   }
 
@@ -186,7 +201,7 @@ export function evaluateBranchBillingAndGrace(
     | 'driveBackupVerified'
     | 'driveBackupVerifiedAt'
   >,
-  org: Pick<
+  org: (Pick<
     Organization,
     | 'isActive'
     | 'subscriptionPlan'
@@ -197,12 +212,23 @@ export function evaluateBranchBillingAndGrace(
     | 'noPaidBranchGraceStartedAt'
     | 'deactivationDueAt'
     | 'branchPricingModel'
-  > | null | undefined,
+  > &
+    Partial<
+      Pick<
+        Organization,
+        | 'ownerId'
+        | 'ownerEmail'
+        | 'billingExempt'
+        | 'billingExemptScope'
+        | 'billingExemptVerifiedOwnerId'
+        | 'billingExemptVerifiedOwnerEmail'
+      >
+    >) | null | undefined,
   nowInput: Date = new Date()
 ): BranchBillingAndGraceEvaluation {
   const now = toValidDate(nowInput) || new Date();
   const subEval = evaluateOrganizationSubscription(org, now);
-  const isLegacy = Boolean(org && subEval.isLegacy);
+  const isFeeExemptOrg = Boolean(org && subEval.isFeeExempt);
   const isPurgedFromDb = branch.lifecycleStatus === 'purged_from_db';
   const isSuspended = branch.isActive === false || branch.lifecycleStatus === 'suspended';
 
@@ -231,7 +257,7 @@ export function evaluateBranchBillingAndGrace(
   }
 
   let effectivePaymentStatus: BranchPaymentStatus;
-  if (isLegacy) {
+  if (isFeeExemptOrg) {
     effectivePaymentStatus = 'exempt';
   } else if (branch.paymentStatus) {
     if (
@@ -248,7 +274,7 @@ export function evaluateBranchBillingAndGrace(
   }
 
   const isPaidAndActive = isBranchCountedAsPaid(branch, org, now);
-  const monthlyFeeSar = isLegacy
+  const monthlyFeeSar = isFeeExemptOrg
     ? 0
     : normalizeNonNegativeInt(branch.monthlyFeeSar, BRANCH_MONTHLY_FEE_SAR);
   const driveBackupVerified = branch.driveBackupVerified === true;
@@ -285,7 +311,7 @@ export function evaluateBranchBillingAndGrace(
  * - Suspended branches inside their 30-day window do NOT count as paid branches.
  */
 export function evaluateOrgNoPaidBranchGrace(
-  org: Pick<
+  org: (Pick<
     Organization,
     | 'isActive'
     | 'subscriptionPlan'
@@ -296,7 +322,18 @@ export function evaluateOrgNoPaidBranchGrace(
     | 'noPaidBranchGraceStartedAt'
     | 'deactivationDueAt'
     | 'branchPricingModel'
-  > | null | undefined,
+  > &
+    Partial<
+      Pick<
+        Organization,
+        | 'ownerId'
+        | 'ownerEmail'
+        | 'billingExempt'
+        | 'billingExemptScope'
+        | 'billingExemptVerifiedOwnerId'
+        | 'billingExemptVerifiedOwnerEmail'
+      >
+    >) | null | undefined,
   branches: Array<
     Pick<Branch, 'id' | 'isActive' | 'lifecycleStatus' | 'paymentStatus' | 'feeDueAt'>
   >,
@@ -307,9 +344,11 @@ export function evaluateOrgNoPaidBranchGrace(
   const activeBranches = branches.filter((b) => !isBranchSuspendedOrPurged(b));
   const paidBranches = branches.filter((b) => isBranchCountedAsPaid(b, org, now));
 
-  if (!org || subEval.isLegacy) {
+  if (!org || subEval.isFeeExempt) {
     return {
-      isLegacyExempt: true,
+      isLegacyExempt: !org || subEval.isLegacy,
+      isBillingExempt: Boolean(org && subEval.isBillingExempt),
+      isFeeExempt: true,
       activeBranchesCount: activeBranches.length,
       paidBranchesCount: activeBranches.length,
       inGrace: false,
@@ -348,6 +387,8 @@ export function evaluateOrgNoPaidBranchGrace(
 
   return {
     isLegacyExempt: false,
+    isBillingExempt: false,
+    isFeeExempt: false,
     activeBranchesCount: activeBranches.length,
     paidBranchesCount: paidBranches.length,
     inGrace,
@@ -367,7 +408,7 @@ export function evaluateOrgNoPaidBranchGrace(
  * - Automatic charging/billing remains explicitly disabled (`autoBillingEnabled: false`).
  */
 export function evaluateOrganizationBranchPricing(params: {
-  org: Pick<
+  org: (Pick<
     Organization,
     | 'isActive'
     | 'subscriptionPlan'
@@ -383,7 +424,18 @@ export function evaluateOrganizationBranchPricing(params: {
     | 'deactivationReason'
     | 'noPaidBranchGraceStartedAt'
     | 'deactivationDueAt'
-  > | null | undefined;
+  > &
+    Partial<
+      Pick<
+        Organization,
+        | 'ownerId'
+        | 'ownerEmail'
+        | 'billingExempt'
+        | 'billingExemptScope'
+        | 'billingExemptVerifiedOwnerId'
+        | 'billingExemptVerifiedOwnerEmail'
+      >
+    >) | null | undefined;
   branches?: Array<
     Pick<Branch, 'id' | 'isActive' | 'lifecycleStatus' | 'paymentStatus' | 'feeDueAt'>
   >;
@@ -425,12 +477,37 @@ export function evaluateOrganizationBranchPricing(params: {
     ORG_REACTIVATION_FEE_SAR
   );
 
+  if (org && subEval.isBillingExempt) {
+    return {
+      model: org.branchPricingModel || BRANCH_PRICING_MODEL,
+      setupFeeSar: 0,
+      setupFeeStatus: 'waived',
+      reactivationFeeSar: 0,
+      feePerExtraBranchMonthlySar: 0,
+      branchMonthlyFeeSar: 0,
+      includedBranchesCount: includedCount,
+      totalBranchesCount: totalCount,
+      activeBranchesCount: activeCount,
+      paidBranchesCount: activeCount,
+      suspendedBranchesCount: suspendedCount,
+      extraBranchesCount: 0,
+      estimatedMonthlyExtraFeeSar: 0,
+      estimatedMonthlyBranchTotalSar: 0,
+      isLegacyExempt: false,
+      isBillingExempt: true,
+      isFeeExempt: true,
+      autoBillingEnabled: false,
+      pricingSummary:
+        'مؤسسة معفاة دائماً (billing_exempt): معفاة من رسوم الاشتراك والتأسيس وإعادة التنشيط وجميع الفروع الحالية والمستقبلية (0 ر.س).',
+    };
+  }
+
   if (!org || subEval.isLegacy) {
     return {
       model: BRANCH_PRICING_MODEL,
       setupFeeSar: 0,
       setupFeeStatus: 'waived',
-      reactivationFeeSar,
+      reactivationFeeSar: 0,
       feePerExtraBranchMonthlySar: 0,
       branchMonthlyFeeSar: 0,
       includedBranchesCount: includedCount,
@@ -442,6 +519,8 @@ export function evaluateOrganizationBranchPricing(params: {
       estimatedMonthlyExtraFeeSar: 0,
       estimatedMonthlyBranchTotalSar: 0,
       isLegacyExempt: true,
+      isBillingExempt: false,
+      isFeeExempt: true,
       autoBillingEnabled: false,
       pricingSummary:
         'مؤسسة قديمة (legacy_unrestricted): معفاة من رسوم التأسيس واشتراك الفروع حتى التفعيل اليدوي.',
@@ -486,6 +565,8 @@ export function evaluateOrganizationBranchPricing(params: {
     estimatedMonthlyExtraFeeSar: estimatedMonthlyTotalSar,
     estimatedMonthlyBranchTotalSar: estimatedMonthlyTotalSar,
     isLegacyExempt: false,
+    isBillingExempt: false,
+    isFeeExempt: false,
     autoBillingEnabled: false,
     pricingSummary,
   };
@@ -705,6 +786,7 @@ export function buildExtraBranchRequestWhatsApp(params: {
   managerEmail: string;
   currentBranchCount: number;
   isLegacyExempt?: boolean;
+  isBillingExempt?: boolean;
   language?: SupportedLanguage;
 }): PreparedWhatsAppLink {
   const language = params.language || 'ar';
@@ -720,7 +802,9 @@ export function buildExtraBranchRequestWhatsApp(params: {
           `- Organization: ${cleanOrgName} (${params.orgId})`,
           `- Manager: ${cleanManagerName} (${cleanEmail})`,
           `- Current Branches: ${params.currentBranchCount}`,
-          params.isLegacyExempt
+          params.isBillingExempt
+            ? '- Account Tier: Permanent Full Billing Exemption (0 SAR)'
+            : params.isLegacyExempt
             ? '- Account Tier: Legacy Unrestricted'
             : `- Branch Rate: ${BRANCH_MONTHLY_FEE_SAR} SAR/month per branch`,
         ].join('\n')
@@ -731,7 +815,9 @@ export function buildExtraBranchRequestWhatsApp(params: {
           `- ادارہ: ${cleanOrgName} (${params.orgId})`,
           `- منیجر: ${cleanManagerName} (${cleanEmail})`,
           `- موجودہ برانچز: ${params.currentBranchCount}`,
-          params.isLegacyExempt
+          params.isBillingExempt
+            ? '- اکاؤنٹ کی قسم: مستقل مکمل فیس استثنیٰ (0 ریال)'
+            : params.isLegacyExempt
             ? '- اکاؤنٹ کی قسم: لیگیسی (بغیر پابندی)'
             : `- برانچ فیس: ${BRANCH_MONTHLY_FEE_SAR} ریال ماہانہ فی برانچ`,
         ].join('\n')
@@ -741,7 +827,9 @@ export function buildExtraBranchRequestWhatsApp(params: {
           `- اسم المؤسسة: ${cleanOrgName} (${params.orgId})`,
           `- المدير: ${cleanManagerName} (${cleanEmail})`,
           `- عدد الفروع الحالية: ${params.currentBranchCount}`,
-          params.isLegacyExempt
+          params.isBillingExempt
+            ? '- تصنيف الحساب: إعفاء دائم شامل (0 ر.س)'
+            : params.isLegacyExempt
             ? '- تصنيف الحساب: مؤسسة قديمة معفاة'
             : `- تسعيرة الفرع: ${BRANCH_MONTHLY_FEE_SAR} ريال سعودي / شهرياً لكل فرع`,
         ].join('\n');

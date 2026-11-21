@@ -139,6 +139,61 @@
           "enum": ["paid", "unpaid", "waived"],
           "description": "Manual tracking status of the 10 SAR reactivation fee"
         },
+        "billingExempt": {
+          "type": "boolean",
+          "description": "Whether this organization has an official Super-Admin-granted permanent billing exemption"
+        },
+        "billingExemptScope": {
+          "type": "string",
+          "enum": ["full_permanent"],
+          "description": "Scope of permanent billing exemption (all org fees, current branches, and future branches)"
+        },
+        "billingExemptReason": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 500,
+          "description": "Mandatory administrative reason for granting permanent billing exemption"
+        },
+        "billingExemptGrantedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore Timestamp when permanent billing exemption was granted"
+        },
+        "billingExemptGrantedBy": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Verified Super Admin email who granted the permanent billing exemption"
+        },
+        "billingExemptVerifiedOwnerId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Verified org.ownerId bound to the permanent billing exemption (fails closed if owner changes)"
+        },
+        "billingExemptVerifiedOwnerEmail": {
+          "type": "string",
+          "maxLength": 254,
+          "description": "Verified normalized lowercase org.ownerEmail bound to the permanent billing exemption"
+        },
+        "billingExemptRevokedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore Timestamp when permanent billing exemption was revoked (if revoked)"
+        },
+        "billingExemptRevokedBy": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Verified Super Admin email who revoked the permanent billing exemption"
+        },
+        "billingExemptRevokeReason": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Administrative reason for revoking permanent billing exemption"
+        },
+        "billingExemptLastAuditLogId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "ID of the atomically linked platformAuditLogs document for the last grant/revoke transition"
+        },
         "reactivationFeePaidAt": {
           "type": "string",
           "format": "date-time",

@@ -73,7 +73,7 @@ interface SuperAdminDashboardProps {
 }
 
 type MainTab = 'organizations' | 'branches' | 'invites' | 'auditLogs';
-type OrgFilter = 'all' | 'active' | 'legacy' | 'grace_7d' | 'suspended' | 'attention';
+type OrgFilter = 'all' | 'active' | 'exempt' | 'legacy' | 'grace_7d' | 'suspended' | 'attention';
 type BranchFilter = 'all' | 'active' | 'unpaid_overdue' | 'suspended' | 'purge_ready' | 'purged';
 
 export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
@@ -91,6 +91,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     createSuperAdminOrganizationWithInvite,
     updateSuperAdminOrganizationProfileAndBilling,
     updateSuperAdminOrgStatus,
+    grantSuperAdminOrgBillingExemption,
+    revokeSuperAdminOrgBillingExemption,
     upsertSuperAdminManagerInvite,
     cancelSuperAdminManagerInvite,
     createSuperAdminBranch,
@@ -223,6 +225,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   >(null);
   const [purgeConfirmText, setPurgeConfirmText] = useState('');
 
+  // Permanent Billing Exemption Modal state (Super Admin only)
+  const [exemptionModalOrg, setExemptionModalOrg] = useState<Organization | null>(null);
+  const [exemptionReason, setExemptionReason] = useState('');
+
   useEffect(() => {
     if (isSuperAdmin) {
       loadSuperAdminOverview().catch(() => {
@@ -276,6 +282,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const stats = useMemo(() => {
     const now = new Date();
     let activeOrgsCount = 0;
+    let exemptOrgsCount = 0;
     let legacyOrgsCount = 0;
     let suspendedOrgsCount = 0;
     let grace7dOrgsCount = 0;
@@ -291,13 +298,14 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
         now,
       });
 
+      if (subEval.isBillingExempt) exemptOrgsCount += 1;
       if (subEval.isLegacy) legacyOrgsCount += 1;
       if (!subEval.isAllowed) {
         suspendedOrgsCount += 1;
       } else {
         activeOrgsCount += 1;
       }
-      if (graceEval.inGrace && !graceEval.isLegacyExempt) {
+      if (graceEval.inGrace && !graceEval.isFeeExempt) {
         grace7dOrgsCount += 1;
       }
       expectedMonthlyBranchesSar += pricingEval.estimatedMonthlyBranchTotalSar;
@@ -329,6 +337,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     return {
       totalOrgs: organizations.length,
       activeOrgsCount,
+      exemptOrgsCount,
       legacyOrgsCount,
       suspendedOrgsCount,
       grace7dOrgsCount,
@@ -353,8 +362,9 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       const graceEval = evaluateOrgNoPaidBranchGrace(org, orgBranches, now);
 
       if (orgFilter === 'active' && !subEval.isAllowed) return false;
+      if (orgFilter === 'exempt' && !subEval.isBillingExempt) return false;
       if (orgFilter === 'legacy' && !subEval.isLegacy) return false;
-      if (orgFilter === 'grace_7d' && (!graceEval.inGrace || graceEval.isLegacyExempt)) return false;
+      if (orgFilter === 'grace_7d' && (!graceEval.inGrace || graceEval.isFeeExempt)) return false;
       if (orgFilter === 'suspended' && subEval.isAllowed) return false;
       if (
         orgFilter === 'attention' &&
@@ -575,6 +585,40 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       setStatusModalOrg(null);
     } catch (err: any) {
       setActionError(err?.message || 'تعذر تحديث حالة المؤسسة.');
+    } finally {
+      setBusyAction(false);
+    }
+  };
+
+  const handleBillingExemptionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!exemptionModalOrg) return;
+    clearFeedback();
+    setBusyAction(true);
+    try {
+      const currentlyExempt = exemptionModalOrg.billingExempt === true;
+      if (currentlyExempt) {
+        const res = await revokeSuperAdminOrgBillingExemption({
+          orgId: exemptionModalOrg.id,
+          reason: exemptionReason,
+        });
+        setActionSuccess(
+          `تم إلغاء الإعفاء الدائم للمؤسسة "${exemptionModalOrg.name}" وإعادتها لنظام الاشتراكات القياسي دون حذف أي بيانات تاريخية (سجل التدقيق: ${res.auditLogId}).`
+        );
+      } else {
+        const res = await grantSuperAdminOrgBillingExemption({
+          orgId: exemptionModalOrg.id,
+          expectedOwnerEmail: exemptionModalOrg.ownerEmail,
+          reason: exemptionReason,
+        });
+        setActionSuccess(
+          `تم اعتماد الإعفاء الدائم الشامل للمؤسسة "${exemptionModalOrg.name}" للمالك الموثق ${res.ownerEmail} (${res.ownerId}) — سجل التدقيق: ${res.auditLogId}.`
+        );
+      }
+      setExemptionModalOrg(null);
+      setExemptionReason('');
+    } catch (err: any) {
+      setActionError(err?.message || 'تعذر تحديث حالة الإعفاء الدائم للمؤسسة.');
     } finally {
       setBusyAction(false);
     }
@@ -1111,6 +1155,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 [
                   { id: 'all', label: `${tr('الكل', 'All', 'سب')} (${organizations.length})` },
                   { id: 'active', label: `${tr('نشطة', 'Active', 'فعال')} (${stats.activeOrgsCount})` },
+                  { id: 'exempt', label: `${tr('إعفاء دائم شامل', 'Permanent Exempt', 'مستقل استثنیٰ')} (${stats.exemptOrgsCount})` },
                   { id: 'legacy', label: `${tr('قديمة معفاة', 'Legacy Exempt', 'سابقہ مستثنیٰ')} (${stats.legacyOrgsCount})` },
                   { id: 'grace_7d', label: `${tr('مهلة 7 أيام', '7d Grace', '7 دن مہلت')} (${stats.grace7dOrgsCount})` },
                   { id: 'suspended', label: `${tr('موقوفة/منتهية', 'Suspended/Expired', 'معطل/ختم شدہ')} (${stats.suspendedOrgsCount})` },
@@ -1194,7 +1239,20 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                             </td>
 
                             <td className="py-3.5 px-4 align-top">
-                              {subEval.isLegacy ? (
+                              {subEval.isBillingExempt ? (
+                                <div className="space-y-1">
+                                  <span className="inline-block px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[11px] font-bold">
+                                    {subEval.isAllowed
+                                      ? tr('إعفاء دائم شامل (billing_exempt)', 'Permanent Full Exemption (billing_exempt)', 'مستقل مکمل استثنیٰ (billing_exempt)')
+                                      : tr('إعفاء دائم (موقوفة إدارياً)', 'Permanent Exempt (Admin Suspended)', 'مستقل استثنیٰ (انتظامی معطل)')}
+                                  </span>
+                                  {(subEval.startDate || subEval.endDate) && (
+                                    <div className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                                      {tr('تاريخي:', 'History:', 'تاریخی:')} {formatShortDate(subEval.startDate)} → {formatShortDate(subEval.endDate)}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : subEval.isLegacy ? (
                                 <span className="inline-block px-2 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[11px] font-bold">
                                   {subEval.isAllowed
                                     ? tr('قديمة معفاة (legacy_unrestricted)', 'Legacy Exempt (legacy_unrestricted)', 'سابقہ مستثنیٰ (legacy_unrestricted)')
@@ -1222,7 +1280,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                                   </div>
                                 </div>
                               )}
-                              {graceEval.inGrace && !graceEval.isLegacyExempt && (
+                              {graceEval.inGrace && !graceEval.isFeeExempt && (
                                 <div className="mt-1 text-[11px] text-rose-600 dark:text-rose-400 font-semibold">
                                   {tr(
                                     `مهلة 7 أيام: متبقي ${graceEval.remainingGraceDays ?? 7} يوم`,
@@ -1234,7 +1292,11 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                             </td>
 
                             <td className="py-3.5 px-4 align-top">
-                              {pricing.isLegacyExempt ? (
+                              {pricing.isBillingExempt ? (
+                                <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">
+                                  {tr('0 ر.س (إعفاء دائم شامل)', '0 SAR (Permanent full exemption)', '0 ریال (مستقل مکمل استثنیٰ)')}
+                                </span>
+                              ) : pricing.isLegacyExempt ? (
                                 <span className="text-[11px] text-slate-500 dark:text-slate-400">
                                   {tr('0 ر.س (إعفاء قديم)', '0 SAR (Legacy exempt)', '0 ریال (سابقہ استثنیٰ)')}
                                 </span>
@@ -1298,6 +1360,31 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                                   <span>{tr('تعديل/فوترة', 'Edit / Billing', 'ترمیم / بلنگ')}</span>
                                 </button>
 
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    clearFeedback();
+                                    setExemptionModalOrg(org);
+                                    setExemptionReason(
+                                      org.billingExempt === true
+                                        ? ''
+                                        : 'إعفاء دائم شامل معتمد من المدير الرئيسي للمؤسسة وفروعها الحالية والمستقبلية'
+                                    );
+                                  }}
+                                  className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
+                                    subEval.isBillingExempt
+                                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25'
+                                      : 'bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-slate-700 dark:text-slate-200 hover:bg-emerald-500/10 hover:text-emerald-700 dark:hover:text-emerald-300'
+                                  }`}
+                                >
+                                  <ShieldCheck className="w-3.5 h-3.5" />
+                                  <span>
+                                    {org.billingExempt === true
+                                      ? tr('إدارة الإعفاء', 'Manage Exemption', 'استثنیٰ کا انتظام')
+                                      : tr('إعفاء دائم', 'Permanent Exempt', 'مستقل استثنیٰ')}
+                                  </span>
+                                </button>
+
                                 {subEval.isAllowed ? (
                                   <button
                                     type="button"
@@ -1305,7 +1392,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                                       clearFeedback();
                                       setStatusModalOrg(org);
                                       setStatusActionMode(
-                                        graceEval.inGrace && !graceEval.isLegacyExempt
+                                        graceEval.inGrace && !graceEval.isFeeExempt
                                           ? 'deactivate_no_paid_branches'
                                           : 'suspend'
                                       );
@@ -1323,7 +1410,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                                       clearFeedback();
                                       setStatusModalOrg(org);
                                       setStatusActionMode('reactivate');
-                                      setReactivationFeeStatus('paid');
+                                      setReactivationFeeStatus(subEval.isFeeExempt ? 'waived' : 'paid');
                                       setReactivationFeeDateIso(todayIso);
                                       setStatusNote('');
                                     }}
@@ -2115,6 +2202,25 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 </div>
               </div>
 
+              {evaluateOrganizationSubscription(editingOrg).isBillingExempt && (
+                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-800 dark:text-emerald-300 space-y-1">
+                  <div className="font-bold">
+                    {tr(
+                      'هذه المؤسسة مشمولة بالإعفاء الدائم الشامل (billing_exempt) — 0 ر.س',
+                      'This organization has an active Permanent Full Billing Exemption (0 SAR)',
+                      'یہ ادارہ مستقل مکمل فیس استثنیٰ (0 ریال) میں شامل ہے'
+                    )}
+                  </div>
+                  <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                    {tr(
+                      'تُحفظ السجلات التاريخية للاشتراكات والفواتير كما هي دون تعديل. ملاحظة: تغيير بريد المالك هنا يؤدي تلقائياً لإلغاء الإعفاء الدائم وتسجيله في سجل التدقيق.',
+                      'Historical subscription and billing records remain preserved untouched. Note: changing owner email automatically revokes the permanent exemption with an audit entry.',
+                      'تاریخی ریکارڈز محفوظ رہتے ہیں۔ نوٹ: مالک کی ای میل تبدیل کرنے پر مستقل استثنیٰ خودکار طور پر منسوخ ہو جائے گا۔'
+                    )}
+                  </div>
+                </div>
+              )}
+
               {evaluateOrganizationSubscription(editingOrg).isLegacy && (
                 <label className="flex items-start gap-2.5 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 cursor-pointer">
                   <input
@@ -2142,7 +2248,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 </label>
               )}
 
-              {(!evaluateOrganizationSubscription(editingOrg).isLegacy || editOrgForm.convertLegacyToPaid) && (
+              {!evaluateOrganizationSubscription(editingOrg).isBillingExempt &&
+                (!evaluateOrganizationSubscription(editingOrg).isLegacy || editOrgForm.convertLegacyToPaid) && (
                 <div className="p-4 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block font-semibold mb-1">{tr('رسوم التأسيس (80 ر.س)', 'Setup Fee (80 SAR)', 'سیٹ اپ فیس (80 ریال)')}</label>
@@ -2255,45 +2362,64 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
               </button>
             </div>
             <form onSubmit={handleOrgStatusSubmit} className="p-6 space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold mb-1">{tr('الإجراء', 'Action', 'کارروائی')}</label>
-                <select
-                  value={statusActionMode}
-                  onChange={(e) => setStatusActionMode(e.target.value as any)}
-                  className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
-                >
-                  <option value="reactivate">{tr('إعادة تنشيط المؤسسة (رسوم 10 ر.س)', 'Reactivate Organization (10 SAR fee)', 'ادارہ دوبارہ فعال کریں (10 ریال فیس)')}</option>
-                  <option value="start_no_paid_branch_grace">{tr('بدء مهلة 7 أيام (لا يوجد فرع مدفوع)', 'Start 7-Day Grace (No Paid Branch)', '7 دن کی مہلت شروع کریں (کوئی ادا شدہ برانچ نہیں)')}</option>
-                  <option value="deactivate_no_paid_branches">{tr('إيقاف فوري لعدم وجود فروع مدفوعة', 'Deactivate Immediately (No Paid Branches)', 'فوری غیر فعال کریں (کوئی ادا شدہ برانچ نہیں)')}</option>
-                  <option value="suspend">{tr('تعليق إداري للمؤسسة', 'Administrative Suspension', 'انتظامی معطلی')}</option>
-                </select>
-              </div>
+              {(() => {
+                const statusSubEval = evaluateOrganizationSubscription(statusModalOrg);
+                return (
+                  <>
+                    <div>
+                      <label className="block font-semibold mb-1">{tr('الإجراء', 'Action', 'کارروائی')}</label>
+                      <select
+                        value={statusActionMode}
+                        onChange={(e) => setStatusActionMode(e.target.value as any)}
+                        className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                      >
+                        <option value="reactivate">
+                          {statusSubEval.isFeeExempt
+                            ? tr('إعادة تنشيط المؤسسة (0 ر.س — معفاة)', 'Reactivate Organization (0 SAR — Exempt)', 'ادارہ دوبارہ فعال کریں (0 ریال — مستثنیٰ)')
+                            : tr('إعادة تنشيط المؤسسة (رسوم 10 ر.س)', 'Reactivate Organization (10 SAR fee)', 'ادارہ دوبارہ فعال کریں (10 ریال فیس)')}
+                        </option>
+                        {!statusSubEval.isFeeExempt && (
+                          <option value="start_no_paid_branch_grace">
+                            {tr('بدء مهلة 7 أيام (لا يوجد فرع مدفوع)', 'Start 7-Day Grace (No Paid Branch)', '7 دن کی مہلت شروع کریں (کوئی ادا شدہ برانچ نہیں)')}
+                          </option>
+                        )}
+                        {!statusSubEval.isFeeExempt && (
+                          <option value="deactivate_no_paid_branches">
+                            {tr('إيقاف فوري لعدم وجود فروع مدفوعة', 'Deactivate Immediately (No Paid Branches)', 'فوری غیر فعال کریں (کوئی ادا شدہ برانچ نہیں)')}
+                          </option>
+                        )}
+                        <option value="suspend">{tr('تعليق إداري للمؤسسة', 'Administrative Suspension', 'انتظامی معطلی')}</option>
+                      </select>
+                    </div>
 
-              {statusActionMode === 'reactivate' && (
-                <div className="grid grid-cols-2 gap-3 p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66]">
-                  <div>
-                    <label className="block font-semibold mb-1">{tr('حالة رسوم إعادة التنشيط (10 ر.س)', 'Reactivation Fee (10 SAR)', 'بحالی فیس (10 ریال)')}</label>
-                    <select
-                      value={reactivationFeeStatus}
-                      onChange={(e) => setReactivationFeeStatus(e.target.value as FeePaymentStatus)}
-                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-white dark:bg-[#122543]"
-                    >
-                      <option value="paid">{tr('مدفوعة (10 ر.س)', 'Paid (10 SAR)', 'ادا شدہ (10 ریال)')}</option>
-                      <option value="waived">{tr('معفاة', 'Waived', 'معاف')}</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">{tr('تاريخ الدفع', 'Payment Date', 'ادائیگی کی تاریخ')}</label>
-                    <input
-                      type="date"
-                      value={reactivationFeeDateIso}
-                      onChange={(e) => setReactivationFeeDateIso(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-white dark:bg-[#122543] font-mono"
-                      dir="ltr"
-                    />
-                  </div>
-                </div>
-              )}
+                    {statusActionMode === 'reactivate' && !statusSubEval.isFeeExempt && (
+                      <div className="grid grid-cols-2 gap-3 p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66]">
+                        <div>
+                          <label className="block font-semibold mb-1">{tr('حالة رسوم إعادة التنشيط (10 ر.س)', 'Reactivation Fee (10 SAR)', 'بحالی فیس (10 ریال)')}</label>
+                          <select
+                            value={reactivationFeeStatus}
+                            onChange={(e) => setReactivationFeeStatus(e.target.value as FeePaymentStatus)}
+                            className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-white dark:bg-[#122543]"
+                          >
+                            <option value="paid">{tr('مدفوعة (10 ر.س)', 'Paid (10 SAR)', 'ادا شدہ (10 ریال)')}</option>
+                            <option value="waived">{tr('معفاة', 'Waived', 'معاف')}</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block font-semibold mb-1">{tr('تاريخ الدفع', 'Payment Date', 'ادائیگی کی تاریخ')}</label>
+                          <input
+                            type="date"
+                            value={reactivationFeeDateIso}
+                            onChange={(e) => setReactivationFeeDateIso(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-white dark:bg-[#122543] font-mono"
+                            dir="ltr"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
 
               <div>
                 <label className="block font-semibold mb-1">{tr('ملاحظة إدارية (اختياري)', 'Admin Note (Optional)', 'انتظامی نوٹ (اختیاری)')}</label>
@@ -2378,16 +2504,26 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       )}
 
       {/* MODAL 5: Create Branch (Exclusive Super Admin) */}
-      {showCreateBranchModal && (
+      {showCreateBranchModal && (() => {
+        const selectedBranchOrg = organizations.find((o) => o.id === createBranchForm.orgId);
+        const selectedOrgEval = selectedBranchOrg ? evaluateOrganizationSubscription(selectedBranchOrg) : null;
+        const selectedOrgFeeExempt = selectedOrgEval?.isFeeExempt === true;
+        return (
         <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
             <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
               <h2 className="font-bold text-base">
-                {tr(
-                  `إضافة فرع جديد (${BRANCH_MONTHLY_FEE_SAR} ر.س/شهرياً)`,
-                  `Add New Branch (${BRANCH_MONTHLY_FEE_SAR} SAR/mo)`,
-                  `نئی برانچ شامل کریں (${BRANCH_MONTHLY_FEE_SAR} ریال/ماہ)`
-                )}
+                {selectedOrgFeeExempt
+                  ? tr(
+                      'إضافة فرع جديد (معفى — 0 ر.س)',
+                      'Add New Branch (Exempt — 0 SAR)',
+                      'نئی برانچ شامل کریں (معاف — 0 ریال)'
+                    )
+                  : tr(
+                      `إضافة فرع جديد (${BRANCH_MONTHLY_FEE_SAR} ر.س/شهرياً)`,
+                      `Add New Branch (${BRANCH_MONTHLY_FEE_SAR} SAR/mo)`,
+                      `نئی برانچ شامل کریں (${BRANCH_MONTHLY_FEE_SAR} ریال/ماہ)`
+                    )}
               </h2>
               <button type="button" onClick={() => setShowCreateBranchModal(false)} className="p-1.5 rounded-lg">
                 <X className="w-4 h-4" />
@@ -2427,30 +2563,48 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                     dir="ltr"
                   />
                 </div>
-                <div>
-                  <label className="block font-semibold mb-1">{tr('حالة السداد الأولي', 'Initial Payment Status', 'ابتدائی ادائیگی کی حیثیت')}</label>
-                  <select
-                    value={createBranchForm.paymentStatus}
-                    onChange={(e) =>
-                      setCreateBranchForm({ ...createBranchForm, paymentStatus: e.target.value as BranchPaymentStatus })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
-                  >
-                    <option value="paid">{tr('مدفوع (50 ر.س)', 'Paid (50 SAR)', 'ادا شدہ (50 ریال)')}</option>
-                    <option value="unpaid">{tr('غير مدفوع', 'Unpaid', 'غیر ادا شدہ')}</option>
-                    <option value="exempt">{tr('معفى', 'Exempt', 'مستثنیٰ')}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block font-semibold mb-1">{tr('تاريخ الاستحقاق القادم', 'Next Due Date', 'اگلی مقررہ تاریخ')}</label>
-                  <input
-                    type="date"
-                    value={createBranchForm.feeDueDateIso}
-                    onChange={(e) => setCreateBranchForm({ ...createBranchForm, feeDueDateIso: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
-                    dir="ltr"
-                  />
-                </div>
+                {selectedOrgFeeExempt ? (
+                  <div className="col-span-2 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-semibold">
+                    {selectedOrgEval?.isBillingExempt
+                      ? tr(
+                          'هذه المؤسسة ضمن الإعفاء الدائم الشامل: سيُنشأ الفرع تلقائياً بحالة سداد «معفى» وبرسوم شهرية 0 ر.س دون تاريخ استحقاق.',
+                          'This organization has permanent full billing exemption: the branch will be created automatically as Exempt (0 SAR/mo) with no due date.',
+                          'اس ادارے کو مستقل مکمل مالی استثنیٰ حاصل ہے: برانچ خودکار طور پر معاف (0 ریال/ماہ) کے طور پر بنائی جائے گی۔'
+                        )
+                      : tr(
+                          'هذه المؤسسة قديمة معفاة: سيُنشأ الفرع تلقائياً بحالة سداد «معفى» وبرسوم شهرية 0 ر.س.',
+                          'This is a legacy exempt organization: the branch will be created automatically as Exempt (0 SAR/mo).',
+                          'یہ ایک پرانا مستثنیٰ ادارہ ہے: برانچ خودکار طور پر معاف (0 ریال/ماہ) کے طور پر بنائی جائے گی۔'
+                        )}
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block font-semibold mb-1">{tr('حالة السداد الأولي', 'Initial Payment Status', 'ابتدائی ادائیگی کی حیثیت')}</label>
+                      <select
+                        value={createBranchForm.paymentStatus}
+                        onChange={(e) =>
+                          setCreateBranchForm({ ...createBranchForm, paymentStatus: e.target.value as BranchPaymentStatus })
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                      >
+                        <option value="paid">{tr('مدفوع (50 ر.س)', 'Paid (50 SAR)', 'ادا شدہ (50 ریال)')}</option>
+                        <option value="unpaid">{tr('غير مدفوع', 'Unpaid', 'غیر ادا شدہ')}</option>
+                        <option value="exempt">{tr('معفى', 'Exempt', 'مستثنیٰ')}</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block font-semibold mb-1">{tr('تاريخ الاستحقاق القادم', 'Next Due Date', 'اگلی مقررہ تاریخ')}</label>
+                      <input
+                        type="date"
+                        value={createBranchForm.feeDueDateIso}
+                        onChange={(e) => setCreateBranchForm({ ...createBranchForm, feeDueDateIso: e.target.value })}
+                        className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                        dir="ltr"
+                      />
+                    </div>
+                  </>
+                )}
               </div>
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setShowCreateBranchModal(false)} className="px-4 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] font-semibold">
@@ -2463,10 +2617,16 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
             </form>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* MODAL 6: Record Branch Payment (50 SAR) */}
-      {paymentModalBranch && (
+      {paymentModalBranch && (() => {
+        const paymentBranchOrg = organizations.find((o) => o.id === paymentModalBranch.orgId);
+        const paymentOrgIsBillingExempt = paymentBranchOrg
+          ? evaluateOrganizationSubscription(paymentBranchOrg).isBillingExempt
+          : false;
+        return (
         <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
             <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
@@ -2478,56 +2638,66 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
               </button>
             </div>
             <form onSubmit={handleRecordBranchPaymentSubmit} className="p-6 space-y-4 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold mb-1">{tr('حالة الدفع', 'Payment Status', 'ادائیگی کی حیثیت')}</label>
-                  <select
-                    value={branchPaymentForm.paymentStatus}
-                    onChange={(e) =>
-                      setBranchPaymentForm({ ...branchPaymentForm, paymentStatus: e.target.value as BranchPaymentStatus })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
-                  >
-                    <option value="paid">{tr('مدفوع', 'Paid', 'ادا شدہ')}</option>
-                    <option value="unpaid">{tr('غير مدفوع', 'Unpaid', 'غیر ادا شدہ')}</option>
-                    <option value="overdue">{tr('متأخر', 'Overdue', 'واجب الادا')}</option>
-                    <option value="exempt">{tr('معفى', 'Exempt', 'مستثنیٰ')}</option>
-                  </select>
+              {paymentOrgIsBillingExempt ? (
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-semibold leading-relaxed">
+                  {tr(
+                    'المؤسسة المالكة لهذا الفرع معفاة من جميع الرسوم بشكل دائم وشامل: سيتم تثبيت حالة الفرع تلقائياً كـ «معفى» بقيمة 0 ر.س دون فرض أي رسوم.',
+                    'This branch belongs to a permanently billing-exempt organization: saving will enforce Exempt status at 0 SAR with no due date.',
+                    'یہ برانچ مستقل طور پر معاف ادارے کی ہے: محفوظ کرنے پر حالت خودکار طور پر معاف (0 ریال) رہے گی۔'
+                  )}
                 </div>
-                <div>
-                  <label className="block font-semibold mb-1">{tr('القيمة الشهرية (ر.س)', 'Monthly Fee (SAR)', 'ماہانہ فیس (ریال)')}</label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={branchPaymentForm.monthlyFeeSar}
-                    onChange={(e) =>
-                      setBranchPaymentForm({ ...branchPaymentForm, monthlyFeeSar: Number(e.target.value) })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
-                    dir="ltr"
-                  />
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('حالة الدفع', 'Payment Status', 'ادائیگی کی حیثیت')}</label>
+                    <select
+                      value={branchPaymentForm.paymentStatus}
+                      onChange={(e) =>
+                        setBranchPaymentForm({ ...branchPaymentForm, paymentStatus: e.target.value as BranchPaymentStatus })
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                    >
+                      <option value="paid">{tr('مدفوع', 'Paid', 'ادا شدہ')}</option>
+                      <option value="unpaid">{tr('غير مدفوع', 'Unpaid', 'غیر ادا شدہ')}</option>
+                      <option value="overdue">{tr('متأخر', 'Overdue', 'واجب الادا')}</option>
+                      <option value="exempt">{tr('معفى', 'Exempt', 'مستثنیٰ')}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('القيمة الشهرية (ر.س)', 'Monthly Fee (SAR)', 'ماہانہ فیس (ریال)')}</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={branchPaymentForm.monthlyFeeSar}
+                      onChange={(e) =>
+                        setBranchPaymentForm({ ...branchPaymentForm, monthlyFeeSar: Number(e.target.value) })
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('تاريخ السداد', 'Payment Date', 'ادائیگی کی تاریخ')}</label>
+                    <input
+                      type="date"
+                      value={branchPaymentForm.paidDateIso}
+                      onChange={(e) => setBranchPaymentForm({ ...branchPaymentForm, paidDateIso: e.target.value })}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('الاستحقاق القادم', 'Next Due Date', 'اگلی مقررہ تاریخ')}</label>
+                    <input
+                      type="date"
+                      value={branchPaymentForm.feeDueDateIso}
+                      onChange={(e) => setBranchPaymentForm({ ...branchPaymentForm, feeDueDateIso: e.target.value })}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                      dir="ltr"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="block font-semibold mb-1">{tr('تاريخ السداد', 'Payment Date', 'ادائیگی کی تاریخ')}</label>
-                  <input
-                    type="date"
-                    value={branchPaymentForm.paidDateIso}
-                    onChange={(e) => setBranchPaymentForm({ ...branchPaymentForm, paidDateIso: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
-                    dir="ltr"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold mb-1">{tr('الاستحقاق القادم', 'Next Due Date', 'اگلی مقررہ تاریخ')}</label>
-                  <input
-                    type="date"
-                    value={branchPaymentForm.feeDueDateIso}
-                    onChange={(e) => setBranchPaymentForm({ ...branchPaymentForm, feeDueDateIso: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
-                    dir="ltr"
-                  />
-                </div>
-              </div>
+              )}
               <div>
                 <label className="block font-semibold mb-1">{tr('ملاحظة', 'Note', 'نوٹ')}</label>
                 <input
@@ -2547,7 +2717,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
             </form>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* MODAL 7: Suspend Branch (Starts 30-Day Grace) */}
       {suspendBranchTarget && (
@@ -2823,6 +2994,160 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
           </div>
         </div>
       )}
+
+      {/* MODAL: Official Permanent Billing Exemption (Super Admin Only — Owner-Verified & Atomically Audited) */}
+      {exemptionModalOrg && (() => {
+        const isCurrentlyExempt = exemptionModalOrg.billingExempt === true;
+        const ownerEmailLower = (exemptionModalOrg.ownerEmail || '').trim().toLowerCase();
+        const ownerIdClean = (exemptionModalOrg.ownerId || '').trim();
+        const matchedOwnerUser = ownerIdClean
+          ? allUsers.find((u) => u.uid === ownerIdClean)
+          : undefined;
+        const ownerDocVerified = Boolean(
+          ownerIdClean &&
+            ownerEmailLower.length >= 3 &&
+            matchedOwnerUser &&
+            matchedOwnerUser.orgId === exemptionModalOrg.id &&
+            matchedOwnerUser.role === 'manager' &&
+            (matchedOwnerUser.email || '').trim().toLowerCase() === ownerEmailLower
+        );
+        const canSubmit =
+          !busyAction &&
+          exemptionReason.trim().length >= 5 &&
+          (isCurrentlyExempt || ownerDocVerified);
+
+        return (
+          <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
+                <h2 className="font-bold text-base flex items-center gap-2">
+                  <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                  <span>
+                    {isCurrentlyExempt
+                      ? tr('إلغاء الإعفاء الدائم الشامل', 'Revoke Permanent Billing Exemption', 'مستقل فیس استثنیٰ منسوخ کریں')
+                      : tr('منح الإعفاء الدائم الشامل', 'Grant Permanent Full Billing Exemption', 'مستقل مکمل فیس استثنیٰ دیں')}
+                  </span>
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setExemptionModalOrg(null)}
+                  className="p-1.5 rounded-lg"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleBillingExemptionSubmit} className="p-6 space-y-4 text-xs">
+                <div className="p-4 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('المؤسسة:', 'Organization:', 'ادارہ:')}</span>
+                    <span className="font-bold text-[#0B1B32] dark:text-white">{exemptionModalOrg.name}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('معرّف المؤسسة (orgId):', 'Org ID:', 'ادارہ آئی ڈی:')}</span>
+                    <span className="font-mono text-[#0B1B32] dark:text-slate-200" dir="ltr">{exemptionModalOrg.id}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('معرّف المالك (ownerId):', 'Owner UID:', 'مالک آئی ڈی:')}</span>
+                    <span className="font-mono text-[#0B1B32] dark:text-slate-200" dir="ltr">
+                      {ownerIdClean || tr('غير مربوط بعد', 'Not linked yet', 'ابھی منسلک نہیں')}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('بريد المالك الموحّد:', 'Normalized Owner Email:', 'مالک کی ای میل:')}</span>
+                    <span className="font-mono text-[#0B1B32] dark:text-slate-200" dir="ltr">{ownerEmailLower || '—'}</span>
+                  </div>
+                  <div className="pt-2 border-t border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('التحقق من وثيقة المالك (users):', 'Owner Doc Verification:', 'مالک دستاویز کی تصدیق:')}</span>
+                    {ownerDocVerified ? (
+                      <span className="inline-flex items-center gap-1 font-bold text-emerald-700 dark:text-emerald-400">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>{tr('مطابق وموثّق', 'Verified Match', 'تصدیق شدہ')}</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 font-bold text-rose-600 dark:text-rose-400">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span>{tr('غير مكتمل — لا يمكن المنح', 'Unverified — Blocked', 'غیر تصدیق شدہ — ممنوع')}</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {!isCurrentlyExempt && !ownerDocVerified && (
+                  <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-700 dark:text-rose-300 leading-relaxed">
+                    {tr(
+                      'لا يمكن منح الإعفاء الدائم اعتماداً على البريد الإلكتروني وحده. يجب أن يكون للمؤسسة ownerId مربوط بوثيقة users/{ownerId} مطابقة بدور manager ونفس البريد والمؤسسة.',
+                      'Permanent exemption cannot be granted by email alone. The organization must have a bound ownerId matching a users/{ownerId} manager document with the same orgId and email.',
+                      'صرف ای میل کی بنیاد پر مستقل استثنیٰ نہیں دیا جا سکتا۔ مالک کی ownerId اور users دستاویز کی تصدیق لازمی ہے۔'
+                    )}
+                  </div>
+                )}
+
+                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-slate-700 dark:text-slate-200 leading-relaxed">
+                  {isCurrentlyExempt
+                    ? tr(
+                        'سيؤدي الإلغاء إلى إعادة المؤسسة لنظام الاشتراكات القياسي فوراً دون حذف أي سجلات تاريخية للاشتراكات أو الفواتير، مع تسجيل الإجراء ذرياً في platformAuditLogs.',
+                        'Revoking restores standard subscription rules immediately without deleting any historical billing records, coupled atomically with a platformAuditLogs entry.',
+                        'منسوخی کے بعد ادارہ بغیر کوئی تاریخی ریکارڈ حذف کیے معمول کے سبسکرپشن نظام پر واپس آ جائے گا۔'
+                      )
+                    : tr(
+                        'يشمل الإعفاء الدائم الشامل: رسوم الاشتراك الحالية والمستقبلية، رسوم التأسيس، رسوم إعادة التنشيط، وجميع الفروع الحالية والمستقبلية (0 ر.س) مع الاحتفاظ بكامل السجلات التاريخية دون حذف، وربط ذرّي إلزامي بسجل platformAuditLogs.',
+                        'Full permanent exemption covers all current & future subscription fees, setup/reactivation fees, and all current & future branches (0 SAR), preserving all historical records and creating a mandatory atomic platformAuditLogs entry.',
+                        'یہ مستقل استثنیٰ موجودہ اور مستقبل کی تمام سبسکرپشن، سیٹ اپ اور برانچ فیس (0 ریال) کا احاطہ کرتا ہے اور تمام تاریخی ریکارڈز محفوظ رہتے ہیں۔'
+                      )}
+                </div>
+
+                <div>
+                  <label className="block font-semibold mb-1">
+                    {isCurrentlyExempt
+                      ? tr('سبب إلغاء الإعفاء الدائم * (5 أحرف على الأقل)', 'Revocation Reason * (min 5 chars)', 'منسوخی کی وجہ *')
+                      : tr('سبب منح الإعفاء الدائم * (5 أحرف على الأقل)', 'Exemption Reason * (min 5 chars)', 'استثنیٰ کی وجہ *')}
+                  </label>
+                  <textarea
+                    required
+                    minLength={5}
+                    maxLength={500}
+                    rows={3}
+                    value={exemptionReason}
+                    onChange={(e) => setExemptionReason(e.target.value)}
+                    placeholder={
+                      isCurrentlyExempt
+                        ? tr('اكتب سبب إلغاء الإعفاء للتوثيق في سجل المنصة...', 'Enter revocation reason for platform audit log...', 'منسوخی کی وجہ درج کریں...')
+                        : tr('اكتب سبب اعتماد الإعفاء الدائم للتوثيق في سجل المنصة...', 'Enter exemption approval reason for platform audit log...', 'استثنیٰ کی وجہ درج کریں...')
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] outline-none focus:border-[#1764FF]"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setExemptionModalOrg(null)}
+                    className="px-4 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] font-semibold"
+                  >
+                    {tr('إغلاق', 'Close', 'بند کریں')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!canSubmit}
+                    className={`px-5 py-2 rounded-xl text-white font-bold disabled:opacity-50 transition-colors ${
+                      isCurrentlyExempt
+                        ? 'bg-rose-600 hover:bg-rose-700'
+                        : 'bg-emerald-600 hover:bg-emerald-700'
+                    }`}
+                  >
+                    {busyAction
+                      ? tr('جاري التنفيذ...', 'Processing...', 'جاری ہے...')
+                      : isCurrentlyExempt
+                      ? tr('تأكيد إلغاء الإعفاء الدائم', 'Confirm Revoke Exemption', 'استثنیٰ منسوخ کریں')
+                      : tr('اعتماد الإعفاء الدائم الشامل', 'Confirm Grant Full Exemption', 'مستقل استثنیٰ منظور کریں')}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

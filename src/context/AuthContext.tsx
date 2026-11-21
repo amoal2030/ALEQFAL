@@ -319,6 +319,15 @@ interface AuthContextType {
     reactivationFeePaidDateIso?: string;
     note?: string;
   }) => Promise<void>;
+  grantSuperAdminOrgBillingExemption: (input: {
+    orgId: string;
+    expectedOwnerEmail?: string;
+    reason: string;
+  }) => Promise<{ auditLogId: string; ownerId: string; ownerEmail: string }>;
+  revokeSuperAdminOrgBillingExemption: (input: {
+    orgId: string;
+    reason: string;
+  }) => Promise<{ auditLogId: string }>;
   upsertSuperAdminManagerInvite: (input: {
     email: string;
     orgId: string;
@@ -3783,6 +3792,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const now = new Date();
       const nowIso = now.toISOString();
       const subEval = evaluateOrganizationSubscription(existingOrg, now);
+      const nextOwnerEmailClean = input.ownerEmail.trim();
+      const prevOwnerEmailLower = (existingOrg.ownerEmail || '').trim().toLowerCase();
+      const nextOwnerEmailLower = nextOwnerEmailClean.toLowerCase();
+      const ownerEmailChangedWhileExempt =
+        existingOrg.billingExempt === true && nextOwnerEmailLower !== prevOwnerEmailLower;
 
       const updatePayload: Record<string, any> = {
         name: input.name.trim(),
@@ -3791,12 +3805,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         activityType: input.activityType || existingOrg.activityType || 'retail',
         currency: input.currency || existingOrg.currency || 'SAR',
         ownerName: input.ownerName.trim().slice(0, 100),
-        ownerEmail: input.ownerEmail.trim(),
+        ownerEmail: nextOwnerEmailClean,
         updatedAt: nowIso,
       };
 
       const shouldConfigureSubscription =
-        !subEval.isLegacy || input.convertLegacyToPaid === true;
+        !subEval.isBillingExempt &&
+        (!subEval.isLegacy || input.convertLegacyToPaid === true);
 
       if (shouldConfigureSubscription && input.subscriptionPlan && input.startDateIso) {
         const startDate = parseDateInputOrFallback(input.startDateIso, now);
@@ -3830,7 +3845,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
 
-      if (input.setupFeeStatus) {
+      // Never overwrite or charge setup fees on a permanently billing-exempt organization
+      if (!subEval.isBillingExempt && input.setupFeeStatus) {
         updatePayload.accountSetupFeeSar = existingOrg.accountSetupFeeSar ?? ACCOUNT_SETUP_FEE_SAR;
         updatePayload.setupFeeStatus = input.setupFeeStatus;
         updatePayload.setupFeePaidAt =
@@ -3840,11 +3856,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const batch = writeBatch(db);
+
+      // If ownerEmail changes while org is billing-exempt, atomically revoke exemption + write coupled audit log
+      let autoRevokeAuditLog: PlatformAuditLog | null = null;
+      if (ownerEmailChangedWhileExempt) {
+        const autoRevokeReason = `إلغاء تلقائي للإعفاء الدائم بسبب تغيير بريد المالك من ${prevOwnerEmailLower} إلى ${nextOwnerEmailLower}`;
+        autoRevokeAuditLog = createPlatformAuditPayload({
+          actor,
+          action: 'ORG_BILLING_EXEMPTION_REVOKED',
+          targetType: 'billing',
+          targetId: input.orgId,
+          orgId: input.orgId,
+          details: `إلغاء تلقائي للإعفاء الدائم لمؤسسة "${input.name.trim()}" بسبب تغيير بريد المالك (${prevOwnerEmailLower} → ${nextOwnerEmailLower})`,
+          metadata: {
+            orgId: input.orgId,
+            previousOwnerEmail: prevOwnerEmailLower,
+            newOwnerEmail: nextOwnerEmailLower,
+            reason: autoRevokeReason,
+            autoRevokedOnOwnerChange: true,
+          },
+        });
+        updatePayload.billingExempt = false;
+        updatePayload.billingExemptRevokedAt = Timestamp.fromDate(now);
+        updatePayload.billingExemptRevokedBy = actorEmail;
+        updatePayload.billingExemptRevokeReason = autoRevokeReason.slice(0, 500);
+        updatePayload.billingExemptLastAuditLogId = autoRevokeAuditLog.id;
+      }
+
       batch.update(orgRef, updatePayload);
+
+      if (autoRevokeAuditLog) {
+        batch.set(doc(db, 'platformAuditLogs', autoRevokeAuditLog.id), autoRevokeAuditLog);
+      }
 
       const action: PlatformAuditAction = input.convertLegacyToPaid
         ? 'LEGACY_CONVERTED_TO_PAID'
-        : input.setupFeeStatus && input.setupFeeStatus !== existingOrg.setupFeeStatus
+        : !subEval.isBillingExempt && input.setupFeeStatus && input.setupFeeStatus !== existingOrg.setupFeeStatus
         ? 'SETUP_FEE_UPDATED'
         : 'ORG_PROFILE_UPDATED';
 
@@ -3856,7 +3903,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         orgId: input.orgId,
         details: input.convertLegacyToPaid
           ? `تحويل المؤسسة القديمة "${input.name.trim()}" إلى الاشتراك المدفوع يدوياً دون رسوم بأثر رجعي`
-          : `تحديث بيانات/فوترة المؤسسة "${input.name.trim()}" (الرقم الضريبي: ${updatePayload.taxNumber || '—'}، حالة التأسيس: ${updatePayload.setupFeeStatus || existingOrg.setupFeeStatus || 'legacy'})`,
+          : `تحديث بيانات/فوترة المؤسسة "${input.name.trim()}" (الرقم الضريبي: ${updatePayload.taxNumber || '—'}، حالة التأسيس: ${subEval.isBillingExempt ? 'billing_exempt' : updatePayload.setupFeeStatus || existingOrg.setupFeeStatus || 'legacy'})`,
       });
       batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
 
@@ -3888,12 +3935,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isActive: false,
         deactivationReason: input.reason || 'manual_suspension',
         deactivatedAt: Timestamp.fromDate(now),
-        ...(subEval.isLegacy ? {} : { subscriptionStatus: 'suspended' }),
+        // Preserve historical subscriptionStatus for legacy and permanently billing-exempt organizations
+        ...(subEval.isFeeExempt ? {} : { subscriptionStatus: 'suspended' }),
         updatedAt: nowIso,
       });
       action = 'ORG_SUSPENDED';
       details = `إيقاف المؤسسة "${existingOrg.name}" (${input.reason || 'manual_suspension'})`;
     } else if (input.action === 'start_no_paid_branch_grace') {
+      if (subEval.isFeeExempt) {
+        throw new Error('لا يمكن تفعيل مهلة عدم وجود فروع مدفوعة لمؤسسة معفاة من الرسوم.');
+      }
       const graceDue = new Date(now.getTime() + NO_PAID_BRANCH_GRACE_DAYS * 24 * 60 * 60 * 1000);
       batch.update(orgRef, {
         noPaidBranchGraceStartedAt: Timestamp.fromDate(now),
@@ -3904,6 +3955,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       action = 'ORG_DEACTIVATED_NO_PAID_BRANCHES';
       details = `بدء مهلة 7 أيام لعدم وجود فروع مدفوعة للمؤسسة "${existingOrg.name}" حتى ${graceDue.toISOString().slice(0, 10)}`;
     } else if (input.action === 'deactivate_no_paid_branches') {
+      if (subEval.isFeeExempt) {
+        throw new Error('لا يمكن تعطيل مؤسسة معفاة من الرسوم بسبب عدم وجود فروع مدفوعة.');
+      }
       batch.update(orgRef, {
         isActive: false,
         deactivationReason: 'no_paid_branches',
@@ -3916,8 +3970,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       action = 'ORG_DEACTIVATED_NO_PAID_BRANCHES';
       details = `تعطيل المؤسسة "${existingOrg.name}" لانتهاء المهلة دون فروع مدفوعة — رسوم إعادة التنشيط ${ORG_REACTIVATION_FEE_SAR} ر.س`;
     } else if (input.action === 'reactivate') {
-      const feeStatus = input.reactivationFeeStatus || 'paid';
-      if (existingOrg.deactivationReason === 'no_paid_branches' && feeStatus === 'unpaid') {
+      const feeStatus: FeePaymentStatus = subEval.isFeeExempt
+        ? 'waived'
+        : input.reactivationFeeStatus || 'paid';
+      if (!subEval.isFeeExempt && existingOrg.deactivationReason === 'no_paid_branches' && feeStatus === 'unpaid') {
         throw new Error('يجب تسجيل سداد أو إعفاء رسوم إعادة التنشيط (10 ر.س) قبل إعادة تفعيل المؤسسة.');
       }
       const paidDate = parseDateInputOrFallback(input.reactivationFeePaidDateIso, now);
@@ -3927,17 +3983,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         noPaidBranchGraceStartedAt: null,
         deactivationDueAt: null,
         deactivatedAt: null,
-        reactivationFeeSar: ORG_REACTIVATION_FEE_SAR,
-        reactivationFeeStatus: feeStatus,
-        reactivationFeePaidAt: feeStatus === 'paid' ? Timestamp.fromDate(paidDate) : null,
+        ...(subEval.isBillingExempt
+          ? {}
+          : {
+              reactivationFeeSar: subEval.isFeeExempt ? 0 : ORG_REACTIVATION_FEE_SAR,
+              reactivationFeeStatus: feeStatus,
+              reactivationFeePaidAt: feeStatus === 'paid' ? Timestamp.fromDate(paidDate) : null,
+            }),
         reactivatedAt: Timestamp.fromDate(now),
         reactivatedBy: actorEmail,
-        ...(subEval.isLegacy ? {} : { subscriptionStatus: 'active' }),
+        // Preserve historical subscriptionStatus for legacy and permanently billing-exempt organizations
+        ...(subEval.isFeeExempt ? {} : { subscriptionStatus: 'active' }),
         ...(input.note?.trim() ? { subscriptionNote: input.note.trim().slice(0, 500) } : {}),
         updatedAt: nowIso,
       });
       action = 'ORG_REACTIVATED';
-      details = `إعادة تنشيط المؤسسة "${existingOrg.name}" (رسوم إعادة التنشيط 10 ر.س: ${feeStatus})`;
+      details = subEval.isBillingExempt
+        ? `إعادة تنشيط المؤسسة المعفاة دائماً "${existingOrg.name}" دون أي رسوم (0 ر.س)`
+        : `إعادة تنشيط المؤسسة "${existingOrg.name}" (رسوم إعادة التنشيط ${subEval.isFeeExempt ? 0 : ORG_REACTIVATION_FEE_SAR} ر.س: ${feeStatus})`;
     }
 
     const auditLog = createPlatformAuditPayload({
@@ -3968,6 +4031,199 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     await batch.commit();
     await loadSuperAdminOverview();
+  };
+
+  const grantSuperAdminOrgBillingExemption: AuthContextType['grantSuperAdminOrgBillingExemption'] = async (
+    input
+  ) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const cleanReason = (input.reason || '').trim();
+    if (cleanReason.length < 5 || cleanReason.length > 500) {
+      throw new Error('يجب إدخال سبب واضح لمنح الإعفاء الدائم (بين 5 و 500 حرف).');
+    }
+
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+    const orgRef = doc(db, 'organizations', input.orgId);
+    const orgSnap = await getDocFromServer(orgRef).catch(() => getDoc(orgRef));
+    if (!orgSnap.exists()) {
+      throw new Error('المؤسسة غير موجودة.');
+    }
+    const existingOrg = orgSnap.data() as Organization;
+    const subEval = evaluateOrganizationSubscription(existingOrg);
+    if (subEval.isBillingExempt) {
+      throw new Error('هذه المؤسسة مشمولة بالفعل بالإعفاء الدائم الشامل.');
+    }
+
+    const ownerId = (existingOrg.ownerId || '').trim();
+    const ownerEmailLower = (existingOrg.ownerEmail || '').trim().toLowerCase();
+    if (!ownerId) {
+      throw new Error('لا يمكن منح الإعفاء الدائم قبل ربط معرّف المالك (ownerId) بوثيقة المؤسسة.');
+    }
+    if (ownerEmailLower.length < 3) {
+      throw new Error('بريد المالك المسجّل في وثيقة المؤسسة غير صالح.');
+    }
+    if (input.expectedOwnerEmail && input.expectedOwnerEmail.trim().toLowerCase() !== ownerEmailLower) {
+      throw new Error('عدم تطابق بريد المالك مع البريد المسجل في وثيقة المؤسسة.');
+    }
+
+    const ownerUserRef = doc(db, 'users', ownerId);
+    const ownerUserSnap = await getDocFromServer(ownerUserRef).catch(() => getDoc(ownerUserRef));
+    if (!ownerUserSnap.exists()) {
+      throw new Error('وثيقة حساب المالك غير موجودة في users؛ تعذر التحقق من ملكية المؤسسة.');
+    }
+    const ownerUser = ownerUserSnap.data() as UserProfile;
+    const ownerUserEmailLower = (ownerUser.email || '').trim().toLowerCase();
+    if (
+      ownerUser.orgId !== existingOrg.id ||
+      ownerUser.role !== 'manager' ||
+      ownerUserEmailLower !== ownerEmailLower
+    ) {
+      throw new Error('بيانات وثيقة المالك في users لا تطابق المؤسسة أو الدور (manager) أو البريد الإلكتروني.');
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action: 'ORG_BILLING_EXEMPTION_GRANTED',
+      targetType: 'billing',
+      targetId: existingOrg.id,
+      orgId: existingOrg.id,
+      details: `منح إعفاء دائم شامل (full_permanent) للمؤسسة "${existingOrg.name}" (${existingOrg.id}) للمالك الموثق ${ownerEmailLower} (${ownerId}) — السبب: ${cleanReason}`,
+      metadata: {
+        orgId: existingOrg.id,
+        ownerId,
+        ownerEmail: ownerEmailLower,
+        scope: 'full_permanent',
+        reason: cleanReason,
+      },
+    });
+
+    const orgUpdate: Record<string, any> = {
+      billingExempt: true,
+      billingExemptScope: 'full_permanent',
+      billingExemptReason: cleanReason,
+      billingExemptGrantedAt: Timestamp.fromDate(now),
+      billingExemptGrantedBy: actorEmail,
+      billingExemptVerifiedOwnerId: ownerId,
+      billingExemptVerifiedOwnerEmail: ownerEmailLower,
+      billingExemptRevokedAt: null,
+      billingExemptRevokedBy: null,
+      billingExemptRevokeReason: null,
+      billingExemptLastAuditLogId: auditLog.id,
+      updatedAt: nowIso,
+    };
+
+    // Clear active no-paid-branch grace/deactivation without deleting historical subscription or payment fields
+    if (existingOrg.deactivationReason === 'no_paid_branches') {
+      orgUpdate.deactivationReason = null;
+      orgUpdate.noPaidBranchGraceStartedAt = null;
+      orgUpdate.deactivationDueAt = null;
+      if (existingOrg.isActive === false) {
+        orgUpdate.isActive = true;
+        orgUpdate.deactivatedAt = null;
+      }
+    } else if (existingOrg.noPaidBranchGraceStartedAt || existingOrg.deactivationDueAt) {
+      orgUpdate.noPaidBranchGraceStartedAt = null;
+      orgUpdate.deactivationDueAt = null;
+    }
+
+    const batch = writeBatch(db);
+    batch.update(orgRef, orgUpdate);
+    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+    const saGrantNotif = buildSuperAdminPlatformNotification({
+      dedupKey: `sa_org_billing_exempt_grant:${existingOrg.id}:${auditLog.id}`,
+      category: 'security_admin',
+      type: 'SA_ORG_BILLING_EXEMPTION_GRANTED',
+      severity: 'success',
+      relatedOrgId: existingOrg.id,
+      actorUid: actor.uid,
+      actorName: actor.displayName || actorEmail,
+      title: `اعتماد الإعفاء الدائم الشامل لمؤسسة "${existingOrg.name}"`,
+      body: `تم منح إعفاء دائم شامل للمالك الموثق ${ownerEmailLower} مع الاحتفاظ بكامل السجلات التاريخية.`,
+      targetType: 'organization',
+      targetId: existingOrg.id,
+      tab: 'organizations',
+      createdAt: nowIso,
+    });
+    batch.set(doc(db, 'notifications', saGrantNotif.id), saGrantNotif);
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+    return { auditLogId: auditLog.id, ownerId, ownerEmail: ownerEmailLower };
+  };
+
+  const revokeSuperAdminOrgBillingExemption: AuthContextType['revokeSuperAdminOrgBillingExemption'] = async (
+    input
+  ) => {
+    const actor = assertAuthorizedSuperAdmin();
+    await actor.getIdToken();
+
+    const cleanReason = (input.reason || '').trim();
+    if (cleanReason.length < 5 || cleanReason.length > 500) {
+      throw new Error('يجب إدخال سبب واضح لإلغاء الإعفاء الدائم (بين 5 و 500 حرف).');
+    }
+
+    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+    const orgRef = doc(db, 'organizations', input.orgId);
+    const orgSnap = await getDocFromServer(orgRef).catch(() => getDoc(orgRef));
+    if (!orgSnap.exists()) {
+      throw new Error('المؤسسة غير موجودة.');
+    }
+    const existingOrg = orgSnap.data() as Organization;
+    if (existingOrg.billingExempt !== true) {
+      throw new Error('هذه المؤسسة ليست مشمولة بالإعفاء الدائم حالياً.');
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const auditLog = createPlatformAuditPayload({
+      actor,
+      action: 'ORG_BILLING_EXEMPTION_REVOKED',
+      targetType: 'billing',
+      targetId: existingOrg.id,
+      orgId: existingOrg.id,
+      details: `إلغاء الإعفاء الدائم الشامل للمؤسسة "${existingOrg.name}" (${existingOrg.id}) وإعادتها لنظام الاشتراكات القياسي دون حذف أي بيانات تاريخية — السبب: ${cleanReason}`,
+      metadata: {
+        orgId: existingOrg.id,
+        ownerId: existingOrg.ownerId || null,
+        ownerEmail: (existingOrg.ownerEmail || '').trim().toLowerCase() || null,
+        reason: cleanReason,
+      },
+    });
+
+    const batch = writeBatch(db);
+    batch.update(orgRef, {
+      billingExempt: false,
+      billingExemptRevokedAt: Timestamp.fromDate(now),
+      billingExemptRevokedBy: actorEmail,
+      billingExemptRevokeReason: cleanReason,
+      billingExemptLastAuditLogId: auditLog.id,
+      updatedAt: nowIso,
+    });
+    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+    const saRevokeNotif = buildSuperAdminPlatformNotification({
+      dedupKey: `sa_org_billing_exempt_revoke:${existingOrg.id}:${auditLog.id}`,
+      category: 'security_admin',
+      type: 'SA_ORG_BILLING_EXEMPTION_REVOKED',
+      severity: 'warning',
+      relatedOrgId: existingOrg.id,
+      actorUid: actor.uid,
+      actorName: actor.displayName || actorEmail,
+      title: `إلغاء الإعفاء الدائم لمؤسسة "${existingOrg.name}"`,
+      body: `تم إلغاء الإعفاء الدائم وإعادة المؤسسة إلى نظام الاشتراكات القياسي مع حفظ كامل السجلات التاريخية.`,
+      targetType: 'organization',
+      targetId: existingOrg.id,
+      tab: 'organizations',
+      createdAt: nowIso,
+    });
+    batch.set(doc(db, 'notifications', saRevokeNotif.id), saRevokeNotif);
+
+    await batch.commit();
+    await loadSuperAdminOverview();
+    return { auditLogId: auditLog.id };
   };
 
   const upsertSuperAdminManagerInvite: AuthContextType['upsertSuperAdminManagerInvite'] = async (
@@ -4083,7 +4339,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     actorEmail: string
   ) => {
     const subEval = evaluateOrganizationSubscription(org, now);
-    if (subEval.isLegacy) return;
+    if (subEval.isFeeExempt) return;
 
     const paidBranches = updatedBranches.filter((b) => isBranchCountedAsPaid(b, org, now));
     const activeBranches = updatedBranches.filter(
@@ -4145,9 +4401,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
     const branchId = `br_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const code = (input.code || `BR${Math.floor(100 + Math.random() * 900)}`).trim().toUpperCase().slice(0, 20);
-    const paymentStatus: BranchPaymentStatus = subEval.isLegacy ? 'exempt' : input.paymentStatus;
-    const monthlyFeeSar = subEval.isLegacy ? 0 : BRANCH_MONTHLY_FEE_SAR;
+    const paymentStatus: BranchPaymentStatus = subEval.isFeeExempt ? 'exempt' : input.paymentStatus;
+    const monthlyFeeSar = subEval.isFeeExempt ? 0 : BRANCH_MONTHLY_FEE_SAR;
     const isPaid = paymentStatus === 'paid' || paymentStatus === 'exempt';
+    const defaultExemptNote = subEval.isBillingExempt
+      ? 'معفى تلقائياً ضمن الإعفاء الدائم الشامل للمؤسسة (0 ر.س)'
+      : undefined;
+    const resolvedPaymentNote = input.paymentNote?.trim()
+      ? input.paymentNote.trim().slice(0, 500)
+      : defaultExemptNote;
 
     const newBranch: Branch = {
       id: branchId,
@@ -4159,11 +4421,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isActive: true,
       lifecycleStatus: 'active',
       subscriptionStartAt: Timestamp.fromDate(startDate),
-      feeDueAt: Timestamp.fromDate(dueDate),
+      feeDueAt: subEval.isFeeExempt ? null : Timestamp.fromDate(dueDate),
       monthlyFeeSar,
       paymentStatus,
       ...(isPaid ? { lastPaidAt: Timestamp.fromDate(now), lastPaidBy: actorEmail } : {}),
-      ...(input.paymentNote?.trim() ? { paymentNote: input.paymentNote.trim().slice(0, 500) } : {}),
+      ...(resolvedPaymentNote ? { paymentNote: resolvedPaymentNote } : {}),
       createdAt: nowIso,
       updatedAt: nowIso,
     };
@@ -4235,12 +4497,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('المؤسسة غير موجودة.');
     }
     const org = orgSnap.data() as Organization;
+    const subEval = evaluateOrganizationSubscription(org);
     const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
     const now = new Date();
     const paidDate = parseDateInputOrFallback(input.paidDateIso, now);
     const defaultNextDue = new Date(paidDate.getTime() + 30 * 24 * 60 * 60 * 1000);
     const dueDate = parseDateInputOrFallback(input.feeDueDateIso, defaultNextDue);
-    const monthlyFeeSar = input.monthlyFeeSar ?? existingBranch.monthlyFeeSar ?? BRANCH_MONTHLY_FEE_SAR;
+    const effectivePaymentStatus: BranchPaymentStatus = subEval.isBillingExempt
+      ? 'exempt'
+      : input.paymentStatus;
+    const monthlyFeeSar = subEval.isBillingExempt
+      ? 0
+      : input.monthlyFeeSar ?? existingBranch.monthlyFeeSar ?? BRANCH_MONTHLY_FEE_SAR;
 
     const existingOrgBranchesSnap = await getDocs(
       query(collection(db, 'branches'), where('orgId', '==', existingBranch.orgId))
@@ -4248,9 +4516,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const updatedBranch: Branch = {
       ...existingBranch,
       monthlyFeeSar,
-      paymentStatus: input.paymentStatus,
-      feeDueAt: Timestamp.fromDate(dueDate),
-      lastPaidAt: input.paymentStatus === 'paid' ? Timestamp.fromDate(paidDate) : existingBranch.lastPaidAt,
+      paymentStatus: effectivePaymentStatus,
+      feeDueAt: subEval.isBillingExempt ? null : Timestamp.fromDate(dueDate),
+      lastPaidAt: effectivePaymentStatus === 'paid' ? Timestamp.fromDate(paidDate) : existingBranch.lastPaidAt,
       lastPaidBy: actorEmail,
       paymentNote: input.paymentNote?.trim().slice(0, 500) || existingBranch.paymentNote,
       updatedAt: now.toISOString(),
@@ -4262,10 +4530,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const batch = writeBatch(db);
     batch.update(branchRef, {
       monthlyFeeSar,
-      paymentStatus: input.paymentStatus,
-      feeDueAt: Timestamp.fromDate(dueDate),
+      paymentStatus: effectivePaymentStatus,
+      feeDueAt: subEval.isBillingExempt ? null : Timestamp.fromDate(dueDate),
       lastPaidAt:
-        input.paymentStatus === 'paid'
+        effectivePaymentStatus === 'paid'
           ? Timestamp.fromDate(paidDate)
           : existingBranch.lastPaidAt || null,
       lastPaidBy: actorEmail,
@@ -4407,7 +4675,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       input.feeDueDateIso,
       new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
     );
-    const paymentStatus: BranchPaymentStatus = subEval.isLegacy ? 'exempt' : input.paymentStatus;
+    const paymentStatus: BranchPaymentStatus = subEval.isFeeExempt ? 'exempt' : input.paymentStatus;
+    const monthlyFeeSar = subEval.isFeeExempt
+      ? 0
+      : existingBranch.monthlyFeeSar ?? BRANCH_MONTHLY_FEE_SAR;
     const isPaid = paymentStatus === 'paid' || paymentStatus === 'exempt';
 
     const existingOrgBranchesSnap = await getDocs(
@@ -4417,8 +4688,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ...existingBranch,
       isActive: true,
       lifecycleStatus: 'active',
+      monthlyFeeSar,
       paymentStatus,
-      feeDueAt: Timestamp.fromDate(dueDate),
+      feeDueAt: subEval.isFeeExempt ? null : Timestamp.fromDate(dueDate),
       driveBackupVerified: false,
     };
     const mergedBranches = existingOrgBranchesSnap.docs.map((d) =>
@@ -4429,8 +4701,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     batch.update(branchRef, {
       isActive: true,
       lifecycleStatus: 'active',
+      monthlyFeeSar,
       paymentStatus,
-      feeDueAt: Timestamp.fromDate(dueDate),
+      feeDueAt: subEval.isFeeExempt ? null : Timestamp.fromDate(dueDate),
       lastPaidAt: isPaid ? Timestamp.fromDate(now) : existingBranch.lastPaidAt || null,
       lastPaidBy: isPaid ? actorEmail : existingBranch.lastPaidBy || null,
       ...(input.paymentNote?.trim() ? { paymentNote: input.paymentNote.trim().slice(0, 500) } : {}),
@@ -4773,6 +5046,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         createSuperAdminOrganizationWithInvite,
         updateSuperAdminOrganizationProfileAndBilling,
         updateSuperAdminOrgStatus,
+        grantSuperAdminOrgBillingExemption,
+        revokeSuperAdminOrgBillingExemption,
         upsertSuperAdminManagerInvite,
         cancelSuperAdminManagerInvite,
         createSuperAdminBranch,

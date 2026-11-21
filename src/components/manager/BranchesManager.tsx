@@ -57,6 +57,7 @@ export const BranchesManager: React.FC = () => {
         managerEmail: currentUser?.email || currentOrg?.ownerEmail || '',
         currentBranchCount: branches.length,
         isLegacyExempt: pricingEval.isLegacyExempt,
+        isBillingExempt: pricingEval.isBillingExempt,
         language,
       }),
     [
@@ -68,6 +69,7 @@ export const BranchesManager: React.FC = () => {
       currentUser?.email,
       branches.length,
       pricingEval.isLegacyExempt,
+      pricingEval.isBillingExempt,
       language,
       tr,
     ]
@@ -102,7 +104,7 @@ export const BranchesManager: React.FC = () => {
       />
 
       {/* 7-Day No-Paid-Branch Grace Alert */}
-      {orgGraceEval.inGrace && !orgGraceEval.isLegacyExempt && (
+      {orgGraceEval.inGrace && !orgGraceEval.isFeeExempt && (
         <AlertBanner
           variant="error"
           icon={<AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400" />}
@@ -150,7 +152,7 @@ export const BranchesManager: React.FC = () => {
         <div className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#1764FF] dark:text-[#6CA2FF] pt-1">
           <Info className="w-3.5 h-3.5 shrink-0" />
           <span>
-            {pricingEval.isLegacyExempt
+            {pricingEval.isFeeExempt
               ? pricingEval.pricingSummary
               : tr(
                   `تسعيرة كل فرع: ${BRANCH_MONTHLY_FEE_SAR} ر.س/شهرياً من أول فرع — ${pricingEval.pricingSummary}`,
@@ -213,7 +215,7 @@ export const BranchesManager: React.FC = () => {
                     <span dir="ltr">{branch.phone}</span>
                   </div>
                 )}
-                {!pricingEval.isLegacyExempt && (
+                {!pricingEval.isFeeExempt && (
                   <div className="flex items-center justify-between pt-2 border-t border-[#E6EEFC] dark:border-[#1F3B66] text-[11px]">
                     <span className="inline-flex items-center gap-1">
                       <Calendar className="w-3.5 h-3.5 text-slate-400" />

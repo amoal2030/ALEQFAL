@@ -1088,7 +1088,7 @@ export function buildOrgThresholdNotifications(params: {
   const results: AppNotification[] = [];
 
   const subEval = evaluateOrganizationSubscription(params.org, now);
-  if (!subEval.isLegacy && subEval.isAllowed && subEval.endDate) {
+  if (!subEval.isFeeExempt && subEval.isAllowed && subEval.endDate) {
     const msLeft = subEval.endDate.getTime() - now.getTime();
     const daysLeft = Math.ceil(msLeft / (24 * 60 * 60 * 1000));
     if (daysLeft >= 0 && daysLeft <= 7) {
@@ -1117,7 +1117,7 @@ export function buildOrgThresholdNotifications(params: {
   }
 
   const graceEval = evaluateOrgNoPaidBranchGrace(params.org, params.branches, now);
-  if (graceEval.inGrace && !graceEval.isLegacyExempt && graceEval.deactivationDueAt) {
+  if (graceEval.inGrace && !graceEval.isFeeExempt && graceEval.deactivationDueAt) {
     results.push(
       createNotificationPayload({
         dedupKey: `org_no_paid_branch:${params.org.id}:${dayKey}`,
@@ -1205,7 +1205,7 @@ export function buildSuperAdminThresholdNotifications(params: {
     const orgBranches = branchesByOrg.get(org.id) || [];
     const subEval = evaluateOrganizationSubscription(org, now);
 
-    if (!subEval.isLegacy && subEval.endDate) {
+    if (!subEval.isFeeExempt && subEval.endDate) {
       const daysLeft = Math.ceil((subEval.endDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
       if (daysLeft <= 7 && daysLeft >= -3) {
         results.push(
@@ -1237,7 +1237,7 @@ export function buildSuperAdminThresholdNotifications(params: {
     }
 
     const graceEval = evaluateOrgNoPaidBranchGrace(org, orgBranches, now);
-    if (graceEval.inGrace && !graceEval.isLegacyExempt && graceEval.deactivationDueAt) {
+    if (graceEval.inGrace && !graceEval.isFeeExempt && graceEval.deactivationDueAt) {
       results.push(
         buildSuperAdminPlatformNotification({
           dedupKey: `sa_org_grace:${org.id}:${dayKey}`,

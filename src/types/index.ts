@@ -54,7 +54,10 @@ export type EffectiveSubscriptionState =
   | 'active'
   | 'expired'
   | 'suspended'
-  | 'legacy_unrestricted';
+  | 'legacy_unrestricted'
+  | 'billing_exempt';
+
+export type BillingExemptionScope = 'full_permanent';
 
 export type BranchPricingModel = 'per_branch_50_sar' | 'per_extra_branch_50_sar';
 
@@ -75,6 +78,8 @@ export type PlatformAuditAction =
   | 'ORG_SUSPENDED'
   | 'ORG_DEACTIVATED_NO_PAID_BRANCHES'
   | 'ORG_REACTIVATED'
+  | 'ORG_BILLING_EXEMPTION_GRANTED'
+  | 'ORG_BILLING_EXEMPTION_REVOKED'
   | 'INVITE_UPSERTED'
   | 'INVITE_CANCELLED'
   | 'BRANCH_CREATED'
@@ -203,6 +208,18 @@ export interface Organization {
   noPaidBranchGraceStartedAt?: SubscriptionTimestampValue;
   deactivationDueAt?: SubscriptionTimestampValue;
   deactivatedAt?: SubscriptionTimestampValue;
+  // Official Permanent Billing Exemption (Super Admin only, owner-bound, preserves historical billing records)
+  billingExempt?: boolean;
+  billingExemptScope?: BillingExemptionScope;
+  billingExemptReason?: string;
+  billingExemptGrantedAt?: SubscriptionTimestampValue | null;
+  billingExemptGrantedBy?: string | null;
+  billingExemptVerifiedOwnerId?: string | null;
+  billingExemptVerifiedOwnerEmail?: string | null;
+  billingExemptRevokedAt?: SubscriptionTimestampValue | null;
+  billingExemptRevokedBy?: string | null;
+  billingExemptRevokeReason?: string | null;
+  billingExemptLastAuditLogId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -232,7 +249,7 @@ export interface Branch {
   // Phase 4.2 Exclusive Branch Billing, 30-Day Grace & Verified Drive Purge
   lifecycleStatus?: BranchLifecycleStatus;
   subscriptionStartAt?: SubscriptionTimestampValue;
-  feeDueAt?: SubscriptionTimestampValue;
+  feeDueAt?: SubscriptionTimestampValue | null;
   monthlyFeeSar?: number;
   paymentStatus?: BranchPaymentStatus;
   lastPaidAt?: SubscriptionTimestampValue;
