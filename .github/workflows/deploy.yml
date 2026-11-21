@@ -17,19 +17,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Install Dependencies
@@ -50,19 +47,52 @@ jobs:
             echo "::warning::VITE_GOOGLE_DRIVE_CLIENT_ID is not set in GitHub Variables or Secrets; Drive linking will be disabled in this build."
           fi
 
+      - name: TypeScript Type Check
+        run: npm run lint
+
+      - name: Run Unit Tests
+        run: |
+          set -e
+          for test_file in \
+            src/tests/purchaseEntryService.test.ts \
+            src/tests/excelReportService.test.ts \
+            src/tests/phase4_6Notifications.test.ts \
+            src/tests/supplierService.test.ts \
+            src/tests/purchaseReports.test.ts \
+            src/tests/phase4Foundation.test.ts \
+            src/tests/phase4_4Step1Foundation.test.ts \
+            src/tests/securityAndAudit.test.ts \
+            src/tests/subscription.test.ts \
+            src/tests/phase3TenantAccess.test.ts \
+            src/tests/phase4_3EmployeesAndMonitoring.test.ts \
+            src/tests/driveIntegrationFlow.test.ts; do
+            echo "Running $test_file..."
+            npx tsx "$test_file"
+          done
+
       - name: Build Application for Production
         env:
           VITE_GOOGLE_DRIVE_CLIENT_ID: ${{ vars.VITE_GOOGLE_DRIVE_CLIENT_ID || secrets.VITE_GOOGLE_DRIVE_CLIENT_ID }}
         run: npm run build
 
       - name: Setup GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
-      - name: Upload dist Artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v5
         with:
+          name: github-pages
           path: './dist'
 
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages
