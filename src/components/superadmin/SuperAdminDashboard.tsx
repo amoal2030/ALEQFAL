@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -6,6 +6,7 @@ import {
   Branch,
   BranchPaymentStatus,
   DriveHealthStatus,
+  ExemptionClassification,
   FeePaymentStatus,
   ManagerInvite,
   Organization,
@@ -18,7 +19,11 @@ import {
 import { NotificationCenter } from '../common/NotificationCenter';
 import { BrandLogo } from '../common/BrandLogo';
 import { AppPageRoute, buildLegalPath } from '../../utils/legalRoutes';
-import { getUserRoleLabel } from '../../utils/permissions';
+import {
+  getUserRoleLabel,
+  SUPERVISOR_OPTIONAL_PERMISSION_KEYS,
+  SupervisorOptionalPermissionKey,
+} from '../../utils/permissions';
 import {
   calculateSubscriptionEndDate,
   evaluateOrganizationSubscription,
@@ -36,11 +41,24 @@ import {
   ORG_REACTIVATION_FEE_SAR,
 } from '../../utils/branchPricing';
 import {
+  verifyBranchExemptionEligibility,
+  verifyOrganizationExemptionEligibility,
+} from '../../utils/exemptionVerification';
+import {
+  ALLOWED_SUPER_ADMIN_MEMBER_ROLES,
+  getPlatformAuditActionLabel,
+  isAllowedSuperAdminMemberRole,
+  isMemberEligibleForRelease,
+  isMemberReleased,
+  SuperAdminAssignableMemberRole,
+} from '../../utils/superAdminGovernance';
+import { resolveMemberMembershipStatus } from '../../utils/tenantAccess';
+import { SUPER_ADMIN_EMAIL } from '../../utils/superAdmin';
+import {
   Building2,
   GitBranch,
   Users,
   ShieldCheck,
-  HardDrive,
   RefreshCw,
   Search,
   LogOut,
@@ -64,6 +82,15 @@ import {
   CreditCard,
   ShieldAlert,
   Info,
+  UserPlus,
+  Archive,
+  RotateCcw,
+  Layers,
+  Lock,
+  Unlink,
+  Link2,
+  History,
+  KeyRound,
 } from 'lucide-react';
 
 interface SuperAdminDashboardProps {
@@ -72,9 +99,26 @@ interface SuperAdminDashboardProps {
   onNavigatePage?: (page: AppPageRoute) => void;
 }
 
-type MainTab = 'organizations' | 'branches' | 'invites' | 'auditLogs';
+type MainTab = 'organizations' | 'branches' | 'members' | 'invites' | 'auditLogs';
 type OrgFilter = 'all' | 'active' | 'exempt' | 'legacy' | 'grace_7d' | 'suspended' | 'attention';
-type BranchFilter = 'all' | 'active' | 'unpaid_overdue' | 'suspended' | 'purge_ready' | 'purged';
+type BranchFilter = 'all' | 'active' | 'exempt' | 'unpaid_overdue' | 'suspended' | 'purge_ready' | 'purged';
+type MemberRoleFilter = 'all' | 'manager' | 'supervisor' | 'branch_manager' | 'employee';
+type MemberStatusFilter = 'all' | 'active' | 'archived' | 'released';
+type AuditCategoryFilter = 'all' | 'exemptions' | 'members' | 'organizations' | 'branches' | 'invites';
+
+const SUPERVISOR_PERM_LABELS: Record<
+  SupervisorOptionalPermissionKey,
+  { ar: string; en: string; ur: string }
+> = {
+  canCreateClosing: { ar: 'إنشاء إقفالات وردية', en: 'Create Shift Closings', ur: 'شفٹ کلوزنگ بنانا' },
+  canViewAllClosings: { ar: 'عرض جميع إقفالات الفروع', en: 'View All Branch Closings', ur: 'تمام برانچ کلوزنگ دیکھنا' },
+  canApproveClosings: { ar: 'اعتماد ورفض الإقفالات', en: 'Approve / Reject Closings', ur: 'کلوزنگ منظور/مسترد کرنا' },
+  canManagePurchases: { ar: 'إدارة المشتريات والمصروفات', en: 'Manage Purchases', ur: 'خریداری کا انتظام' },
+  canManageSuppliers: { ar: 'إدارة الموردين', en: 'Manage Suppliers', ur: 'سپلائرز کا انتظام' },
+  canViewSuppliers: { ar: 'عرض الموردين', en: 'View Suppliers', ur: 'سپلائرز دیکھنا' },
+  canViewFinancialReports: { ar: 'عرض التقارير المالية', en: 'View Financial Reports', ur: 'مالی رپورٹس دیکھنا' },
+  canExportReports: { ar: 'تصدير التقارير', en: 'Export Reports', ur: 'رپورٹس ایکسپورٹ کرنا' },
+};
 
 export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   onSwitchToTenantDashboard,
@@ -93,6 +137,16 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     updateSuperAdminOrgStatus,
     grantSuperAdminOrgBillingExemption,
     revokeSuperAdminOrgBillingExemption,
+    grantSuperAdminBranchExemption,
+    revokeSuperAdminBranchExemption,
+    grantSuperAdminBulkOrgBranchesExemption,
+    createSuperAdminOrgMember,
+    updateSuperAdminOrgMember,
+    archiveSuperAdminOrgMember,
+    reactivateSuperAdminOrgMember,
+    releaseSuperAdminOrgMember,
+    assignReleasedMemberToOrganization,
+    sendSuperAdminMemberPasswordReset,
     upsertSuperAdminManagerInvite,
     cancelSuperAdminManagerInvite,
     createSuperAdminBranch,
@@ -110,11 +164,16 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [orgFilter, setOrgFilter] = useState<OrgFilter>('all');
   const [branchFilter, setBranchFilter] = useState<BranchFilter>('all');
+  const [memberOrgFilter, setMemberOrgFilter] = useState<string>('all');
+  const [memberRoleFilter, setMemberRoleFilter] = useState<MemberRoleFilter>('all');
+  const [memberStatusFilter, setMemberStatusFilter] = useState<MemberStatusFilter>('all');
+  const [auditCategoryFilter, setAuditCategoryFilter] = useState<AuditCategoryFilter>('all');
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<'branches' | 'users'>('branches');
   const [langMenuOpen, setLangMenuOpen] = useState(false);
 
   const [busyAction, setBusyAction] = useState(false);
+  const inFlightUiRef = useRef<boolean>(false);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -225,9 +284,99 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   >(null);
   const [purgeConfirmText, setPurgeConfirmText] = useState('');
 
-  // Permanent Billing Exemption Modal state (Super Admin only)
+  // Permanent Organization Exemption Modal state (Super Admin only)
   const [exemptionModalOrg, setExemptionModalOrg] = useState<Organization | null>(null);
+  const [orgExemptionMode, setOrgExemptionMode] = useState<ExemptionClassification>('legacy_unrestricted');
   const [exemptionReason, setExemptionReason] = useState('');
+  const [exemptionConfirmed, setExemptionConfirmed] = useState(false);
+
+  // Individual Branch Exemption Modal state (Super Admin only)
+  const [branchExemptionModalTarget, setBranchExemptionModalTarget] = useState<Branch | null>(null);
+  const [branchExemptionMode, setBranchExemptionMode] = useState<ExemptionClassification>('billing_exempt');
+  const [branchExemptionReason, setBranchExemptionReason] = useState('');
+  const [branchExemptionRestoredStatus, setBranchExemptionRestoredStatus] =
+    useState<Exclude<BranchPaymentStatus, 'exempt'>>('unpaid');
+  const [branchExemptionRestoredFeeSar, setBranchExemptionRestoredFeeSar] =
+    useState<number>(BRANCH_MONTHLY_FEE_SAR);
+  const [branchExemptionConfirmed, setBranchExemptionConfirmed] = useState(false);
+
+  // Bulk All-Branches Exemption Modal state (Super Admin only)
+  const [bulkBranchExemptionOrg, setBulkBranchExemptionOrg] = useState<Organization | null>(null);
+  const [bulkBranchExemptionMode, setBulkBranchExemptionMode] =
+    useState<ExemptionClassification>('billing_exempt');
+  const [bulkBranchExemptionReason, setBulkBranchExemptionReason] = useState('');
+  const [bulkBranchExemptionConfirmed, setBulkBranchExemptionConfirmed] = useState(false);
+
+  // Cross-Org Member Management Modals state (Super Admin only)
+  const [showCreateMemberModal, setShowCreateMemberModal] = useState(false);
+  const [createMemberForm, setCreateMemberForm] = useState<{
+    orgId: string;
+    displayName: string;
+    email: string;
+    password: string;
+    phone: string;
+    role: SuperAdminAssignableMemberRole;
+    branchId: string;
+    supervisorPermissions: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+  }>({
+    orgId: '',
+    displayName: '',
+    email: '',
+    password: '',
+    phone: '',
+    role: 'employee',
+    branchId: '',
+    supervisorPermissions: {},
+  });
+
+  const [editingMember, setEditingMember] = useState<UserProfile | null>(null);
+  const [editMemberForm, setEditMemberForm] = useState<{
+    displayName: string;
+    phone: string;
+    role: SuperAdminAssignableMemberRole;
+    branchId: string;
+    supervisorPermissions: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+    reason: string;
+  }>({
+    displayName: '',
+    phone: '',
+    role: 'employee',
+    branchId: '',
+    supervisorPermissions: {},
+    reason: '',
+  });
+
+  const [memberLifecycleModal, setMemberLifecycleModal] = useState<{
+    member: UserProfile;
+    mode: 'archive' | 'reactivate';
+  } | null>(null);
+  const [memberLifecycleReason, setMemberLifecycleReason] = useState('');
+  const [memberLifecycleConfirmed, setMemberLifecycleConfirmed] = useState(false);
+
+  // Phase C.1 — Permanent Member Release, Released-Member Re-Assignment & Member History Modals
+  const [releaseMemberTarget, setReleaseMemberTarget] = useState<UserProfile | null>(null);
+  const [releaseMemberReason, setReleaseMemberReason] = useState('');
+  const [releaseMemberConfirmed, setReleaseMemberConfirmed] = useState(false);
+
+  const [assignMemberTarget, setAssignMemberTarget] = useState<UserProfile | null>(null);
+  const [assignMemberForm, setAssignMemberForm] = useState<{
+    targetOrgId: string;
+    role: SuperAdminAssignableMemberRole;
+    branchId: string;
+    supervisorPermissions: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+    reason: string;
+    sendOptionalPasswordReset: boolean;
+  }>({
+    targetOrgId: '',
+    role: 'employee',
+    branchId: '',
+    supervisorPermissions: {},
+    reason: '',
+    sendOptionalPasswordReset: false,
+  });
+  const [assignMemberConfirmed, setAssignMemberConfirmed] = useState(false);
+
+  const [memberDetailUid, setMemberDetailUid] = useState<string | null>(null);
 
   useEffect(() => {
     if (isSuperAdmin) {
@@ -242,6 +391,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const allUsers = superAdminOverview?.users ?? [];
   const allInvites = superAdminOverview?.managerInvites ?? [];
   const platformAuditLogs = superAdminOverview?.platformAuditLogs ?? [];
+  const allMemberOrgHistory = superAdminOverview?.memberOrgHistory ?? [];
 
   const orgMap = useMemo(() => {
     const m = new Map<string, Organization>();
@@ -312,12 +462,16 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     }
 
     let activeBranchesCount = 0;
+    let exemptBranchesCount = 0;
     let suspendedBranchesCount = 0;
     let purgeReadyBranchesCount = 0;
     let purgedBranchesCount = 0;
 
     for (const b of allBranches) {
       const evalB = evaluateBranchBillingAndGrace(b, orgMap.get(b.orgId), now);
+      if (evalB.isFeeExempt && !evalB.isPurgedFromDb) {
+        exemptBranchesCount += 1;
+      }
       if (evalB.isPurgedFromDb) {
         purgedBranchesCount += 1;
       } else if (evalB.isSuspended) {
@@ -334,6 +488,15 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       (o) => o.driveConnected && o.driveWriteVerified === true && o.driveLastHealthStatus !== 'failed'
     ).length;
 
+    const releasedMembersCount = allUsers.filter(
+      (u) => resolveMemberMembershipStatus(u) === 'released'
+    ).length;
+    const archivedMembersCount = allUsers.filter((u) => {
+      const st = resolveMemberMembershipStatus(u);
+      return st === 'archived' || (st !== 'released' && u.isActive === false);
+    }).length;
+    const activeMembersCount = allUsers.length - archivedMembersCount - releasedMembersCount;
+
     return {
       totalOrgs: organizations.length,
       activeOrgsCount,
@@ -344,14 +507,30 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       expectedMonthlyBranchesSar,
       totalBranches: allBranches.length,
       activeBranchesCount,
+      exemptBranchesCount,
       suspendedBranchesCount,
       purgeReadyBranchesCount,
       purgedBranchesCount,
       driveVerifiedCount,
       totalUsers: allUsers.length,
+      activeMembersCount,
+      archivedMembersCount,
+      releasedMembersCount,
       pendingInvitesCount: allInvites.filter((i) => i.status === 'pending').length,
     };
   }, [organizations, allBranches, allUsers, allInvites, branchesByOrg, orgMap]);
+
+  const branchMap = useMemo(() => {
+    const m = new Map<string, Branch>();
+    allBranches.forEach((b) => m.set(b.id, b));
+    return m;
+  }, [allBranches]);
+
+  const userMap = useMemo(() => {
+    const m = new Map<string, UserProfile>();
+    allUsers.forEach((u) => m.set(u.uid, u));
+    return m;
+  }, [allUsers]);
 
   const filteredOrganizations = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -395,6 +574,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       const evalB = evaluateBranchBillingAndGrace(b, parentOrg, now);
 
       if (branchFilter === 'active' && (evalB.isSuspended || evalB.isPurgedFromDb)) return false;
+      if (branchFilter === 'exempt' && (!evalB.isFeeExempt || evalB.isPurgedFromDb)) return false;
       if (
         branchFilter === 'unpaid_overdue' &&
         (evalB.paymentStatus !== 'unpaid' && evalB.paymentStatus !== 'overdue')
@@ -416,6 +596,48 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     });
   }, [allBranches, searchTerm, branchFilter, orgMap]);
 
+  const filteredMembers = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    return allUsers.filter((u) => {
+      if (memberOrgFilter !== 'all' && u.orgId !== memberOrgFilter) return false;
+      if (
+        memberOrgFilter !== 'all' &&
+        u.orgId !== memberOrgFilter &&
+        u.releasedFromOrgId !== memberOrgFilter
+      ) {
+        return false;
+      }
+      if (memberRoleFilter !== 'all' && u.role !== memberRoleFilter) return false;
+      const effectiveStatus = resolveMemberMembershipStatus(u);
+      const isReleased = effectiveStatus === 'released';
+      const isArchivedOrDisabled = !isReleased && (effectiveStatus === 'archived' || u.isActive === false);
+      if (memberStatusFilter === 'active' && (isReleased || isArchivedOrDisabled)) return false;
+      if (memberStatusFilter === 'archived' && !isArchivedOrDisabled) return false;
+      if (memberStatusFilter === 'released' && !isReleased) return false;
+
+      if (!term) return true;
+      const orgName = (orgMap.get(u.orgId)?.name || '').toLowerCase();
+      const prevOrgName = (
+        u.releasedFromOrgName ||
+        (u.releasedFromOrgId ? orgMap.get(u.releasedFromOrgId)?.name || '' : '')
+      ).toLowerCase();
+      const branchLabel = (
+        u.branchName ||
+        (u.branchId ? branchMap.get(u.branchId)?.name || '' : '')
+      ).toLowerCase();
+      return (
+        (u.displayName || '').toLowerCase().includes(term) ||
+        (u.email || '').toLowerCase().includes(term) ||
+        u.uid.toLowerCase().includes(term) ||
+        (u.orgId || '').toLowerCase().includes(term) ||
+        (u.releasedFromOrgId || '').toLowerCase().includes(term) ||
+        orgName.includes(term) ||
+        prevOrgName.includes(term) ||
+        branchLabel.includes(term)
+      );
+    });
+  }, [allUsers, memberOrgFilter, memberRoleFilter, memberStatusFilter, searchTerm, orgMap, branchMap]);
+
   const filteredInvites = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     if (!term) return allInvites;
@@ -430,15 +652,35 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
 
   const filteredAuditLogs = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    if (!term) return platformAuditLogs;
-    return platformAuditLogs.filter(
-      (l) =>
+    return platformAuditLogs.filter((l) => {
+      if (auditCategoryFilter !== 'all') {
+        const isExemption =
+          l.action.includes('EXEMPTION') || l.action.includes('LEGACY_UNRESTRICTED');
+        const isMember = l.action.startsWith('MEMBER_') || l.targetType === 'member';
+        const isInvite = l.action.startsWith('INVITE_') || l.targetType === 'invite';
+        const isBranch = l.action.startsWith('BRANCH_') && !isExemption;
+        const isOrg = !isExemption && !isMember && !isInvite && !isBranch;
+        if (auditCategoryFilter === 'exemptions' && !isExemption) return false;
+        if (auditCategoryFilter === 'members' && !isMember) return false;
+        if (auditCategoryFilter === 'invites' && !isInvite) return false;
+        if (auditCategoryFilter === 'branches' && !isBranch) return false;
+        if (auditCategoryFilter === 'organizations' && !isOrg) return false;
+      }
+      if (!term) return true;
+      const reasonStr =
+        l.metadata && typeof l.metadata.reason === 'string' ? l.metadata.reason.toLowerCase() : '';
+      const orgName = l.orgId ? (orgMap.get(l.orgId)?.name || '').toLowerCase() : '';
+      return (
         l.action.toLowerCase().includes(term) ||
+        getPlatformAuditActionLabel(l.action, language).toLowerCase().includes(term) ||
         l.details.toLowerCase().includes(term) ||
         l.targetId.toLowerCase().includes(term) ||
-        l.actorEmail.toLowerCase().includes(term)
-    );
-  }, [platformAuditLogs, searchTerm]);
+        l.actorEmail.toLowerCase().includes(term) ||
+        reasonStr.includes(term) ||
+        orgName.includes(term)
+      );
+    });
+  }, [platformAuditLogs, searchTerm, auditCategoryFilter, orgMap, language]);
 
   const selectedOrg: Organization | null = useMemo(
     () => organizations.find((o) => o.id === selectedOrgId) || null,
@@ -590,12 +832,124 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     }
   };
 
-  const handleBillingExemptionSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!exemptionModalOrg) return;
+  const runGuardedAction = async (task: () => Promise<void>, fallbackErr: string) => {
+    if (inFlightUiRef.current) return;
+    inFlightUiRef.current = true;
     clearFeedback();
     setBusyAction(true);
     try {
+      await task();
+    } catch (err: any) {
+      setActionError(err?.message || fallbackErr);
+    } finally {
+      inFlightUiRef.current = false;
+      setBusyAction(false);
+    }
+  };
+
+  const canManageMember = (member: UserProfile): boolean => {
+    if (!isAllowedSuperAdminMemberRole(member.role)) return false;
+    if ((member.email || '').trim().toLowerCase() === SUPER_ADMIN_EMAIL) return false;
+    return true;
+  };
+
+  const openOrgExemptionModal = (org: Organization) => {
+    clearFeedback();
+    setExemptionModalOrg(org);
+    setOrgExemptionMode(
+      org.billingExemptMode === 'billing_exempt' ? 'billing_exempt' : 'legacy_unrestricted'
+    );
+    setExemptionConfirmed(false);
+    setExemptionReason(
+      org.billingExempt === true
+        ? ''
+        : 'إعفاء دائم شامل معتمد من المدير الرئيسي للمؤسسة وفروعها الحالية والمستقبلية'
+    );
+  };
+
+  const openBranchExemptionModal = (branch: Branch) => {
+    clearFeedback();
+    setBranchExemptionModalTarget(branch);
+    setBranchExemptionMode(
+      branch.billingExemptMode === 'legacy_unrestricted' ? 'legacy_unrestricted' : 'billing_exempt'
+    );
+    setBranchExemptionRestoredStatus('unpaid');
+    setBranchExemptionRestoredFeeSar(
+      orgMap.get(branch.orgId)?.extraBranchMonthlyFeeSar ?? BRANCH_MONTHLY_FEE_SAR
+    );
+    setBranchExemptionConfirmed(false);
+    setBranchExemptionReason(
+      branch.billingExempt === true
+        ? ''
+        : 'إعفاء دائم للفرع معتمد من المدير الرئيسي مع حفظ سجلات الدفع التاريخية'
+    );
+  };
+
+  const openBulkBranchesExemptionModal = (org: Organization) => {
+    clearFeedback();
+    setBulkBranchExemptionOrg(org);
+    setBulkBranchExemptionMode(
+      org.billingExemptMode === 'legacy_unrestricted' ? 'legacy_unrestricted' : 'billing_exempt'
+    );
+    setBulkBranchExemptionReason('إعفاء جماعي دائم لجميع فروع المؤسسة معتمد من المدير الرئيسي');
+    setBulkBranchExemptionConfirmed(false);
+  };
+
+  const openCreateMemberModal = (defaultOrgId?: string) => {
+    clearFeedback();
+    const resolvedOrgId = defaultOrgId || organizations[0]?.id || '';
+    const firstOrgBranch = (branchesByOrg.get(resolvedOrgId) || []).find(
+      (b) => b.lifecycleStatus !== 'purged_from_db'
+    );
+    setCreateMemberForm({
+      orgId: resolvedOrgId,
+      displayName: '',
+      email: '',
+      password: '',
+      phone: '',
+      role: 'employee',
+      branchId: firstOrgBranch?.id || '',
+      supervisorPermissions: {},
+    });
+    setShowCreateMemberModal(true);
+  };
+
+  const openEditMemberModal = (member: UserProfile) => {
+    if (!canManageMember(member)) return;
+    clearFeedback();
+    const orgActiveBranches = (branchesByOrg.get(member.orgId) || []).filter(
+      (b) => b.lifecycleStatus !== 'purged_from_db'
+    );
+    const currentRole = member.role as SuperAdminAssignableMemberRole;
+    const supervisorPerms: Partial<Record<SupervisorOptionalPermissionKey, boolean>> = {};
+    for (const key of SUPERVISOR_OPTIONAL_PERMISSION_KEYS) {
+      supervisorPerms[key] = Boolean(member.permissions?.[key]);
+    }
+    setEditingMember(member);
+    setEditMemberForm({
+      displayName: member.displayName || '',
+      phone: member.phone || '',
+      role: currentRole,
+      branchId: member.branchId || orgActiveBranches[0]?.id || '',
+      supervisorPermissions: supervisorPerms,
+      reason: '',
+    });
+  };
+
+  const openMemberLifecycleModal = (member: UserProfile, mode: 'archive' | 'reactivate') => {
+    if (!canManageMember(member)) return;
+    clearFeedback();
+    setMemberLifecycleModal({ member, mode });
+    setMemberLifecycleReason(
+      mode === 'reactivate' ? 'إعادة تفعيل العضوية من لوحة المدير الرئيسي' : ''
+    );
+    setMemberLifecycleConfirmed(false);
+  };
+
+  const handleBillingExemptionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!exemptionModalOrg || !exemptionConfirmed) return;
+    await runGuardedAction(async () => {
       const currentlyExempt = exemptionModalOrg.billingExempt === true;
       if (currentlyExempt) {
         const res = await revokeSuperAdminOrgBillingExemption({
@@ -609,19 +963,228 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
         const res = await grantSuperAdminOrgBillingExemption({
           orgId: exemptionModalOrg.id,
           expectedOwnerEmail: exemptionModalOrg.ownerEmail,
+          mode: orgExemptionMode,
           reason: exemptionReason,
         });
         setActionSuccess(
-          `تم اعتماد الإعفاء الدائم الشامل للمؤسسة "${exemptionModalOrg.name}" للمالك الموثق ${res.ownerEmail} (${res.ownerId}) — سجل التدقيق: ${res.auditLogId}.`
+          `تم اعتماد الإعفاء الدائم (${orgExemptionMode}) للمؤسسة "${exemptionModalOrg.name}" للمالك الموثق ${res.ownerEmail} (${res.ownerId}) — سجل التدقيق: ${res.auditLogId}.`
         );
       }
       setExemptionModalOrg(null);
       setExemptionReason('');
-    } catch (err: any) {
-      setActionError(err?.message || 'تعذر تحديث حالة الإعفاء الدائم للمؤسسة.');
-    } finally {
-      setBusyAction(false);
-    }
+      setExemptionConfirmed(false);
+    }, 'تعذر تحديث حالة الإعفاء الدائم للمؤسسة.');
+  };
+
+  const handleBranchExemptionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!branchExemptionModalTarget || !branchExemptionConfirmed) return;
+    await runGuardedAction(async () => {
+      const isIndividuallyExempt =
+        branchExemptionModalTarget.billingExempt === true ||
+        branchExemptionModalTarget.paymentStatus === 'exempt';
+      if (isIndividuallyExempt) {
+        const res = await revokeSuperAdminBranchExemption({
+          branchId: branchExemptionModalTarget.id,
+          restoredPaymentStatus: branchExemptionRestoredStatus,
+          restoredMonthlyFeeSar: branchExemptionRestoredFeeSar,
+          reason: branchExemptionReason,
+        });
+        setActionSuccess(
+          res.parentOrgRemainsExempt
+            ? `تم إلغاء الإعفاء الفردي للفرع "${branchExemptionModalTarget.name}" (مع بقاء إعفاء المؤسسة الأم الموروث سارياً) — سجل التدقيق: ${res.auditLogId}.`
+            : `تم إلغاء الإعفاء الفردي للفرع "${branchExemptionModalTarget.name}" وإعادته لنظام الرسوم القياسي مع حفظ كامل سجلات الدفع التاريخية — سجل التدقيق: ${res.auditLogId}.`
+        );
+      } else {
+        const res = await grantSuperAdminBranchExemption({
+          branchId: branchExemptionModalTarget.id,
+          mode: branchExemptionMode,
+          reason: branchExemptionReason,
+        });
+        setActionSuccess(
+          `تم منح الإعفاء الدائم (${branchExemptionMode}) للفرع "${branchExemptionModalTarget.name}" (0 ر.س مع حفظ سجلات الدفع التاريخية) — سجل التدقيق: ${res.auditLogId}.`
+        );
+      }
+      setBranchExemptionModalTarget(null);
+      setBranchExemptionReason('');
+      setBranchExemptionConfirmed(false);
+    }, 'تعذر تحديث حالة إعفاء الفرع.');
+  };
+
+  const handleBulkBranchesExemptionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bulkBranchExemptionOrg || !bulkBranchExemptionConfirmed) return;
+    await runGuardedAction(async () => {
+      const res = await grantSuperAdminBulkOrgBranchesExemption({
+        orgId: bulkBranchExemptionOrg.id,
+        mode: bulkBranchExemptionMode,
+        reason: bulkBranchExemptionReason,
+      });
+      setActionSuccess(
+        `تم إعفاء ${res.exemptedCount} فرعاً في مؤسسة "${bulkBranchExemptionOrg.name}" بشكل دائم (${bulkBranchExemptionMode}) — سجلات التدقيق: ${res.auditLogIds.join(', ')}.`
+      );
+      setBulkBranchExemptionOrg(null);
+      setBulkBranchExemptionReason('');
+      setBulkBranchExemptionConfirmed(false);
+    }, 'تعذر تنفيذ الإعفاء الجماعي لفروع المؤسسة.');
+  };
+
+  const handleCreateMemberSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await runGuardedAction(async () => {
+      const res = await createSuperAdminOrgMember({
+        orgId: createMemberForm.orgId,
+        email: createMemberForm.email,
+        password: createMemberForm.password,
+        displayName: createMemberForm.displayName,
+        role: createMemberForm.role,
+        branchId:
+          createMemberForm.role === 'supervisor' ? undefined : createMemberForm.branchId || undefined,
+        phone: createMemberForm.phone,
+        supervisorPermissions:
+          createMemberForm.role === 'supervisor' ? createMemberForm.supervisorPermissions : undefined,
+      });
+      setActionSuccess(
+        `تم إنشاء العضو "${res.member.displayName}" (${getUserRoleLabel(res.member.role, language)}) بنجاح — سجل التدقيق: ${res.auditLogId}.`
+      );
+      setShowCreateMemberModal(false);
+    }, 'تعذر إنشاء العضو الجديد.');
+  };
+
+  const handleEditMemberSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingMember) return;
+    await runGuardedAction(async () => {
+      const res = await updateSuperAdminOrgMember({
+        memberUid: editingMember.uid,
+        displayName: editMemberForm.displayName,
+        phone: editMemberForm.phone,
+        role: editMemberForm.role,
+        branchId:
+          editMemberForm.role === 'supervisor' ? undefined : editMemberForm.branchId || undefined,
+        supervisorPermissions:
+          editMemberForm.role === 'supervisor' ? editMemberForm.supervisorPermissions : undefined,
+        reason: editMemberForm.reason,
+      });
+      setActionSuccess(
+        `تم تحديث بيانات العضو "${editMemberForm.displayName}" (${res.action}) — سجل التدقيق: ${res.auditLogId}.`
+      );
+      setEditingMember(null);
+    }, 'تعذر تحديث بيانات العضو.');
+  };
+
+  const handleMemberLifecycleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!memberLifecycleModal || !memberLifecycleConfirmed) return;
+    await runGuardedAction(async () => {
+      const { member, mode } = memberLifecycleModal;
+      if (mode === 'archive') {
+        const res = await archiveSuperAdminOrgMember({
+          memberUid: member.uid,
+          reason: memberLifecycleReason,
+        });
+        setActionSuccess(
+          `تم تعطيل وأرشفة العضو "${member.displayName}" دون حذف أي سجلات تاريخية — سجل التدقيق: ${res.auditLogId}.`
+        );
+      } else {
+        const res = await reactivateSuperAdminOrgMember({
+          memberUid: member.uid,
+          reason: memberLifecycleReason,
+        });
+        setActionSuccess(
+          `تمت إعادة تفعيل العضو "${member.displayName}" بنجاح — سجل التدقيق: ${res.auditLogId}.`
+        );
+      }
+      setMemberLifecycleModal(null);
+      setMemberLifecycleReason('');
+      setMemberLifecycleConfirmed(false);
+    }, 'تعذر تحديث حالة العضو.');
+  };
+
+  const openReleaseMemberModal = (member: UserProfile) => {
+    const parentOrg = member.orgId ? orgMap.get(member.orgId) : undefined;
+    if (!isMemberEligibleForRelease(member, parentOrg)) return;
+    clearFeedback();
+    setReleaseMemberTarget(member);
+    setReleaseMemberReason('');
+    setReleaseMemberConfirmed(false);
+  };
+
+  const handleReleaseMemberSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!releaseMemberTarget || !releaseMemberConfirmed) return;
+    await runGuardedAction(async () => {
+      const res = await releaseSuperAdminOrgMember({
+        memberUid: releaseMemberTarget.uid,
+        reason: releaseMemberReason,
+      });
+      setActionSuccess(
+        `تم فصل عضوية "${releaseMemberTarget.displayName}" نهائياً عن مؤسسته السابقة مع الاحتفاظ بحساب المصادقة وكافة السجلات التاريخية — سجل العضوية: ${res.historyId} · سجل التدقيق: ${res.auditLogId}.`
+      );
+      setReleaseMemberTarget(null);
+      setReleaseMemberReason('');
+      setReleaseMemberConfirmed(false);
+    }, 'تعذر فصل عضوية الموظف نهائياً.');
+  };
+
+  const openAssignMemberModal = (member: UserProfile) => {
+    if (!isMemberReleased(member)) return;
+    clearFeedback();
+    const activeOrgs = organizations.filter((o) => o.isActive !== false);
+    const defaultOrg =
+      activeOrgs.find((o) => o.id !== member.releasedFromOrgId) || activeOrgs[0];
+    const defaultOrgId = defaultOrg?.id || '';
+    const firstBranch = (branchesByOrg.get(defaultOrgId) || []).find(
+      (b) => b.lifecycleStatus !== 'purged_from_db'
+    );
+    setAssignMemberTarget(member);
+    setAssignMemberForm({
+      targetOrgId: defaultOrgId,
+      role: 'employee',
+      branchId: firstBranch?.id || '',
+      supervisorPermissions: {},
+      reason: '',
+      sendOptionalPasswordReset: false,
+    });
+    setAssignMemberConfirmed(false);
+  };
+
+  const handleAssignMemberSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!assignMemberTarget || !assignMemberConfirmed) return;
+    await runGuardedAction(async () => {
+      const targetOrgName =
+        orgMap.get(assignMemberForm.targetOrgId)?.name || assignMemberForm.targetOrgId;
+      const res = await assignReleasedMemberToOrganization({
+        memberUid: assignMemberTarget.uid,
+        targetOrgId: assignMemberForm.targetOrgId,
+        role: assignMemberForm.role,
+        branchId:
+          assignMemberForm.role === 'supervisor'
+            ? undefined
+            : assignMemberForm.branchId || undefined,
+        supervisorPermissions:
+          assignMemberForm.role === 'supervisor'
+            ? assignMemberForm.supervisorPermissions
+            : undefined,
+        reason: assignMemberForm.reason || undefined,
+        sendOptionalPasswordReset: assignMemberForm.sendOptionalPasswordReset,
+      });
+      setActionSuccess(
+        `تمت إعادة ربط العضو "${assignMemberTarget.displayName}" بمؤسسة "${targetOrgName}" بنفس حسابه السابق وصلاحيات جديدة مستقلة${
+          res.passwordResetSent ? ' (تم إرسال رابط إعادة تعيين كلمة المرور اختيارياً)' : ''
+        } — سجل العضوية: ${res.historyId} · سجل التدقيق: ${res.auditLogId}.`
+      );
+      setAssignMemberTarget(null);
+      setAssignMemberConfirmed(false);
+    }, 'تعذر إعادة ربط العضو بالمؤسسة المختارة.');
+  };
+
+  const handleSendSuperAdminPasswordReset = async (member: UserProfile) => {
+    await runGuardedAction(async () => {
+      const res = await sendSuperAdminMemberPasswordReset(member.uid);
+      setActionSuccess(`تم إرسال رابط إعادة تعيين كلمة المرور بنجاح إلى البريد ${res.email}.`);
+    }, 'تعذر إرسال رابط إعادة تعيين كلمة المرور.');
   };
 
   const handleInviteSubmit = async (e: React.FormEvent) => {
@@ -830,6 +1393,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   if (
                     target.tab === 'organizations' ||
                     target.tab === 'branches' ||
+                    target.tab === 'members' ||
                     target.tab === 'invites' ||
                     target.tab === 'auditLogs'
                   ) {
@@ -1053,6 +1617,11 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   icon: GitBranch,
                 },
                 {
+                  id: 'members',
+                  label: `${tr('إدارة عضويات الموظفين', 'Member Governance', 'اراکین کی رکنیت')} (${allUsers.length})`,
+                  icon: Users,
+                },
+                {
                   id: 'invites',
                   label: `${tr('دعوات المدراء', 'Manager Invites', 'مینیجر دعوت نامے')} (${allInvites.length})`,
                   icon: Mail,
@@ -1126,6 +1695,15 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
             >
               <GitBranch className="w-3.5 h-3.5" />
               <span>{tr('إضافة فرع', 'Add Branch', 'برانچ شامل کریں')}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openCreateMemberModal()}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border border-[#1764FF]/35 bg-[#1764FF]/10 text-[#1764FF] dark:text-[#6CA2FF] hover:bg-[#1764FF]/20 transition-colors"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>{tr('إضافة عضو', 'Add Member', 'رکن شامل کریں')}</span>
             </button>
 
             <button
@@ -1242,10 +1820,19 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                               {subEval.isBillingExempt ? (
                                 <div className="space-y-1">
                                   <span className="inline-block px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[11px] font-bold">
-                                    {subEval.isAllowed
+                                    {org.billingExemptMode === 'legacy_unrestricted'
+                                      ? subEval.isAllowed
+                                        ? tr('إعفاء دائم (legacy_unrestricted)', 'Permanent Exempt (legacy_unrestricted)', 'مستقل استثنیٰ (legacy_unrestricted)')
+                                        : tr('إعفاء legacy (موقوفة إدارياً)', 'Legacy Exempt (Admin Suspended)', 'مستقل استثنیٰ (انتظامی معطل)')
+                                      : subEval.isAllowed
                                       ? tr('إعفاء دائم شامل (billing_exempt)', 'Permanent Full Exemption (billing_exempt)', 'مستقل مکمل استثنیٰ (billing_exempt)')
                                       : tr('إعفاء دائم (موقوفة إدارياً)', 'Permanent Exempt (Admin Suspended)', 'مستقل استثنیٰ (انتظامی معطل)')}
                                   </span>
+                                  {org.billingExemptGrantedAt && (
+                                    <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+                                      {formatShortDate(org.billingExemptGrantedAt)} · {org.billingExemptGrantedBy || SUPER_ADMIN_EMAIL}
+                                    </div>
+                                  )}
                                   {(subEval.startDate || subEval.endDate) && (
                                     <div className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
                                       {tr('تاريخي:', 'History:', 'تاریخی:')} {formatShortDate(subEval.startDate)} → {formatShortDate(subEval.endDate)}
@@ -1255,7 +1842,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                               ) : subEval.isLegacy ? (
                                 <span className="inline-block px-2 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[11px] font-bold">
                                   {subEval.isAllowed
-                                    ? tr('قديمة معفاة (legacy_unrestricted)', 'Legacy Exempt (legacy_unrestricted)', 'سابقہ مستثنیٰ (legacy_unrestricted)')
+                                    ? tr('قديمة معفاة تلقائياً (legacy_unrestricted)', 'Implicit Legacy Exempt (legacy_unrestricted)', 'سابقہ مستثنیٰ (legacy_unrestricted)')
                                     : tr('قديمة (موقوفة)', 'Legacy (Suspended)', 'سابقہ (معطل)')}
                                 </span>
                               ) : (
@@ -1362,15 +1949,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
 
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    clearFeedback();
-                                    setExemptionModalOrg(org);
-                                    setExemptionReason(
-                                      org.billingExempt === true
-                                        ? ''
-                                        : 'إعفاء دائم شامل معتمد من المدير الرئيسي للمؤسسة وفروعها الحالية والمستقبلية'
-                                    );
-                                  }}
+                                  onClick={() => openOrgExemptionModal(org)}
                                   className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
                                     subEval.isBillingExempt
                                       ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25'
@@ -1384,6 +1963,17 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                                       : tr('إعفاء دائم', 'Permanent Exempt', 'مستقل استثنیٰ')}
                                   </span>
                                 </button>
+
+                                {orgBranches.some((b) => b.lifecycleStatus !== 'purged_from_db' && b.billingExempt !== true) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openBulkBranchesExemptionModal(org)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-slate-700 dark:text-slate-200 hover:bg-[#08C99B]/15 hover:text-[#048264] dark:hover:text-[#08C99B] transition-colors"
+                                  >
+                                    <Layers className="w-3.5 h-3.5" />
+                                    <span>{tr('إعفاء جميع الفروع', 'Exempt All Branches', 'تمام برانچز مستثنیٰ')}</span>
+                                  </button>
+                                )}
 
                                 {subEval.isAllowed ? (
                                   <button
@@ -1453,6 +2043,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 [
                   { id: 'all', label: `${tr('الكل', 'All', 'سب')} (${allBranches.length})` },
                   { id: 'active', label: `${tr('فعالة', 'Active', 'فعال')} (${stats.activeBranchesCount})` },
+                  { id: 'exempt', label: `${tr('معفاة', 'Exempt', 'مستثنیٰ')} (${stats.exemptBranchesCount})` },
                   { id: 'unpaid_overdue', label: tr('غير مدفوعة / متأخرة', 'Unpaid / Overdue', 'غیر ادا شدہ / واجب الادا') },
                   { id: 'suspended', label: `${tr('معلقة', 'Suspended', 'معطل')} (${stats.suspendedBranchesCount})` },
                   { id: 'purge_ready', label: `${tr('متجاوزة 30 يوماً', 'Past 30d Grace', '30 دن سے زائد')} (${stats.purgeReadyBranchesCount})` },
@@ -1543,8 +2134,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                               <div className="font-mono font-bold tabular-nums text-[#1764FF] dark:text-[#6CA2FF]">
                                 {evalB.monthlyFeeSar} {tr('ر.س/شهر', 'SAR/mo', 'ریال/ماہ')}
                               </div>
-                              <div className="text-[11px] mt-0.5">
-                                {tr('الحالة:', 'Status:', 'حیثیت:')}{' '}
+                              <div className="text-[11px] mt-0.5 flex flex-wrap items-center gap-1.5">
+                                <span>{tr('الحالة:', 'Status:', 'حیثیت:')}</span>
                                 <span
                                   className={`font-bold ${
                                     evalB.paymentStatus === 'paid' || evalB.paymentStatus === 'exempt'
@@ -1560,7 +2151,26 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                                     ? tr('متأخر', 'Overdue', 'واجب الادا')
                                     : tr('غير مدفوع', 'Unpaid', 'غیر ادا شدہ')}
                                 </span>
+                                {evalB.exemptionSource !== 'none' && (
+                                  <span className="inline-block px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold">
+                                    {evalB.exemptionSource === 'both'
+                                      ? tr('المؤسسة + الفرع', 'Org + Branch', 'ادارہ + برانچ')
+                                      : evalB.exemptionSource === 'organization'
+                                      ? tr('إعفاء المؤسسة', 'Org Exemption', 'ادارہ استثنیٰ')
+                                      : tr('إعفاء الفرع', 'Branch Exemption', 'برانچ استثنیٰ')}
+                                  </span>
+                                )}
                               </div>
+                              {branch.billingExempt === true && (
+                                <div className="text-[10px] text-emerald-700 dark:text-emerald-300 mt-0.5">
+                                  {branch.billingExemptMode || 'billing_exempt'} · {formatShortDate(branch.exemptGrantedAt)} · {branch.exemptGrantedBy || SUPER_ADMIN_EMAIL}
+                                </div>
+                              )}
+                              {branch.exemptReason && (
+                                <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate max-w-[230px]" title={branch.exemptReason}>
+                                  {tr('السبب:', 'Reason:', 'وجہ:')} {branch.exemptReason}
+                                </div>
+                              )}
                               <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
                                 {tr('الاستحقاق:', 'Due:', 'مقررہ تاریخ:')} {formatShortDate(evalB.feeDueAt)} ·{' '}
                                 {tr('آخر دفع:', 'Last paid:', 'آخری ادائیگی:')} {formatShortDate(evalB.lastPaidAt)}
@@ -1608,11 +2218,33 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                                 {!evalB.isPurgedFromDb && (
                                   <button
                                     type="button"
+                                    onClick={() => openBranchExemptionModal(branch)}
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
+                                      branch.billingExempt === true
+                                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25'
+                                        : 'bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] hover:bg-emerald-500/10 hover:text-emerald-700 dark:hover:text-emerald-300'
+                                    }`}
+                                  >
+                                    <ShieldCheck className="w-3.5 h-3.5" />
+                                    <span>
+                                      {branch.billingExempt === true
+                                        ? tr('إدارة الإعفاء', 'Manage Exemption', 'استثنیٰ انتظام')
+                                        : tr('إعفاء الفرع', 'Exempt Branch', 'برانچ مستثنیٰ')}
+                                    </span>
+                                  </button>
+                                )}
+
+                                {!evalB.isPurgedFromDb && branch.billingExempt !== true && (
+                                  <button
+                                    type="button"
                                     onClick={() => {
                                       clearFeedback();
                                       setPaymentModalBranch(branch);
                                       setBranchPaymentForm({
-                                        paymentStatus: branch.paymentStatus || 'paid',
+                                        paymentStatus:
+                                          branch.paymentStatus === 'exempt'
+                                            ? 'paid'
+                                            : branch.paymentStatus || 'paid',
                                         paidDateIso: todayIso,
                                         feeDueDateIso:
                                           evalB.feeDueAt?.toISOString().slice(0, 10) || nextMonthIso,
@@ -1675,6 +2307,327 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                                       <span>{tr('فحص Drive وحذف DB', 'Check Drive & Purge DB', 'Drive جانچیں اور DB حذف')}</span>
                                     </button>
                                   </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* TAB 2.5: Cross-Organization Members Management */}
+        {mainTab === 'members' && (
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] p-4 shadow-sm">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <select
+                  value={memberOrgFilter}
+                  onChange={(e) => setMemberOrgFilter(e.target.value)}
+                  className="px-3 py-1.5 rounded-lg border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-semibold"
+                >
+                  <option value="all">{tr('جميع المؤسسات', 'All Organizations', 'تمام ادارے')}</option>
+                  {organizations.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.name}
+                    </option>
+                  ))}
+                </select>
+
+                {(
+                  [
+                    { id: 'all', label: tr('كل الأدوار', 'All Roles', 'تمام کردار') },
+                    { id: 'manager', label: getUserRoleLabel('manager', language) },
+                    { id: 'supervisor', label: getUserRoleLabel('supervisor', language) },
+                    { id: 'branch_manager', label: getUserRoleLabel('branch_manager', language) },
+                    { id: 'employee', label: getUserRoleLabel('employee', language) },
+                  ] as const
+                ).map((rf) => (
+                  <button
+                    key={rf.id}
+                    type="button"
+                    onClick={() => setMemberRoleFilter(rf.id)}
+                    className={`px-3 py-1.5 rounded-lg font-semibold border transition-colors ${
+                      memberRoleFilter === rf.id
+                        ? 'bg-[#1764FF] text-white border-transparent'
+                        : 'bg-[#F5F8FF] dark:bg-[#0E203A] text-slate-600 dark:text-slate-300 border-[#DCE6FA] dark:border-[#1F3B66]'
+                    }`}
+                  >
+                    {rf.label}
+                  </button>
+                ))}
+
+                {(
+                  [
+                    { id: 'all', label: `${tr('الكل', 'All', 'سب')} (${allUsers.length})` },
+                    { id: 'active', label: `${tr('النشطون', 'Active', 'فعال')} (${stats.activeMembersCount})` },
+                    { id: 'archived', label: `${tr('المؤرشفون', 'Archived', 'آرکائیو')} (${stats.archivedMembersCount})` },
+                    { id: 'released', label: `${tr('المحررون (بدون مؤسسة)', 'Released', 'آزاد شدہ')} (${stats.releasedMembersCount})` },
+                  ] as const
+                ).map((sf) => (
+                  <button
+                    key={sf.id}
+                    type="button"
+                    onClick={() => setMemberStatusFilter(sf.id)}
+                    className={`px-3 py-1.5 rounded-lg font-semibold border transition-colors ${
+                      memberStatusFilter === sf.id
+                        ? sf.id === 'released'
+                          ? 'bg-rose-600 text-white border-transparent'
+                          : 'bg-[#048264] text-white border-transparent'
+                        : 'bg-[#F5F8FF] dark:bg-[#0E203A] text-slate-600 dark:text-slate-300 border-[#DCE6FA] dark:border-[#1F3B66]'
+                    }`}
+                  >
+                    {sf.label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() =>
+                  openCreateMemberModal(memberOrgFilter !== 'all' ? memberOrgFilter : undefined)
+                }
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-[#1764FF] hover:bg-[#1052D8] text-white transition-colors"
+              >
+                <UserPlus className="w-4 h-4" />
+                <span>{tr('إضافة عضو جديد', 'Add New Member', 'نیا رکن شامل کریں')}</span>
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-[#1764FF]/25 bg-[#1764FF]/5 p-3 text-[11px] text-slate-700 dark:text-slate-300 flex items-start gap-2">
+              <Info className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF] shrink-0 mt-0.5" />
+              <span>
+                {tr(
+                  'حوكمة عضويات الموظفين: الأرشفة تعطيل مؤقت داخل نفس المؤسسة، بينما «فصل العضوية نهائياً» يحرر الموظف من مؤسسته مع حفظ حساب المصادقة وكافة السجلات التاريخية ثم يتيح إعادة ربطه بمؤسسة نشطة أخرى بصلاحيات جديدة مستقلة. يُمنع فصل مدير المؤسسة (manager) أو المالك أو المدير الرئيسي.',
+                  'Membership Governance: Archiving temporarily disables access inside the same org, whereas Permanent Release detaches org/branch/permissions while preserving the auth account and all historical records so the same UID can be re-assigned to another active organization with fresh permissions.',
+                  'رکنیت گورننس: آرکائیو اسی ادارے میں عارضی معطلی ہے، جبکہ مستقل علیحدگی اکاؤنٹ اور تاریخی ریکارڈ محفوظ رکھتے ہوئے نئے ادارے سے منسلک کرنے کی سہولت دیتی ہے۔'
+                )}
+              </span>
+            </div>
+
+            <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] overflow-hidden shadow-sm">
+              {filteredMembers.length === 0 ? (
+                <div className="p-10 text-center text-xs text-slate-500 dark:text-slate-400">
+                  {tr(
+                    'لا يوجد أعضاء مطابقون لخيارات البحث أو التصفية.',
+                    'No members match the current search or filter.',
+                    'موجودہ تلاش یا فلٹر کے مطابق کوئی رکن نہیں ملا۔'
+                  )}
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-start border-collapse">
+                    <thead>
+                      <tr className="border-b border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                        <th className="py-3.5 px-4 text-start">{tr('العضو والبريد', 'Member & Email', 'رکن اور ای میل')}</th>
+                        <th className="py-3.5 px-4 text-start">{tr('المؤسسة الحالية / السابقة', 'Current / Previous Org', 'موجودہ / سابقہ ادارہ')}</th>
+                        <th className="py-3.5 px-4 text-start">{tr('الدور والفرع', 'Role & Branch', 'کردار اور برانچ')}</th>
+                        <th className="py-3.5 px-4 text-start">{tr('حالة العضوية والتواريخ', 'Membership & Dates', 'حیثیت اور تاریخیں')}</th>
+                        <th className="py-3.5 px-4 text-end">{tr('إجراءات الحوكمة', 'Governance Actions', 'انتظامی کارروائیاں')}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E6EEFC] dark:divide-[#1F3B66] text-xs">
+                      {filteredMembers.map((member) => {
+                        const parentOrg = member.orgId ? orgMap.get(member.orgId) : undefined;
+                        const prevOrg = member.releasedFromOrgId
+                          ? orgMap.get(member.releasedFromOrgId)
+                          : undefined;
+                        const branchObj = member.branchId ? branchMap.get(member.branchId) : undefined;
+                        const membershipStatus = resolveMemberMembershipStatus(member);
+                        const isReleased = membershipStatus === 'released';
+                        const isArchived =
+                          !isReleased && (membershipStatus === 'archived' || member.isActive === false);
+                        const editable = canManageMember(member);
+                        const releaseEligible = isMemberEligibleForRelease(member, parentOrg);
+                        const isSuperAdminEmail =
+                          (member.email || '').trim().toLowerCase() === SUPER_ADMIN_EMAIL;
+                        const isOrgOwner =
+                          Boolean(parentOrg) &&
+                          (parentOrg?.ownerId === member.uid ||
+                            (parentOrg?.ownerEmail || '').trim().toLowerCase() ===
+                              (member.email || '').trim().toLowerCase());
+                        const historyCount = allMemberOrgHistory.filter((h) => h.uid === member.uid).length;
+
+                        return (
+                          <tr
+                            key={member.uid}
+                            className="hover:bg-[#F5F8FF]/70 dark:hover:bg-[#173056]/40 transition-colors"
+                          >
+                            <td className="py-3.5 px-4 align-top">
+                              <div className="font-bold text-[#0B1B32] dark:text-white">
+                                {member.displayName}
+                              </div>
+                              <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400" dir="ltr">
+                                {member.email}
+                              </div>
+                              <div className="text-[10px] font-mono text-slate-400" dir="ltr">
+                                UID: {member.uid}
+                              </div>
+                            </td>
+
+                            <td className="py-3.5 px-4 align-top">
+                              {isReleased ? (
+                                <div className="space-y-1">
+                                  <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-700 dark:text-rose-300">
+                                    {tr('بدون مؤسسة حالياً', 'Unassigned (Released)', 'فی الحال بغیر ادارہ')}
+                                  </span>
+                                  {(member.releasedFromOrgName || prevOrg?.name || member.releasedFromOrgId) && (
+                                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                                      {tr('سابقاً:', 'Previously:', 'سابقہ:')}{' '}
+                                      <span className="font-semibold text-slate-700 dark:text-slate-200">
+                                        {member.releasedFromOrgName || prevOrg?.name || member.releasedFromOrgId}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="font-semibold text-[#0B1B32] dark:text-slate-200">
+                                    {parentOrg?.name || member.orgId}
+                                  </div>
+                                  <div className="text-[10px] font-mono text-slate-500" dir="ltr">
+                                    {member.orgId}
+                                  </div>
+                                  {member.releasedFromOrgId && (
+                                    <div className="text-[10px] text-indigo-600 dark:text-indigo-300 mt-0.5">
+                                      {tr('منقول سابقاً من:', 'Previously released from:', 'سابقہ ادارہ:')}{' '}
+                                      {member.releasedFromOrgName || prevOrg?.name || member.releasedFromOrgId}
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </td>
+
+                            <td className="py-3.5 px-4 align-top">
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded text-[11px] font-bold ${
+                                  member.role === 'manager'
+                                    ? 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300'
+                                    : member.role === 'supervisor'
+                                    ? 'bg-[#1764FF]/15 text-[#1764FF] dark:text-[#6CA2FF]'
+                                    : member.role === 'branch_manager'
+                                    ? 'bg-[#08C99B]/15 text-[#048264] dark:text-[#08C99B]'
+                                    : 'bg-slate-200 dark:bg-[#0E203A] text-slate-700 dark:text-slate-300'
+                                }`}
+                              >
+                                {getUserRoleLabel(member.role, language)}
+                              </span>
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                                {isReleased
+                                  ? tr('لا يوجد فرع مرتبط (صلاحيات مُصفَّرة)', 'No branch bound (zero permissions)', 'کوئی برانچ منسلک نہیں')
+                                  : member.role === 'manager' || member.role === 'supervisor'
+                                  ? tr('نطاق المؤسسة بالكامل', 'Organization-wide scope', 'مکمل ادارہ دائرہ')
+                                  : branchObj?.name || member.branchName || member.branchId || '—'}
+                              </div>
+                            </td>
+
+                            <td className="py-3.5 px-4 align-top">
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded text-[11px] font-bold ${
+                                  isReleased
+                                    ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300'
+                                    : isArchived
+                                    ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                    : 'bg-[#08C99B]/12 text-[#048264] dark:text-[#08C99B]'
+                                }`}
+                              >
+                                {isReleased
+                                  ? tr('محرر نهائياً (released)', 'Permanently Released', 'مستقل طور پر آزاد')
+                                  : member.isArchived === true
+                                  ? tr('مؤرشف', 'Archived', 'آرکائیو شدہ')
+                                  : member.isActive === false
+                                  ? tr('معطل', 'Disabled', 'معطل')
+                                  : tr('نشط', 'Active', 'فعال')}
+                              </span>
+                              <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-1">
+                                {tr('أنشئ:', 'Created:', 'تخلیق:')} {formatShortDate(member.createdAt)}
+                                {isReleased && member.releasedAt
+                                  ? ` · ${tr('فُصل:', 'Released:', 'الگ:')} ${formatShortDate(member.releasedAt)}`
+                                  : ` · ${tr('حدّث:', 'Updated:', 'اپ ڈیٹ:')} ${formatShortDate(member.updatedAt)}`}
+                              </div>
+                              {historyCount > 0 && (
+                                <div className="text-[10px] text-indigo-600 dark:text-indigo-300 mt-0.5 font-semibold">
+                                  {tr(`سجلات العضوية: ${historyCount}`, `Membership History: ${historyCount}`, `رکنیت ریکارڈز: ${historyCount}`)}
+                                </div>
+                              )}
+                            </td>
+
+                            <td className="py-3.5 px-4 align-top text-end">
+                              <div className="inline-flex flex-wrap justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setMemberDetailUid(member.uid)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] hover:border-[#1764FF] text-slate-700 dark:text-slate-200"
+                                >
+                                  <History className="w-3.5 h-3.5" />
+                                  <span>{tr('التفاصيل والسجل', 'Details & History', 'تفصیلات')}</span>
+                                </button>
+
+                                {isReleased && editable ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => openAssignMemberModal(member)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-[#1764FF] hover:bg-[#1052D8] text-white"
+                                  >
+                                    <Link2 className="w-3.5 h-3.5" />
+                                    <span>{tr('إعادة ربط بمؤسسة', 'Assign to Org', 'ادارے سے منسلک کریں')}</span>
+                                  </button>
+                                ) : editable && !isOrgOwner ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => openEditMemberModal(member)}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] hover:bg-[#1764FF]/10 hover:text-[#1764FF] dark:hover:text-[#6CA2FF]"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" />
+                                      <span>{tr('تعديل / نقل فرع', 'Edit / Transfer', 'ترمیم / منتقلی')}</span>
+                                    </button>
+                                    {isArchived ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => openMemberLifecycleModal(member, 'reactivate')}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-[#08C99B]/12 text-[#048264] dark:text-[#08C99B] hover:bg-[#08C99B]/20"
+                                      >
+                                        <RotateCcw className="w-3.5 h-3.5" />
+                                        <span>{tr('إعادة تفعيل', 'Reactivate', 'دوبارہ فعال')}</span>
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => openMemberLifecycleModal(member, 'archive')}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25"
+                                      >
+                                        <Archive className="w-3.5 h-3.5" />
+                                        <span>{tr('أرشفة', 'Archive', 'آرکائیو')}</span>
+                                      </button>
+                                    )}
+                                    {releaseEligible && (
+                                      <button
+                                        type="button"
+                                        onClick={() => openReleaseMemberModal(member)}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-rose-500/15 text-rose-700 dark:text-rose-300 hover:bg-rose-500/25 border border-rose-500/30"
+                                      >
+                                        <Unlink className="w-3.5 h-3.5" />
+                                        <span>{tr('فصل العضوية نهائياً', 'Release Permanently', 'مستقل علیحدگی')}</span>
+                                      </button>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-[#0E203A] text-slate-500 dark:text-slate-400 text-[11px] font-semibold">
+                                    <Lock className="w-3 h-3" />
+                                    <span>
+                                      {isSuperAdminEmail
+                                        ? tr('محمي — المدير الرئيسي', 'Protected — Super Admin', 'محفوظ — سپر ایڈمن')
+                                        : isOrgOwner
+                                        ? tr('محمي — مالك المؤسسة', 'Protected — Org Owner', 'محفوظ — ادارہ مالک')
+                                        : tr('محمي — مدير المؤسسة', 'Protected — Org Manager', 'محفوظ — ادارہ مینیجر')}
+                                    </span>
+                                  </span>
                                 )}
                               </div>
                             </td>
@@ -1782,47 +2735,134 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
           </section>
         )}
 
-        {/* TAB 4: Platform Audit Logs */}
+        {/* TAB 4: Platform Audit Logs (Strictly Read-Only & Append-Only) */}
         {mainTab === 'auditLogs' && (
-          <section className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] overflow-hidden shadow-sm">
-            {filteredAuditLogs.length === 0 ? (
-              <div className="p-10 text-center text-xs text-slate-500 dark:text-slate-400">
-                {tr(
-                  'لا توجد أحداث مسجلة في سجل عمليات صاحب الموقع حتى الآن.',
-                  'No events recorded in the platform owner audit log yet.',
-                  'پلیٹ فارم مالک کے آڈٹ لاگ میں ابھی تک کوئی سرگرمی درج نہیں ہے۔'
-                )}
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {(
+                  [
+                    { id: 'all', label: `${tr('الكل', 'All', 'سب')} (${platformAuditLogs.length})` },
+                    { id: 'exemptions', label: tr('الإعفاءات', 'Exemptions', 'استثنیٰ') },
+                    { id: 'members', label: tr('الأعضاء', 'Members', 'اراکین') },
+                    { id: 'organizations', label: tr('المؤسسات', 'Organizations', 'ادارے') },
+                    { id: 'branches', label: tr('الفروع', 'Branches', 'برانچز') },
+                    { id: 'invites', label: tr('الدعوات', 'Invites', 'دعوتیں') },
+                  ] as const
+                ).map((cf) => (
+                  <button
+                    key={cf.id}
+                    type="button"
+                    onClick={() => setAuditCategoryFilter(cf.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                      auditCategoryFilter === cf.id
+                        ? 'bg-[#1764FF] text-white border-transparent'
+                        : 'bg-white dark:bg-[#122543] text-slate-600 dark:text-slate-300 border-[#DCE6FA] dark:border-[#1F3B66]'
+                    }`}
+                  >
+                    {cf.label}
+                  </button>
+                ))}
               </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-start border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] text-[11px] font-bold text-slate-600 dark:text-slate-300">
-                      <th className="py-3.5 px-4 text-start">{tr('الوقت', 'Timestamp', 'وقت')}</th>
-                      <th className="py-3.5 px-4 text-start">{tr('العملية', 'Action', 'کارروائی')}</th>
-                      <th className="py-3.5 px-4 text-start">{tr('الهدف', 'Target', 'ہدف')}</th>
-                      <th className="py-3.5 px-4 text-start">{tr('التفاصيل', 'Details', 'تفصیلات')}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E6EEFC] dark:divide-[#1F3B66] text-xs">
-                    {filteredAuditLogs.map((log: PlatformAuditLog) => (
-                      <tr key={log.id} className="hover:bg-[#F5F8FF]/60 dark:hover:bg-[#173056]/30">
-                        <td className="py-3 px-4 font-mono text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap" dir="ltr">
-                          {formatIsoDate(log.timestamp)}
-                        </td>
-                        <td className="py-3 px-4 font-mono text-[11px] font-bold text-[#1764FF] dark:text-[#6CA2FF]">
-                          {log.action}
-                        </td>
-                        <td className="py-3 px-4 font-mono text-[11px] text-slate-600 dark:text-slate-300">
-                          {log.targetType}: {log.targetId}
-                        </td>
-                        <td className="py-3 px-4 text-slate-700 dark:text-slate-200">{log.details}</td>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-[#0E203A] text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                <Lock className="w-3.5 h-3.5 text-[#1764FF]" />
+                <span>{tr('سجل للقراءة فقط — غير قابل للتعديل أو الحذف', 'Read-only immutable audit log', 'صرف مطالعہ کے لیے مستقل آڈٹ لاگ')}</span>
+              </span>
+            </div>
+
+            <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] overflow-hidden shadow-sm">
+              {filteredAuditLogs.length === 0 ? (
+                <div className="p-10 text-center text-xs text-slate-500 dark:text-slate-400">
+                  {tr(
+                    'لا توجد أحداث مطابقة في سجل عمليات صاحب الموقع.',
+                    'No matching events in the platform owner audit log.',
+                    'پلیٹ فارم مالک کے آڈٹ لاگ میں کوئی مماثل سرگرمی نہیں ملی۔'
+                  )}
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-start border-collapse">
+                    <thead>
+                      <tr className="border-b border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                        <th className="py-3.5 px-4 text-start">{tr('الوقت', 'Timestamp', 'وقت')}</th>
+                        <th className="py-3.5 px-4 text-start">{tr('نوع العملية', 'Action Type', 'کارروائی کی قسم')}</th>
+                        <th className="py-3.5 px-4 text-start">{tr('المؤسسة / الهدف', 'Organization & Target', 'ادارہ / ہدف')}</th>
+                        <th className="py-3.5 px-4 text-start">{tr('المنفّذ والنتيجة', 'Actor & Result', 'کارکن اور نتیجہ')}</th>
+                        <th className="py-3.5 px-4 text-start">{tr('السبب والتفاصيل', 'Reason & Details', 'وجہ اور تفصیلات')}</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                    </thead>
+                    <tbody className="divide-y divide-[#E6EEFC] dark:divide-[#1F3B66] text-xs">
+                      {filteredAuditLogs.map((log: PlatformAuditLog) => {
+                        const targetOrg = log.orgId ? orgMap.get(log.orgId) : undefined;
+                        const targetBranch =
+                          log.targetType === 'branch' ? branchMap.get(log.targetId) : undefined;
+                        const targetMember =
+                          log.targetType === 'member' ? userMap.get(log.targetId) : undefined;
+                        const reasonText =
+                          log.metadata && typeof log.metadata.reason === 'string'
+                            ? log.metadata.reason
+                            : null;
+
+                        return (
+                          <tr key={log.id} className="hover:bg-[#F5F8FF]/60 dark:hover:bg-[#173056]/30">
+                            <td className="py-3 px-4 font-mono text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap align-top" dir="ltr">
+                              {formatIsoDate(log.timestamp)}
+                            </td>
+                            <td className="py-3 px-4 align-top">
+                              <div className="font-bold text-[#0B1B32] dark:text-white">
+                                {getPlatformAuditActionLabel(log.action, language)}
+                              </div>
+                              <div className="font-mono text-[10px] text-[#1764FF] dark:text-[#6CA2FF]" dir="ltr">
+                                {log.action}
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 align-top text-[11px]">
+                              {targetOrg && (
+                                <div className="font-semibold text-[#0B1B32] dark:text-slate-200">
+                                  {targetOrg.name}
+                                </div>
+                              )}
+                              {targetBranch && (
+                                <div className="text-slate-600 dark:text-slate-300">
+                                  {tr('الفرع:', 'Branch:', 'برانچ:')} {targetBranch.name} ({targetBranch.code})
+                                </div>
+                              )}
+                              {targetMember && (
+                                <div className="text-slate-600 dark:text-slate-300">
+                                  {tr('العضو:', 'Member:', 'رکن:')} {targetMember.displayName}
+                                </div>
+                              )}
+                              <div className="font-mono text-[10px] text-slate-500 dark:text-slate-400" dir="ltr">
+                                {log.targetType}: {log.targetId}
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 align-top text-[11px]">
+                              <div className="font-mono text-slate-700 dark:text-slate-300" dir="ltr">
+                                {log.actorEmail}
+                              </div>
+                              <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded bg-[#08C99B]/12 text-[#048264] dark:text-[#08C99B] text-[10px] font-bold">
+                                <CheckCircle2 className="w-3 h-3" />
+                                <span>{tr('مكتمل ذرياً', 'Atomic Success', 'کامیاب')}</span>
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 align-top text-slate-700 dark:text-slate-200 max-w-md">
+                              {reasonText && (
+                                <div className="text-[11px] font-semibold text-[#0B1B32] dark:text-white mb-0.5">
+                                  {tr('السبب:', 'Reason:', 'وجہ:')} {reasonText}
+                                </div>
+                              )}
+                              <div className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                                {log.details}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </section>
         )}
 
@@ -2660,7 +3700,6 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                       <option value="paid">{tr('مدفوع', 'Paid', 'ادا شدہ')}</option>
                       <option value="unpaid">{tr('غير مدفوع', 'Unpaid', 'غیر ادا شدہ')}</option>
                       <option value="overdue">{tr('متأخر', 'Overdue', 'واجب الادا')}</option>
-                      <option value="exempt">{tr('معفى', 'Exempt', 'مستثنیٰ')}</option>
                     </select>
                   </div>
                   <div>
@@ -2785,7 +3824,6 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                     className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
                   >
                     <option value="paid">{tr('مدفوع (50 ر.س)', 'Paid (50 SAR)', 'ادا شدہ (50 ریال)')}</option>
-                    <option value="exempt">{tr('معفى', 'Exempt', 'مستثنیٰ')}</option>
                     <option value="unpaid">{tr('غير مدفوع', 'Unpaid', 'غیر ادا شدہ')}</option>
                   </select>
                 </div>
@@ -2954,78 +3992,177 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
 
             <div className="p-6 overflow-y-auto space-y-3 text-xs">
               {detailTab === 'branches' ? (
-                selectedOrgBranches.map((b) => {
-                  const evalB = evaluateBranchBillingAndGrace(b, selectedOrg);
-                  return (
-                    <div key={b.id} className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between gap-3">
-                      <div>
-                        <div className="font-bold text-[#0B1B32] dark:text-white">{b.name} ({b.code})</div>
-                        <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
-                          {tr('الاستحقاق:', 'Due:', 'مقررہ تاریخ:')} {formatShortDate(evalB.feeDueAt)} · {evalB.monthlyFeeSar} {tr('ر.س/ش', 'SAR/mo', 'ریال/ماہ')} ({evalB.paymentStatus})
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#DCE6FA] dark:border-[#1F3B66]">
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {tr(
+                        'إدارة الإعفاء الفردي أو الجماعي لفروع المؤسسة مع الحفاظ على سجل المدفوعات التاريخي.',
+                        'Manage individual or bulk branch exemptions while preserving historical payments.',
+                        'تاریخی ادائیگیوں کو محفوظ رکھتے ہوئے انفرادی یا اجتماعی برانچ استثنیٰ کا انتظام کریں۔'
+                      )}
+                    </span>
+                    {selectedOrgBranches.some((b) => b.lifecycleStatus !== 'purged_from_db' && b.billingExempt !== true) && (
+                      <button
+                        type="button"
+                        onClick={() => openBulkBranchesExemptionModal(selectedOrg)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25"
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        <span>{tr('إعفاء جميع فروع المؤسسة', 'Exempt All Org Branches', 'تمام برانچز مستثنیٰ کریں')}</span>
+                      </button>
+                    )}
+                  </div>
+                  {selectedOrgBranches.map((b) => {
+                    const evalB = evaluateBranchBillingAndGrace(b, selectedOrg);
+                    return (
+                      <div key={b.id} className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="font-bold text-[#0B1B32] dark:text-white flex items-center gap-2">
+                            <span>{b.name} ({b.code})</span>
+                            {evalB.exemptionSource !== 'none' && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px]">
+                                {evalB.exemptionSource === 'both'
+                                  ? tr('المؤسسة + الفرع', 'Org + Branch', 'ادارہ + برانچ')
+                                  : evalB.exemptionSource === 'organization'
+                                  ? tr('إعفاء المؤسسة', 'Org Exemption', 'ادارہ استثنیٰ')
+                                  : tr('إعفاء الفرع', 'Branch Exemption', 'برانچ استثنیٰ')}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                            {tr('الاستحقاق:', 'Due:', 'مقررہ تاریخ:')} {formatShortDate(evalB.feeDueAt)} · {evalB.monthlyFeeSar} {tr('ر.س/ش', 'SAR/mo', 'ریال/ماہ')} ({evalB.paymentStatus})
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {!evalB.isPurgedFromDb && (
+                            <button
+                              type="button"
+                              onClick={() => openBranchExemptionModal(b)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] hover:border-emerald-500 text-emerald-700 dark:text-emerald-300"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              <span>
+                                {b.billingExempt === true
+                                  ? tr('إدارة الإعفاء', 'Manage Exemption', 'استثنیٰ انتظام')
+                                  : tr('إعفاء الفرع', 'Exempt Branch', 'برانچ مستثنیٰ')}
+                              </span>
+                            </button>
+                          )}
+                          <span className="text-[11px] font-bold">
+                            {evalB.isPurgedFromDb
+                              ? tr('منظف', 'Purged', 'صاف شدہ')
+                              : evalB.isSuspended
+                              ? tr('معلق', 'Suspended', 'معطل')
+                              : tr('نشط', 'Active', 'فعال')}
+                          </span>
                         </div>
                       </div>
-                      <span className="text-[11px] font-bold">
-                        {evalB.isPurgedFromDb
-                          ? tr('منظف', 'Purged', 'صاف شدہ')
-                          : evalB.isSuspended
-                          ? tr('معلق', 'Suspended', 'معطل')
-                          : tr('نشط', 'Active', 'فعال')}
-                      </span>
-                    </div>
-                  );
-                })
+                    );
+                  })}
+                </>
               ) : (
-                selectedOrgUsers.map((u) => (
-                  <div key={u.uid} className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between gap-3">
-                    <div>
-                      <div className="font-bold text-[#0B1B32] dark:text-white">{u.displayName}</div>
-                      <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400" dir="ltr">{u.email}</div>
-                    </div>
-                    <div className="text-end">
-                      <div className="font-bold">{getUserRoleLabel(u.role, language)}</div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                        {u.isActive ? tr('نشط', 'Active', 'فعال') : tr('معطل', 'Disabled', 'معطل')}
-                      </div>
-                    </div>
+                <>
+                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-[#DCE6FA] dark:border-[#1F3B66]">
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {tr(
+                        'إدارة أعضاء المؤسسة (مسؤول، مسؤول فرع، موظف) دون حذف أي حساب أو تعديل مدير المؤسسة.',
+                        'Manage organization operational members without deleting accounts or altering the manager.',
+                        'مینیجر یا صارف حذف کیے بغیر ادارے کے اراکین کا انتظام کریں۔'
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => openCreateMemberModal(selectedOrg.id)}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#1764FF] text-white hover:bg-[#1052D8]"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" />
+                      <span>{tr('إضافة عضو للمؤسسة', 'Add Org Member', 'رکن شامل کریں')}</span>
+                    </button>
                   </div>
-                ))
+                  {selectedOrgUsers.map((u) => {
+                    const editable = canManageMember(u);
+                    const isArchived = u.isArchived === true || u.isActive === false;
+                    return (
+                      <div key={u.uid} className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="font-bold text-[#0B1B32] dark:text-white">{u.displayName}</div>
+                          <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400" dir="ltr">{u.email}</div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            {getUserRoleLabel(u.role, language)} ·{' '}
+                            {u.branchName || (u.branchId ? branchMap.get(u.branchId)?.name : '') || tr('نطاق المؤسسة', 'Org-wide', 'مکمل ادارہ')} ·{' '}
+                            {isArchived ? tr('مؤرشف/معطل', 'Archived/Disabled', 'آرکائیو/معطل') : tr('نشط', 'Active', 'فعال')}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          {editable ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => openEditMemberModal(u)}
+                                className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] hover:text-[#1764FF]"
+                              >
+                                {tr('تعديل', 'Edit', 'ترمیم')}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openMemberLifecycleModal(u, isArchived ? 'reactivate' : 'archive')
+                                }
+                                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
+                                  isArchived
+                                    ? 'bg-[#08C99B]/15 text-[#048264] dark:text-[#08C99B]'
+                                    : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                }`}
+                              >
+                                {isArchived
+                                  ? tr('إعادة تفعيل', 'Reactivate', 'دوبارہ فعال')
+                                  : tr('أرشفة', 'Archive', 'آرکائیو')}
+                              </button>
+                            </>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-200/70 dark:bg-[#122543] text-[10px] text-slate-500">
+                              <Lock className="w-3 h-3" />
+                              <span>{tr('محمي', 'Protected', 'محفوظ')}</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
               )}
             </div>
           </div>
         </div>
       )}
 
-      {/* MODAL: Official Permanent Billing Exemption (Super Admin Only — Owner-Verified & Atomically Audited) */}
+      {/* MODAL 11: Official Permanent Organization Exemption (legacy_unrestricted & billing_exempt) */}
       {exemptionModalOrg && (() => {
         const isCurrentlyExempt = exemptionModalOrg.billingExempt === true;
-        const ownerEmailLower = (exemptionModalOrg.ownerEmail || '').trim().toLowerCase();
-        const ownerIdClean = (exemptionModalOrg.ownerId || '').trim();
-        const matchedOwnerUser = ownerIdClean
-          ? allUsers.find((u) => u.uid === ownerIdClean)
-          : undefined;
-        const ownerDocVerified = Boolean(
-          ownerIdClean &&
-            ownerEmailLower.length >= 3 &&
-            matchedOwnerUser &&
-            matchedOwnerUser.orgId === exemptionModalOrg.id &&
-            matchedOwnerUser.role === 'manager' &&
-            (matchedOwnerUser.email || '').trim().toLowerCase() === ownerEmailLower
-        );
+        const orgBranches = branchesByOrg.get(exemptionModalOrg.id) || [];
+        const precheck = verifyOrganizationExemptionEligibility({
+          org: exemptionModalOrg,
+          users: allUsers,
+          branches: orgBranches,
+          expectedOwnerEmail: exemptionModalOrg.ownerEmail,
+          targetMode: orgExemptionMode,
+        });
         const canSubmit =
           !busyAction &&
+          exemptionConfirmed &&
           exemptionReason.trim().length >= 5 &&
-          (isCurrentlyExempt || ownerDocVerified);
+          (isCurrentlyExempt || precheck.eligible);
 
         return (
-          <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+          <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+            <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden my-8">
               <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
                 <h2 className="font-bold text-base flex items-center gap-2">
                   <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
                   <span>
                     {isCurrentlyExempt
-                      ? tr('إلغاء الإعفاء الدائم الشامل', 'Revoke Permanent Billing Exemption', 'مستقل فیس استثنیٰ منسوخ کریں')
-                      : tr('منح الإعفاء الدائم الشامل', 'Grant Permanent Full Billing Exemption', 'مستقل مکمل فیس استثنیٰ دیں')}
+                      ? tr('إدارة / إلغاء الإعفاء الدائم للمؤسسة', 'Manage / Revoke Org Exemption', 'ادارے کا مستقل استثنیٰ انتظام/منسوخ')
+                      : tr('منح إعفاء دائم شامل للمؤسسة', 'Grant Permanent Org Exemption', 'ادارے کو مستقل مکمل استثنیٰ دیں')}
                   </span>
                 </h2>
                 <button
@@ -3037,63 +4174,118 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 </button>
               </div>
 
-              <form onSubmit={handleBillingExemptionSubmit} className="p-6 space-y-4 text-xs">
-                <div className="p-4 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-2">
+              <form onSubmit={handleBillingExemptionSubmit} className="p-6 space-y-4 text-xs max-h-[82vh] overflow-y-auto">
+                <div className="p-4 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-slate-500">{tr('المؤسسة:', 'Organization:', 'ادارہ:')}</span>
                     <span className="font-bold text-[#0B1B32] dark:text-white">{exemptionModalOrg.name}</span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-slate-500">{tr('معرّف المؤسسة (orgId):', 'Org ID:', 'ادارہ آئی ڈی:')}</span>
-                    <span className="font-mono text-[#0B1B32] dark:text-slate-200" dir="ltr">{exemptionModalOrg.id}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-slate-500">{tr('معرّف المالك (ownerId):', 'Owner UID:', 'مالک آئی ڈی:')}</span>
-                    <span className="font-mono text-[#0B1B32] dark:text-slate-200" dir="ltr">
-                      {ownerIdClean || tr('غير مربوط بعد', 'Not linked yet', 'ابھی منسلک نہیں')}
+                    <span className="text-slate-500">{tr('معرّف المؤسسة / المالك:', 'Org ID / Owner UID:', 'ادارہ / مالک آئی ڈی:')}</span>
+                    <span className="font-mono text-[11px]" dir="ltr">
+                      {exemptionModalOrg.id} · {exemptionModalOrg.ownerId || '—'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-slate-500">{tr('بريد المالك الموحّد:', 'Normalized Owner Email:', 'مالک کی ای میل:')}</span>
-                    <span className="font-mono text-[#0B1B32] dark:text-slate-200" dir="ltr">{ownerEmailLower || '—'}</span>
+                    <span className="text-slate-500">{tr('بريد المالك:', 'Owner Email:', 'مالک ای میل:')}</span>
+                    <span className="font-mono text-[11px]" dir="ltr">{exemptionModalOrg.ownerEmail || '—'}</span>
                   </div>
-                  <div className="pt-2 border-t border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between gap-2">
-                    <span className="text-slate-500">{tr('التحقق من وثيقة المالك (users):', 'Owner Doc Verification:', 'مالک دستاویز کی تصدیق:')}</span>
-                    {ownerDocVerified ? (
-                      <span className="inline-flex items-center gap-1 font-bold text-emerald-700 dark:text-emerald-400">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>{tr('مطابق وموثّق', 'Verified Match', 'تصدیق شدہ')}</span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 font-bold text-rose-600 dark:text-rose-400">
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                        <span>{tr('غير مكتمل — لا يمكن المنح', 'Unverified — Blocked', 'غیر تصدیق شدہ — ممنوع')}</span>
-                      </span>
-                    )}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('الفروع المشمولة حالياً:', 'Covered Branches:', 'شامل برانچز:')}</span>
+                    <span className="font-mono font-bold">
+                      {precheck.branchesInventory.totalBranchesCount} ({tr('نشطة:', 'active:', 'فعال:')} {precheck.branchesInventory.activeBranchesCount})
+                    </span>
                   </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('الحالة الحالية:', 'Current Mode:', 'موجودہ حالت:')}</span>
+                    <span className="font-bold text-emerald-700 dark:text-emerald-300">
+                      {isCurrentlyExempt
+                        ? exemptionModalOrg.billingExemptMode || 'billing_exempt'
+                        : precheck.currentSubscriptionState || 'standard'}
+                    </span>
+                  </div>
+                  {exemptionModalOrg.billingExemptGrantedAt && (
+                    <div className="pt-1.5 border-t border-[#DCE6FA] dark:border-[#1F3B66] text-[11px] text-slate-600 dark:text-slate-300">
+                      {tr('تاريخ آخر منح:', 'Last Granted:', 'آخری منظوری:')} {formatShortDate(exemptionModalOrg.billingExemptGrantedAt)} · {exemptionModalOrg.billingExemptGrantedBy || SUPER_ADMIN_EMAIL}
+                      {exemptionModalOrg.billingExemptReason && (
+                        <div className="text-slate-500 mt-0.5">{tr('السبب السابق:', 'Grant Reason:', 'وجہ:')} {exemptionModalOrg.billingExemptReason}</div>
+                      )}
+                    </div>
+                  )}
+                  {exemptionModalOrg.billingExemptRevokedAt && (
+                    <div className="pt-1.5 border-t border-[#DCE6FA] dark:border-[#1F3B66] text-[11px] text-amber-700 dark:text-amber-300">
+                      {tr('سجل إلغاء سابق:', 'Previous Revocation:', 'سابقہ منسوخی:')} {formatShortDate(exemptionModalOrg.billingExemptRevokedAt)} · {exemptionModalOrg.billingExemptRevokedBy || '—'}
+                      {exemptionModalOrg.billingExemptRevokeReason && (
+                        <div className="mt-0.5">{exemptionModalOrg.billingExemptRevokeReason}</div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
-                {!isCurrentlyExempt && !ownerDocVerified && (
-                  <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-700 dark:text-rose-300 leading-relaxed">
-                    {tr(
-                      'لا يمكن منح الإعفاء الدائم اعتماداً على البريد الإلكتروني وحده. يجب أن يكون للمؤسسة ownerId مربوط بوثيقة users/{ownerId} مطابقة بدور manager ونفس البريد والمؤسسة.',
-                      'Permanent exemption cannot be granted by email alone. The organization must have a bound ownerId matching a users/{ownerId} manager document with the same orgId and email.',
-                      'صرف ای میل کی بنیاد پر مستقل استثنیٰ نہیں دیا جا سکتا۔ مالک کی ownerId اور users دستاویز کی تصدیق لازمی ہے۔'
-                    )}
-                  </div>
+                {!isCurrentlyExempt && (
+                  <>
+                    <div className="space-y-1.5">
+                      <div className="font-bold text-[#0B1B32] dark:text-white">
+                        {tr('نتيجة الفحص الأمني قبل المنح (7 نقاط تحقق):', 'Pre-Grant Security Verification (7 Checks):', 'منظوری سے قبل سکیورٹی جانچ:')}
+                      </div>
+                      <div className="space-y-1 max-h-44 overflow-y-auto p-3 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66]">
+                        {precheck.checks.map((chk) => (
+                          <div key={chk.key} className="flex items-start gap-2 text-[11px]">
+                            {chk.passed ? (
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                            ) : (
+                              <XCircle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                            )}
+                            <div>
+                              <span className="font-bold">{chk.labelAr}:</span>{' '}
+                              <span className={chk.passed ? 'text-slate-600 dark:text-slate-300' : 'text-rose-600 dark:text-rose-400 font-semibold'}>
+                                {chk.detailAr}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold mb-1">
+                        {tr('تصنيف الإعفاء الدائم للمؤسسة *', 'Permanent Exemption Classification *', 'مستقل استثنیٰ کی درجہ بندی *')}
+                      </label>
+                      <select
+                        value={orgExemptionMode}
+                        onChange={(e) => setOrgExemptionMode(e.target.value as ExemptionClassification)}
+                        className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-semibold"
+                      >
+                        <option value="legacy_unrestricted">
+                          {tr(
+                            'legacy_unrestricted — إعفاء قديم/غير مقيد دائم (قابل للإلغاء لاحقاً)',
+                            'legacy_unrestricted — Permanent Unrestricted Exemption (Revocable)',
+                            'legacy_unrestricted — مستقل غیر محدود استثنیٰ'
+                          )}
+                        </option>
+                        <option value="billing_exempt">
+                          {tr(
+                            'billing_exempt — إعفاء مالي دائم شامل (0 ر.س لجميع الرسوم والفروع)',
+                            'billing_exempt — Permanent Full Billing Exemption (0 SAR all fees & branches)',
+                            'billing_exempt — مستقل مکمل مالی استثنیٰ'
+                          )}
+                        </option>
+                      </select>
+                    </div>
+                  </>
                 )}
 
-                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-slate-700 dark:text-slate-200 leading-relaxed">
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-slate-700 dark:text-slate-200 leading-relaxed">
                   {isCurrentlyExempt
                     ? tr(
-                        'سيؤدي الإلغاء إلى إعادة المؤسسة لنظام الاشتراكات القياسي فوراً دون حذف أي سجلات تاريخية للاشتراكات أو الفواتير، مع تسجيل الإجراء ذرياً في platformAuditLogs.',
-                        'Revoking restores standard subscription rules immediately without deleting any historical billing records, coupled atomically with a platformAuditLogs entry.',
-                        'منسوخی کے بعد ادارہ بغیر کوئی تاریخی ریکارڈ حذف کیے معمول کے سبسکرپشن نظام پر واپس آ جائے گا۔'
+                        'يُلغي هذا الإجراء الإعفاء الصريح ويعيد المؤسسة لنظام الرسوم القياسي دون حذف أي بيانات اشتراكات أو فواتير تاريخية، مع تسجيل ذري في platformAuditLogs.',
+                        'Revoking restores standard billing immediately without deleting historical subscription or invoice data, atomically logged in platformAuditLogs.',
+                        'منسوخی سے ادارہ تاریخی ڈیٹا حذف کیے بغیر معمول کے بلنگ نظام پر واپس آ جاتا ہے۔'
                       )
                     : tr(
-                        'يشمل الإعفاء الدائم الشامل: رسوم الاشتراك الحالية والمستقبلية، رسوم التأسيس، رسوم إعادة التنشيط، وجميع الفروع الحالية والمستقبلية (0 ر.س) مع الاحتفاظ بكامل السجلات التاريخية دون حذف، وربط ذرّي إلزامي بسجل platformAuditLogs.',
-                        'Full permanent exemption covers all current & future subscription fees, setup/reactivation fees, and all current & future branches (0 SAR), preserving all historical records and creating a mandatory atomic platformAuditLogs entry.',
-                        'یہ مستقل استثنیٰ موجودہ اور مستقبل کی تمام سبسکرپشن، سیٹ اپ اور برانچ فیس (0 ریال) کا احاطہ کرتا ہے اور تمام تاریخی ریکارڈز محفوظ رہتے ہیں۔'
+                        'يشمل الإعفاء رسوم الاشتراك والتأسيس وإعادة التنشيط وجميع الفروع الحالية والمستقبلية (0 ر.س) مع الاحتفاظ الكامل بكافة السجلات التاريخية دون حذف أو تصفير.',
+                        'Covers current & future subscription, setup, reactivation, and branch fees (0 SAR) while preserving 100% of historical records untouched.',
+                        'یہ استثنیٰ تمام موجودہ اور مستقبل کی فیسوں (0 ریال) کا احاطہ کرتا ہے اور تاریخی ریکارڈز محفوظ رہتے ہیں۔'
                       )}
                 </div>
 
@@ -3110,14 +4302,31 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                     rows={3}
                     value={exemptionReason}
                     onChange={(e) => setExemptionReason(e.target.value)}
-                    placeholder={
-                      isCurrentlyExempt
-                        ? tr('اكتب سبب إلغاء الإعفاء للتوثيق في سجل المنصة...', 'Enter revocation reason for platform audit log...', 'منسوخی کی وجہ درج کریں...')
-                        : tr('اكتب سبب اعتماد الإعفاء الدائم للتوثيق في سجل المنصة...', 'Enter exemption approval reason for platform audit log...', 'استثنیٰ کی وجہ درج کریں...')
-                    }
                     className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] outline-none focus:border-[#1764FF]"
                   />
                 </div>
+
+                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={exemptionConfirmed}
+                    onChange={(e) => setExemptionConfirmed(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span className="font-semibold text-amber-900 dark:text-amber-200">
+                    {isCurrentlyExempt
+                      ? tr(
+                          'أؤكد مراجعة تفاصيل المؤسسة والموافقة على إلغاء الإعفاء الدائم وتوثيقه في سجل المنصة.',
+                          'I confirm revoking this permanent exemption and recording an immutable audit entry.',
+                          'میں اس مستقل استثنیٰ کی منسوخی اور آڈٹ لاگ اندراج کی تصدیق کرتا ہوں۔'
+                        )
+                      : tr(
+                          `أؤكد التحقق من هوية المؤسسة والمالك والموافقة على اعتماد الإعفاء (${orgExemptionMode}) وتوثيقه ذرياً.`,
+                          `I confirm verifying the organization & owner and granting (${orgExemptionMode}) with an atomic audit entry.`,
+                          `میں ادارے اور مالک کی تصدیق کے بعد استثنیٰ (${orgExemptionMode}) کی منظوری کی تصدیق کرتا ہوں۔`
+                        )}
+                  </span>
+                </label>
 
                 <div className="flex justify-end gap-2 pt-2">
                   <button
@@ -3140,10 +4349,1401 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                       ? tr('جاري التنفيذ...', 'Processing...', 'جاری ہے...')
                       : isCurrentlyExempt
                       ? tr('تأكيد إلغاء الإعفاء الدائم', 'Confirm Revoke Exemption', 'استثنیٰ منسوخ کریں')
-                      : tr('اعتماد الإعفاء الدائم الشامل', 'Confirm Grant Full Exemption', 'مستقل استثنیٰ منظور کریں')}
+                      : tr('اعتماد الإعفاء الدائم', 'Confirm Grant Exemption', 'مستقل استثنیٰ منظور کریں')}
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL 12: Individual Branch Exemption (Grant / Revoke) */}
+      {branchExemptionModalTarget && (() => {
+        const parentOrg = orgMap.get(branchExemptionModalTarget.orgId);
+        const evalB = evaluateBranchBillingAndGrace(branchExemptionModalTarget, parentOrg);
+        const precheck = parentOrg
+          ? verifyBranchExemptionEligibility({ branch: branchExemptionModalTarget, org: parentOrg })
+          : null;
+        const isIndividuallyExempt =
+          branchExemptionModalTarget.billingExempt === true ||
+          branchExemptionModalTarget.paymentStatus === 'exempt';
+        const canSubmit =
+          !busyAction &&
+          branchExemptionConfirmed &&
+          branchExemptionReason.trim().length >= 5 &&
+          (isIndividuallyExempt || Boolean(precheck?.eligible));
+
+        return (
+          <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+            <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden my-8">
+              <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
+                <h2 className="font-bold text-base flex items-center gap-2">
+                  <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                  <span>
+                    {isIndividuallyExempt
+                      ? tr('إدارة / إلغاء الإعفاء الفردي للفرع', 'Manage / Revoke Branch Exemption', 'برانچ استثنیٰ انتظام/منسوخ')
+                      : tr('منح إعفاء دائم للفرع', 'Grant Permanent Branch Exemption', 'برانچ کو مستقل استثنیٰ دیں')}
+                  </span>
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setBranchExemptionModalTarget(null)}
+                  className="p-1.5 rounded-lg"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleBranchExemptionSubmit} className="p-6 space-y-4 text-xs">
+                <div className="p-4 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('الفرع:', 'Branch:', 'برانچ:')}</span>
+                    <span className="font-bold">{branchExemptionModalTarget.name} ({branchExemptionModalTarget.code})</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('المؤسسة الأم:', 'Parent Organization:', 'ادارہ:')}</span>
+                    <span className="font-semibold">{parentOrg?.name || branchExemptionModalTarget.orgId}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('مصدر الإعفاء الحالي:', 'Current Exemption Source:', 'استثنیٰ کا ذریعہ:')}</span>
+                    <span className="font-bold text-emerald-700 dark:text-emerald-300">
+                      {evalB.exemptionSource === 'both'
+                        ? tr('المؤسسة + الفرع معاً', 'Both Org & Branch', 'ادارہ + برانچ')
+                        : evalB.exemptionSource === 'organization'
+                        ? tr('موروث من المؤسسة الأم', 'Inherited from Organization', 'ادارے سے وراثتی')
+                        : evalB.exemptionSource === 'branch'
+                        ? tr('إعفاء فردي للفرع', 'Individual Branch Exemption', 'انفرادی برانچ استثنیٰ')
+                        : tr('غير معفى', 'Not Exempt', 'مستثنیٰ نہیں')}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">{tr('سجل الدفع التاريخي (محفوظ):', 'Historical Payment (Preserved):', 'تاریخی ادائیگی (محفوظ):')}</span>
+                    <span className="font-mono">
+                      {tr('آخر دفع:', 'Last paid:', 'آخری ادائیگی:')} {formatShortDate(branchExemptionModalTarget.lastPaidAt)}
+                    </span>
+                  </div>
+                  {branchExemptionModalTarget.exemptGrantedAt && (
+                    <div className="pt-1 border-t border-[#DCE6FA] dark:border-[#1F3B66] text-[11px] text-slate-600 dark:text-slate-300">
+                      {tr('تاريخ منح الإعفاء:', 'Granted At:', 'منظوری کی تاریخ:')} {formatShortDate(branchExemptionModalTarget.exemptGrantedAt)} · {branchExemptionModalTarget.exemptGrantedBy || SUPER_ADMIN_EMAIL}
+                    </div>
+                  )}
+                </div>
+
+                {isIndividuallyExempt && precheck?.parentOrgIsFeeExempt && (
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-800 dark:text-amber-300 leading-relaxed font-semibold">
+                    {tr(
+                      'تنبيه مهم: المؤسسة الأم نفسها معفاة من الرسوم؛ إلغاء الإعفاء الفردي لهذا الفرع لن يلغي إعفاء المؤسسة الأم الموروث وسيبقى الفرع معفى طالما المؤسسة معفاة.',
+                      'Important: The parent organization is also fee-exempt. Revoking this branch individual exemption will NOT cancel the inherited organization exemption.',
+                      'اہم نوٹ: ادارہ بذات خود مستثنیٰ ہے۔ اس برانچ کا انفرادی استثنیٰ منسوخ کرنے سے ادارے کا استثنیٰ منسوخ نہیں ہوگا۔'
+                    )}
+                  </div>
+                )}
+
+                {!isIndividuallyExempt ? (
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('تصنيف إعفاء الفرع *', 'Branch Exemption Mode *', 'برانچ استثنیٰ کی قسم *')}</label>
+                    <select
+                      value={branchExemptionMode}
+                      onChange={(e) => setBranchExemptionMode(e.target.value as ExemptionClassification)}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-semibold"
+                    >
+                      <option value="billing_exempt">{tr('billing_exempt — إعفاء مالي دائم (0 ر.س)', 'billing_exempt — Permanent Billing Exempt (0 SAR)', 'billing_exempt — مستقل مالی استثنیٰ')}</option>
+                      <option value="legacy_unrestricted">{tr('legacy_unrestricted — إعفاء غير مقيد دائم', 'legacy_unrestricted — Permanent Unrestricted Exempt', 'legacy_unrestricted — غیر محدود استثنیٰ')}</option>
+                    </select>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold mb-1">{tr('حالة السداد بعد الإلغاء', 'Status After Revoke', 'منسوخی کے بعد حیثیت')}</label>
+                      <select
+                        value={branchExemptionRestoredStatus}
+                        onChange={(e) =>
+                          setBranchExemptionRestoredStatus(
+                            e.target.value as Exclude<BranchPaymentStatus, 'exempt'>
+                          )
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                      >
+                        <option value="unpaid">{tr('غير مدفوع', 'Unpaid', 'غیر ادا شدہ')}</option>
+                        <option value="paid">{tr('مدفوع', 'Paid', 'ادا شدہ')}</option>
+                        <option value="overdue">{tr('متأخر', 'Overdue', 'واجب الادا')}</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block font-semibold mb-1">{tr('الرسوم الشهرية المستعادة (ر.س)', 'Restored Monthly Fee (SAR)', 'بحال شدہ ماہانہ فیس')}</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={branchExemptionRestoredFeeSar}
+                        onChange={(e) => setBranchExemptionRestoredFeeSar(Number(e.target.value))}
+                        className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                        dir="ltr"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block font-semibold mb-1">
+                    {isIndividuallyExempt
+                      ? tr('سبب إلغاء إعفاء الفرع * (5 أحرف على الأقل)', 'Revocation Reason * (min 5 chars)', 'منسوخی کی وجہ *')
+                      : tr('سبب منح إعفاء الفرع * (5 أحرف على الأقل)', 'Exemption Reason * (min 5 chars)', 'استثنیٰ کی وجہ *')}
+                  </label>
+                  <textarea
+                    required
+                    minLength={5}
+                    maxLength={500}
+                    rows={3}
+                    value={branchExemptionReason}
+                    onChange={(e) => setBranchExemptionReason(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                  />
+                </div>
+
+                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={branchExemptionConfirmed}
+                    onChange={(e) => setBranchExemptionConfirmed(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span className="font-semibold text-amber-900 dark:text-amber-200">
+                    {isIndividuallyExempt
+                      ? tr('أؤكد إلغاء الإعفاء الفردي للفرع مع الاحتفاظ بكامل سجل المنح والمدفوعات التاريخي.', 'I confirm revoking this branch exemption while preserving full payment & grant history.', 'میں تاریخی ریکارڈ محفوظ رکھتے ہوئے برانچ استثنیٰ منسوخ کرنے کی تصدیق کرتا ہوں۔')
+                      : tr('أؤكد منح إعفاء دائم لهذا الفرع (0 ر.س) وتوثيقه ذرياً في سجل المنصة.', 'I confirm granting permanent exemption (0 SAR) to this branch with an atomic audit log.', 'میں اس برانچ کو مستقل استثنیٰ (0 ریال) دینے کی تصدیق کرتا ہوں۔')}
+                  </span>
+                </label>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setBranchExemptionModalTarget(null)}
+                    className="px-4 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] font-semibold"
+                  >
+                    {tr('إغلاق', 'Close', 'بند کریں')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!canSubmit}
+                    className={`px-5 py-2 rounded-xl text-white font-bold disabled:opacity-50 ${
+                      isIndividuallyExempt
+                        ? 'bg-rose-600 hover:bg-rose-700'
+                        : 'bg-emerald-600 hover:bg-emerald-700'
+                    }`}
+                  >
+                    {busyAction
+                      ? tr('جاري التنفيذ...', 'Processing...', 'جاری ہے...')
+                      : isIndividuallyExempt
+                      ? tr('تأكيد إلغاء إعفاء الفرع', 'Confirm Revoke Branch Exemption', 'برانچ استثنیٰ منسوخ کریں')
+                      : tr('اعتماد إعفاء الفرع الدائم', 'Confirm Grant Branch Exemption', 'برانچ استثنیٰ منظور کریں')}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL 13: Bulk All-Branches Exemption for an Organization */}
+      {bulkBranchExemptionOrg && (() => {
+        const orgBranches = branchesByOrg.get(bulkBranchExemptionOrg.id) || [];
+        const eligibleBranches = orgBranches.filter(
+          (b) =>
+            b.lifecycleStatus !== 'purged_from_db' &&
+            !(b.billingExempt === true && (b.billingExemptMode || 'billing_exempt') === bulkBranchExemptionMode)
+        );
+        const canSubmit =
+          !busyAction &&
+          bulkBranchExemptionConfirmed &&
+          bulkBranchExemptionReason.trim().length >= 5 &&
+          eligibleBranches.length > 0;
+
+        return (
+          <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+            <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden my-8">
+              <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
+                <h2 className="font-bold text-base flex items-center gap-2">
+                  <Layers className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                  <span>{tr('إعفاء جماعي لجميع فروع المؤسسة', 'Bulk Exempt All Organization Branches', 'ادارے کی تمام برانچز کا اجتماعی استثنیٰ')}</span>
+                </h2>
+                <button type="button" onClick={() => setBulkBranchExemptionOrg(null)} className="p-1.5 rounded-lg">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <form onSubmit={handleBulkBranchesExemptionSubmit} className="p-6 space-y-4 text-xs">
+                <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-1.5">
+                  <div className="font-bold text-[#0B1B32] dark:text-white">{bulkBranchExemptionOrg.name}</div>
+                  <div className="text-slate-600 dark:text-slate-300">
+                    {tr('الفروع المؤهلة للإعفاء الآن:', 'Eligible branches to exempt now:', 'مستثنیٰ کے اہل برانچز:')}{' '}
+                    <span className="font-mono font-bold text-emerald-700 dark:text-emerald-300">{eligibleBranches.length}</span>
+                  </div>
+                  {eligibleBranches.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {eligibleBranches.map((b) => (
+                        <span
+                          key={b.id}
+                          className="px-2 py-0.5 rounded bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] text-[11px]"
+                        >
+                          {b.name} ({b.code})
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block font-semibold mb-1">{tr('تصنيف الإعفاء الجماعي *', 'Bulk Exemption Mode *', 'اجتماعی استثنیٰ کی قسم *')}</label>
+                  <select
+                    value={bulkBranchExemptionMode}
+                    onChange={(e) => setBulkBranchExemptionMode(e.target.value as ExemptionClassification)}
+                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-semibold"
+                  >
+                    <option value="billing_exempt">{tr('billing_exempt — إعفاء مالي دائم (0 ر.س)', 'billing_exempt — Permanent Billing Exempt (0 SAR)', 'billing_exempt — مستقل مالی استثنیٰ')}</option>
+                    <option value="legacy_unrestricted">{tr('legacy_unrestricted — إعفاء غير مقيد دائم', 'legacy_unrestricted — Permanent Unrestricted Exempt', 'legacy_unrestricted — غیر محدود استثنیٰ')}</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold mb-1">{tr('سبب الإعفاء الجماعي * (5 أحرف على الأقل)', 'Bulk Exemption Reason * (min 5 chars)', 'اجتماعی استثنیٰ کی وجہ *')}</label>
+                  <textarea
+                    required
+                    minLength={5}
+                    maxLength={500}
+                    rows={3}
+                    value={bulkBranchExemptionReason}
+                    onChange={(e) => setBulkBranchExemptionReason(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                  />
+                </div>
+
+                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={bulkBranchExemptionConfirmed}
+                    onChange={(e) => setBulkBranchExemptionConfirmed(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span className="font-semibold text-amber-900 dark:text-amber-200">
+                    {tr(
+                      `أؤكد إعفاء عدد (${eligibleBranches.length}) فرعاً بشكل دائم مع حفظ سجلات الدفع التاريخية وتوثيق العملية ذرياً في platformAuditLogs.`,
+                      `I confirm exempting (${eligibleBranches.length}) branches permanently while preserving historical payment data with atomic audit logging.`,
+                      `میں (${eligibleBranches.length}) برانچز کو مستقل استثنیٰ دینے کی تصدیق کرتا ہوں۔`
+                    )}
+                  </span>
+                </label>
+
+                <div className="flex justify-end gap-2">
+                  <button type="button" onClick={() => setBulkBranchExemptionOrg(null)} className="px-4 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] font-semibold">
+                    {tr('إغلاق', 'Close', 'بند کریں')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!canSubmit}
+                    className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold disabled:opacity-50"
+                  >
+                    {busyAction
+                      ? tr('جاري التنفيذ...', 'Processing...', 'جاری ہے...')
+                      : tr('تنفيذ الإعفاء الجماعي', 'Confirm Bulk Exemption', 'اجتماعی استثنیٰ نافذ کریں')}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL 14: Add Organization Member (Operational Roles Only via getSecondaryAuth) */}
+      {showCreateMemberModal && (() => {
+        const selectedOrgBranchesForCreate = (branchesByOrg.get(createMemberForm.orgId) || []).filter(
+          (b) => b.lifecycleStatus !== 'purged_from_db'
+        );
+        const needsBranch =
+          createMemberForm.role === 'branch_manager' || createMemberForm.role === 'employee';
+        return (
+          <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+            <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden my-8">
+              <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
+                <h2 className="font-bold text-base flex items-center gap-2">
+                  <UserPlus className="w-5 h-5 text-[#1764FF] dark:text-[#6CA2FF]" />
+                  <span>{tr('إضافة عضو جديد لمؤسسة', 'Add New Organization Member', 'ادارے میں نیا رکن شامل کریں')}</span>
+                </h2>
+                <button type="button" onClick={() => setShowCreateMemberModal(false)} className="p-1.5 rounded-lg">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <form onSubmit={handleCreateMemberSubmit} className="p-6 space-y-4 text-xs max-h-[82vh] overflow-y-auto">
+                <div className="p-3 rounded-xl bg-[#1764FF]/8 border border-[#1764FF]/25 text-slate-700 dark:text-slate-200 leading-relaxed">
+                  {tr(
+                    'ملاحظة تقنية وأمنية: يُنشأ حساب العضو عبر البريد وكلمة المرور دون إنهاء جلستك الحالية، وللأدوار التشغيلية فقط (مسؤول، مسؤول فرع، موظف). أما حسابات Google القائمة مسبقاً فلا يمكن إنشاء حساب Google لها أو تخمين معرّفها (UID) وتُربط عبر آلية الدعوات الآمنة فقط.',
+                    'Security Note: Member accounts are created via email/password without interrupting your Super Admin session, strictly for operational roles (supervisor, branch_manager, employee). Existing Google accounts cannot be created or have UIDs guessed and must be linked via secure invitations.',
+                    'سکیورٹی نوٹ: یہاں صرف ای میل/پاس ورڈ کے ذریعے آپریشنل اراکین بنائے جاتے ہیں۔ موجودہ Google اکاؤنٹس کو محفوظ دعوت کے ذریعے منسلک کیا جاتا ہے۔'
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('المؤسسة *', 'Organization *', 'ادارہ *')}</label>
+                    <select
+                      required
+                      value={createMemberForm.orgId}
+                      onChange={(e) => {
+                        const nextOrgId = e.target.value;
+                        const firstB = (branchesByOrg.get(nextOrgId) || []).find(
+                          (b) => b.lifecycleStatus !== 'purged_from_db'
+                        );
+                        setCreateMemberForm({
+                          ...createMemberForm,
+                          orgId: nextOrgId,
+                          branchId: firstB?.id || '',
+                        });
+                      }}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                    >
+                      {organizations.map((o) => (
+                        <option key={o.id} value={o.id}>{o.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('الدور التشغيلي *', 'Operational Role *', 'آپریشنل کردار *')}</label>
+                    <select
+                      value={createMemberForm.role}
+                      onChange={(e) =>
+                        setCreateMemberForm({
+                          ...createMemberForm,
+                          role: e.target.value as SuperAdminAssignableMemberRole,
+                        })
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                    >
+                      {ALLOWED_SUPER_ADMIN_MEMBER_ROLES.map((roleOpt) => (
+                        <option key={roleOpt} value={roleOpt}>
+                          {getUserRoleLabel(roleOpt, language)} ({roleOpt})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('اسم العضو *', 'Member Name *', 'رکن کا نام *')}</label>
+                    <input
+                      required
+                      value={createMemberForm.displayName}
+                      onChange={(e) => setCreateMemberForm({ ...createMemberForm, displayName: e.target.value })}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('البريد الإلكتروني *', 'Email *', 'ای میل *')}</label>
+                    <input
+                      type="email"
+                      required
+                      value={createMemberForm.email}
+                      onChange={(e) => setCreateMemberForm({ ...createMemberForm, email: e.target.value })}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                      dir="ltr"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('كلمة المرور * (6 أحرف+)', 'Password * (6+ chars)', 'پاس ورڈ *')}</label>
+                    <input
+                      type="password"
+                      required
+                      minLength={6}
+                      value={createMemberForm.password}
+                      onChange={(e) => setCreateMemberForm({ ...createMemberForm, password: e.target.value })}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                      dir="ltr"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('رقم الجوال (اختياري)', 'Phone (Optional)', 'فون نمبر (اختیاری)')}</label>
+                    <input
+                      value={createMemberForm.phone}
+                      onChange={(e) => setCreateMemberForm({ ...createMemberForm, phone: e.target.value })}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                      dir="ltr"
+                    />
+                  </div>
+                </div>
+
+                {needsBranch && (
+                  <div>
+                    <label className="block font-semibold mb-1">
+                      {tr('الفرع المعيّن (من نفس المؤسسة فقط) *', 'Assigned Branch (Same Org Only) *', 'متعین برانچ (صرف اسی ادارے سے) *')}
+                    </label>
+                    <select
+                      required
+                      value={createMemberForm.branchId}
+                      onChange={(e) => setCreateMemberForm({ ...createMemberForm, branchId: e.target.value })}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                    >
+                      <option value="">{tr('اختر الفرع...', 'Select branch...', 'برانچ منتخب کریں...')}</option>
+                      {selectedOrgBranchesForCreate.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name} ({b.code})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {createMemberForm.role === 'supervisor' && (
+                  <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-2">
+                    <div className="font-bold">{tr('صلاحيات المسؤول الاختيارية (مطفأة افتراضياً)', 'Supervisor Optional Permissions (Opt-in)', 'سپروائزر کے اختیاری اختیارات')}</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {SUPERVISOR_OPTIONAL_PERMISSION_KEYS.map((permKey) => (
+                        <label key={permKey} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(createMemberForm.supervisorPermissions[permKey])}
+                            onChange={(e) =>
+                              setCreateMemberForm({
+                                ...createMemberForm,
+                                supervisorPermissions: {
+                                  ...createMemberForm.supervisorPermissions,
+                                  [permKey]: e.target.checked,
+                                },
+                              })
+                            }
+                          />
+                          <span>{SUPERVISOR_PERM_LABELS[permKey][language] || SUPERVISOR_PERM_LABELS[permKey].ar}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button type="button" onClick={() => setShowCreateMemberModal(false)} className="px-4 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] font-semibold">
+                    {tr('إلغاء', 'Cancel', 'منسوخ کریں')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={busyAction || (needsBranch && !createMemberForm.branchId)}
+                    className="px-5 py-2 rounded-xl bg-[#1764FF] hover:bg-[#1052D8] text-white font-bold disabled:opacity-50"
+                  >
+                    {busyAction
+                      ? tr('جاري الإنشاء...', 'Creating...', 'تخلیق جاری ہے...')
+                      : tr('إنشاء العضو وتوثيقه', 'Create Member', 'رکن بنائیں')}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL 15: Edit Member (Role, Same-Org Branch Transfer, Profile & Supervisor Permissions) */}
+      {editingMember && (() => {
+        const sameOrgBranches = (branchesByOrg.get(editingMember.orgId) || []).filter(
+          (b) => b.lifecycleStatus !== 'purged_from_db'
+        );
+        const needsBranch =
+          editMemberForm.role === 'branch_manager' || editMemberForm.role === 'employee';
+        return (
+          <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+            <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden my-8">
+              <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
+                <h2 className="font-bold text-base">
+                  {tr('تعديل العضو / نقل الفرع:', 'Edit Member / Transfer Branch:', 'رکن میں ترمیم / منتقلی:')} {editingMember.displayName}
+                </h2>
+                <button type="button" onClick={() => setEditingMember(null)} className="p-1.5 rounded-lg">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <form onSubmit={handleEditMemberSubmit} className="p-6 space-y-4 text-xs max-h-[82vh] overflow-y-auto">
+                <div className="p-3 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] grid grid-cols-2 gap-2 text-[11px]">
+                  <div>
+                    <span className="text-slate-500">{tr('المؤسسة (ثابتة):', 'Organization (Immutable):', 'ادارہ (ثابت):')}</span>{' '}
+                    <span className="font-bold">{orgMap.get(editingMember.orgId)?.name || editingMember.orgId}</span>
+                  </div>
+                  <div className="font-mono" dir="ltr">
+                    UID: {editingMember.uid}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('الاسم *', 'Display Name *', 'نام *')}</label>
+                    <input
+                      required
+                      value={editMemberForm.displayName}
+                      onChange={(e) => setEditMemberForm({ ...editMemberForm, displayName: e.target.value })}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('رقم الجوال', 'Phone', 'فون')}</label>
+                    <input
+                      value={editMemberForm.phone}
+                      onChange={(e) => setEditMemberForm({ ...editMemberForm, phone: e.target.value })}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">{tr('الدور التشغيلي *', 'Operational Role *', 'کردار *')}</label>
+                    <select
+                      value={editMemberForm.role}
+                      onChange={(e) =>
+                        setEditMemberForm({
+                          ...editMemberForm,
+                          role: e.target.value as SuperAdminAssignableMemberRole,
+                        })
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                    >
+                      {ALLOWED_SUPER_ADMIN_MEMBER_ROLES.map((roleOpt) => (
+                        <option key={roleOpt} value={roleOpt}>
+                          {getUserRoleLabel(roleOpt, language)} ({roleOpt})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {needsBranch && (
+                    <div>
+                      <label className="block font-semibold mb-1">{tr('الفرع (نفس المؤسسة فقط) *', 'Branch (Same Org Only) *', 'برانچ *')}</label>
+                      <select
+                        required
+                        value={editMemberForm.branchId}
+                        onChange={(e) => setEditMemberForm({ ...editMemberForm, branchId: e.target.value })}
+                        className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                      >
+                        <option value="">{tr('اختر الفرع...', 'Select branch...', 'برانچ منتخب کریں...')}</option>
+                        {sameOrgBranches.map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name} ({b.code})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                {editMemberForm.role === 'supervisor' && (
+                  <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-2">
+                    <div className="font-bold">{tr('صلاحيات المسؤول الاختيارية', 'Supervisor Optional Permissions', 'سپروائزر اختیارات')}</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {SUPERVISOR_OPTIONAL_PERMISSION_KEYS.map((permKey) => (
+                        <label key={permKey} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(editMemberForm.supervisorPermissions[permKey])}
+                            onChange={(e) =>
+                              setEditMemberForm({
+                                ...editMemberForm,
+                                supervisorPermissions: {
+                                  ...editMemberForm.supervisorPermissions,
+                                  [permKey]: e.target.checked,
+                                },
+                              })
+                            }
+                          />
+                          <span>{SUPERVISOR_PERM_LABELS[permKey][language] || SUPERVISOR_PERM_LABELS[permKey].ar}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block font-semibold mb-1">{tr('سبب التعديل (اختياري للتوثيق)', 'Reason (Optional for Audit Log)', 'ترمیم کی وجہ (اختیاری)')}</label>
+                  <input
+                    value={editMemberForm.reason}
+                    onChange={(e) => setEditMemberForm({ ...editMemberForm, reason: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button type="button" onClick={() => setEditingMember(null)} className="px-4 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] font-semibold">
+                    {tr('إلغاء', 'Cancel', 'منسوخ کریں')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={busyAction || (needsBranch && !editMemberForm.branchId)}
+                    className="px-5 py-2 rounded-xl bg-[#1764FF] hover:bg-[#1052D8] text-white font-bold disabled:opacity-50"
+                  >
+                    {busyAction
+                      ? tr('جاري الحفظ...', 'Saving...', 'محفوظ ہو رہا ہے...')
+                      : tr('حفظ التعديلات', 'Save Changes', 'تبدیلیاں محفوظ کریں')}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL 16: Archive / Reactivate Member Confirmation (Strictly Non-Destructive) */}
+      {memberLifecycleModal && (
+        <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
+              <h2 className="font-bold text-base">
+                {memberLifecycleModal.mode === 'archive'
+                  ? tr('أرشفة وتعطيل العضو', 'Archive & Disable Member', 'رکن کو آرکائیو اور معطل کریں')
+                  : tr('إعادة تفعيل العضو', 'Reactivate Member', 'رکن کو دوبارہ فعال کریں')}
+              </h2>
+              <button type="button" onClick={() => setMemberLifecycleModal(null)} className="p-1.5 rounded-lg">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleMemberLifecycleSubmit} className="p-6 space-y-4 text-xs">
+              <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-1">
+                <div className="font-bold">{memberLifecycleModal.member.displayName}</div>
+                <div className="font-mono text-[11px] text-slate-500" dir="ltr">{memberLifecycleModal.member.email}</div>
+                <div className="text-[11px] text-slate-500">
+                  {orgMap.get(memberLifecycleModal.member.orgId)?.name || memberLifecycleModal.member.orgId} ·{' '}
+                  {getUserRoleLabel(memberLifecycleModal.member.role, language)}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-slate-700 dark:text-slate-200 leading-relaxed">
+                {memberLifecycleModal.mode === 'archive'
+                  ? tr(
+                      'إجراء غير هدّام: سيتم تعطيل الدخول وأرشفة العضوية فقط، دون حذف وثيقة المستخدم أو حساب Google أو الإقفالات أو المشتريات التاريخية، مع تسجيل ذري في platformAuditLogs.',
+                      'Non-destructive action: Disables login and archives membership only. User documents, Google accounts, closings, and purchases are NEVER deleted.',
+                      'غیر تباہ کن کارروائی: صرف لاگ ان معطل اور رکنیت آرکائیو ہوگی، کوئی تاریخی ریکارڈ حذف نہیں ہوگا۔'
+                    )
+                  : tr(
+                      'ستتم إعادة تفعيل دخول العضو ضمن نفس المؤسسة مع الاحتفاظ بسجل الأرشفة السابق وتوثيق العملية ذرياً.',
+                      'Restores member access within the same organization while preserving prior archive history.',
+                      'اسی ادارے میں رکن کی رسائی بحال کی جائے گی۔'
+                    )}
+              </div>
+
+              <div>
+                <label className="block font-semibold mb-1">
+                  {memberLifecycleModal.mode === 'archive'
+                    ? tr('سبب الأرشفة * (5 أحرف على الأقل)', 'Archive Reason * (min 5 chars)', 'آرکائیو کی وجہ *')
+                    : tr('ملاحظة إعادة التفعيل (اختياري)', 'Reactivation Note (Optional)', 'بحالی نوٹ (اختیاری)')}
+                </label>
+                <textarea
+                  required={memberLifecycleModal.mode === 'archive'}
+                  minLength={memberLifecycleModal.mode === 'archive' ? 5 : 0}
+                  maxLength={500}
+                  rows={2}
+                  value={memberLifecycleReason}
+                  onChange={(e) => setMemberLifecycleReason(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                />
+              </div>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={memberLifecycleConfirmed}
+                  onChange={(e) => setMemberLifecycleConfirmed(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span className="font-semibold text-amber-900 dark:text-amber-200">
+                  {memberLifecycleModal.mode === 'archive'
+                    ? tr('أؤكد أرشفة وتعطيل هذا العضو وتوثيق الإجراء في سجل المنصة.', 'I confirm archiving and disabling this member with an audit entry.', 'میں اس رکن کو آرکائیو کرنے کی تصدیق کرتا ہوں۔')
+                    : tr('أؤكد إعادة تفعيل هذا العضو وتوثيق الإجراء في سجل المنصة.', 'I confirm reactivating this member with an audit entry.', 'میں اس رکن کو دوبارہ فعال کرنے کی تصدیق کرتا ہوں۔')}
+                </span>
+              </label>
+
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setMemberLifecycleModal(null)} className="px-4 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] font-semibold">
+                  {tr('إلغاء', 'Cancel', 'منسوخ کریں')}
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    busyAction ||
+                    !memberLifecycleConfirmed ||
+                    (memberLifecycleModal.mode === 'archive' && memberLifecycleReason.trim().length < 5)
+                  }
+                  className={`px-5 py-2 rounded-xl text-white font-bold disabled:opacity-50 ${
+                    memberLifecycleModal.mode === 'archive'
+                      ? 'bg-amber-600 hover:bg-amber-700'
+                      : 'bg-[#048264] hover:bg-[#036B52]'
+                  }`}
+                >
+                  {busyAction
+                    ? tr('جاري التنفيذ...', 'Processing...', 'جاری ہے...')
+                    : memberLifecycleModal.mode === 'archive'
+                    ? tr('تأكيد الأرشفة', 'Confirm Archive', 'آرکائیو کی تصدیق')
+                    : tr('تأكيد إعادة التفعيل', 'Confirm Reactivate', 'بحالی کی تصدیق')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* MODAL 17: Permanent Membership Release (Phase C.1 — Non-Destructive, 3-Doc Atomic) */}
+      {releaseMemberTarget && (
+        <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
+              <h2 className="font-bold text-base flex items-center gap-2 text-rose-700 dark:text-rose-300">
+                <Unlink className="w-4 h-4" />
+                <span>
+                  {tr(
+                    'فصل العضوية نهائياً عن المؤسسة',
+                    'Permanently Release Membership from Organization',
+                    'ادارے سے رکنیت مستقل طور پر ختم کریں'
+                  )}
+                </span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => setReleaseMemberTarget(null)}
+                className="p-1.5 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleReleaseMemberSubmit} className="p-6 space-y-4 text-xs">
+              <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-1">
+                <div className="font-bold text-sm">{releaseMemberTarget.displayName}</div>
+                <div className="font-mono text-[11px] text-slate-500" dir="ltr">
+                  {releaseMemberTarget.email}
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  {tr('المؤسسة الحالية:', 'Current Organization:', 'موجودہ ادارہ:')}{' '}
+                  <span className="font-bold text-[#0B1B32] dark:text-white">
+                    {orgMap.get(releaseMemberTarget.orgId)?.name || releaseMemberTarget.orgId}
+                  </span>{' '}
+                  · {getUserRoleLabel(releaseMemberTarget.role, language)}
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-slate-700 dark:text-slate-200 space-y-1.5 leading-relaxed">
+                <div className="font-bold text-rose-700 dark:text-rose-300">
+                  {tr(
+                    'تنبيه حوكمة — إجراء مختلف عن الأرشفة:',
+                    'Governance Notice — Distinct from Archiving:',
+                    'گورننس نوٹ — آرکائیو سے مختلف کارروائی:'
+                  )}
+                </div>
+                <ul className="list-disc ps-5 space-y-1">
+                  <li>
+                    {tr(
+                      'سيتم فك ارتباط العضو نهائياً عن مؤسسته الحالية وإزالة الفروع وتصفير جميع الصلاحيات التشغيلية ومنع إعادة تفعيله تلقائياً داخل المؤسسة السابقة.',
+                      'Detaches the member permanently from their current organization, clears branch bindings and permissions, and blocks automatic reactivation in the previous organization.',
+                      'رکن کو موجودہ ادارے اور برانچ سے مستقل الگ کر کے تمام اختیارات صفر کر دیے جائیں گے۔'
+                    )}
+                  </li>
+                  <li>
+                    {tr(
+                      'يُحفظ حساب المصادقة (Firebase Auth) ووثيقة المستخدم وكافة الإقفالات والمشتريات والمرفقات وسجلات التدقيق التاريخية لدى المؤسسة السابقة دون أي حذف.',
+                      'Firebase Auth account, user document, and all historical closings, purchases, attachments, and audit logs remain 100% preserved inside the previous organization.',
+                      'تصدیقی اکاؤنٹ اور تمام سابقہ مالی و آپریشنل ریکارڈز مکمل طور پر محفوظ رہیں گے۔'
+                    )}
+                  </li>
+                  <li>
+                    {tr(
+                      'بعد الفصل، سيصبح العضو في قائمة «المحررون» ويمكن إعادة ربطه بنفس حسابه بمؤسسة نشطة أخرى لاحقاً، مع توثيق ذري في memberOrgHistory و platformAuditLogs.',
+                      'After release, the member appears in the Released list and can later be assigned with the same UID to another active organization, atomically recorded in memberOrgHistory and platformAuditLogs.',
+                      'علیحدگی کے بعد رکن آزاد فہرست میں نظر آئے گا اور بعد میں نئے ادارے سے منسلک کیا جا سکے گا۔'
+                    )}
+                  </li>
+                </ul>
+              </div>
+
+              <div>
+                <label className="block font-semibold mb-1">
+                  {tr(
+                    'سبب فصل العضوية نهائياً * (5 أحرف على الأقل)',
+                    'Mandatory Permanent Release Reason * (min 5 chars)',
+                    'مستقل علیحدگی کی وجہ * (کم از کم 5 حروف)'
+                  )}
+                </label>
+                <textarea
+                  required
+                  minLength={5}
+                  maxLength={500}
+                  rows={3}
+                  value={releaseMemberReason}
+                  onChange={(e) => setReleaseMemberReason(e.target.value)}
+                  placeholder={tr(
+                    'مثال: انتهاء العلاقة التعاقدية مع المؤسسة السابقة وطلب تحرير الحساب للانضمام لمؤسسة جديدة',
+                    'Example: Employment ended with previous org; releasing account for re-assignment',
+                    'مثال: سابقہ ادارے سے ملازمت ختم ہو گئی...'
+                  )}
+                  className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                />
+              </div>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={releaseMemberConfirmed}
+                  onChange={(e) => setReleaseMemberConfirmed(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span className="font-semibold text-amber-900 dark:text-amber-200">
+                  {tr(
+                    'أؤكد فصل عضوية هذا الموظف نهائياً عن مؤسسته الحالية وتوثيق العملية ذرياً في memberOrgHistory و platformAuditLogs.',
+                    'I confirm permanently releasing this member from their current organization with atomic history and audit logging.',
+                    'میں اس رکن کی مستقل علیحدگی کی تصدیق کرتا ہوں۔'
+                  )}
+                </span>
+              </label>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReleaseMemberTarget(null)}
+                  className="px-4 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] font-semibold"
+                >
+                  {tr('إلغاء', 'Cancel', 'منسوخ کریں')}
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    busyAction ||
+                    !releaseMemberConfirmed ||
+                    releaseMemberReason.trim().length < 5
+                  }
+                  className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold disabled:opacity-50"
+                >
+                  {busyAction
+                    ? tr('جاري الفصل...', 'Releasing...', 'کارروائی جاری ہے...')
+                    : tr('تأكيد فصل العضوية نهائياً', 'Confirm Permanent Release', 'مستقل علیحدگی کی تصدیق')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 18: Assign Released Member to Active Organization (Phase C.1 — Reuses Same UID) */}
+      {assignMemberTarget && (() => {
+        const activeOrgs = organizations.filter((o) => o.isActive !== false);
+        const targetOrgBranches = (branchesByOrg.get(assignMemberForm.targetOrgId) || []).filter(
+          (b) => b.lifecycleStatus !== 'purged_from_db'
+        );
+        const needsBranch =
+          assignMemberForm.role === 'branch_manager' || assignMemberForm.role === 'employee';
+        return (
+          <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
+                <h2 className="font-bold text-base flex items-center gap-2 text-[#1764FF] dark:text-[#6CA2FF]">
+                  <Link2 className="w-4 h-4" />
+                  <span>
+                    {tr(
+                      'إعادة ربط العضو المحرر بمؤسسة',
+                      'Assign Released Member to Organization',
+                      'آزاد رکن کو ادارے سے منسلک کریں'
+                    )}
+                  </span>
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setAssignMemberTarget(null)}
+                  className="p-1.5 rounded-lg"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <form
+                onSubmit={handleAssignMemberSubmit}
+                className="p-6 space-y-4 text-xs max-h-[82vh] overflow-y-auto"
+              >
+                <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-1">
+                  <div className="font-bold text-sm">{assignMemberTarget.displayName}</div>
+                  <div className="font-mono text-[11px] text-slate-500" dir="ltr">
+                    {assignMemberTarget.email} · UID: {assignMemberTarget.uid}
+                  </div>
+                  {assignMemberTarget.releasedFromOrgId && (
+                    <div className="text-[11px] text-slate-500">
+                      {tr('المؤسسة السابقة المفصول منها:', 'Released from:', 'سابقہ ادارہ:')}{' '}
+                      <span className="font-semibold">
+                        {assignMemberTarget.releasedFromOrgName ||
+                          orgMap.get(assignMemberTarget.releasedFromOrgId)?.name ||
+                          assignMemberTarget.releasedFromOrgId}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-slate-700 dark:text-slate-200 leading-relaxed">
+                  {tr(
+                    'سيتم استخدام حساب المصادقة الحالي (نفس UID) دون إنشاء حساب جديد. تُبنى الصلاحيات من الصفر حسب الدور المختار، ولا يتم نقل أي صلاحيات أو بيانات أو سجلات تشغيلية من المؤسسة السابقة إطلاقاً.',
+                    'Reuses the existing Firebase Auth UID without creating a new account. Permissions are generated fresh for the chosen role; ZERO legacy permissions or records from the previous organization are copied.',
+                    'موجودہ اکاؤنٹ (UID) ہی استعمال ہوگا؛ سابقہ ادارے کے کوئی اختیارات یا ریکارڈ منتقل نہیں ہوں گے۔'
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold mb-1">
+                      {tr('المؤسسة الجديدة (النشطة فقط) *', 'Target Active Organization *', 'نیا فعال ادارہ *')}
+                    </label>
+                    <select
+                      required
+                      value={assignMemberForm.targetOrgId}
+                      onChange={(e) => {
+                        const nextOrgId = e.target.value;
+                        const firstB = (branchesByOrg.get(nextOrgId) || []).find(
+                          (b) => b.lifecycleStatus !== 'purged_from_db'
+                        );
+                        setAssignMemberForm({
+                          ...assignMemberForm,
+                          targetOrgId: nextOrgId,
+                          branchId: firstB?.id || '',
+                        });
+                      }}
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                    >
+                      <option value="">
+                        {tr('اختر المؤسسة...', 'Select organization...', 'ادارہ منتخب کریں...')}
+                      </option>
+                      {activeOrgs.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.name} ({o.id})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">
+                      {tr('الدور التشغيلي الجديد *', 'New Operational Role *', 'نیا کردار *')}
+                    </label>
+                    <select
+                      value={assignMemberForm.role}
+                      onChange={(e) =>
+                        setAssignMemberForm({
+                          ...assignMemberForm,
+                          role: e.target.value as SuperAdminAssignableMemberRole,
+                        })
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                    >
+                      {ALLOWED_SUPER_ADMIN_MEMBER_ROLES.map((roleOpt) => (
+                        <option key={roleOpt} value={roleOpt}>
+                          {getUserRoleLabel(roleOpt, language)} ({roleOpt})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {needsBranch && (
+                    <div className="sm:col-span-2">
+                      <label className="block font-semibold mb-1">
+                        {tr(
+                          'الفرع (فروع المؤسسة الجديدة فقط) *',
+                          'Branch (Target Organization Only) *',
+                          'برانچ (نئے ادارے کی) *'
+                        )}
+                      </label>
+                      <select
+                        required
+                        value={assignMemberForm.branchId}
+                        onChange={(e) =>
+                          setAssignMemberForm({ ...assignMemberForm, branchId: e.target.value })
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                      >
+                        <option value="">
+                          {tr('اختر الفرع...', 'Select branch...', 'برانچ منتخب کریں...')}
+                        </option>
+                        {targetOrgBranches.map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name} ({b.code})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                {assignMemberForm.role === 'supervisor' && (
+                  <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-2">
+                    <div className="font-bold">
+                      {tr(
+                        'صلاحيات المسؤول الاختيارية (تُبنى من الصفر)',
+                        'Supervisor Optional Permissions (Freshly Built)',
+                        'سپروائزر اختیارات'
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {SUPERVISOR_OPTIONAL_PERMISSION_KEYS.map((permKey) => (
+                        <label key={permKey} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(assignMemberForm.supervisorPermissions[permKey])}
+                            onChange={(e) =>
+                              setAssignMemberForm({
+                                ...assignMemberForm,
+                                supervisorPermissions: {
+                                  ...assignMemberForm.supervisorPermissions,
+                                  [permKey]: e.target.checked,
+                                },
+                              })
+                            }
+                          />
+                          <span>
+                            {SUPERVISOR_PERM_LABELS[permKey][language] ||
+                              SUPERVISOR_PERM_LABELS[permKey].ar}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block font-semibold mb-1">
+                    {tr('ملاحظة / سبب إعادة الربط (اختياري)', 'Re-assignment Note (Optional)', 'نوٹ (اختیاری)')}
+                  </label>
+                  <input
+                    maxLength={500}
+                    value={assignMemberForm.reason}
+                    onChange={(e) =>
+                      setAssignMemberForm({ ...assignMemberForm, reason: e.target.value })
+                    }
+                    placeholder={tr(
+                      'مثال: انضمام الموظف إلى المؤسسة الجديدة بنفس حسابه المعتمد',
+                      'Example: Member onboarding into target organization with existing account',
+                      'مثال: نئے ادارے میں شمولیت'
+                    )}
+                    className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A]"
+                  />
+                </div>
+
+                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={assignMemberForm.sendOptionalPasswordReset}
+                    onChange={(e) =>
+                      setAssignMemberForm({
+                        ...assignMemberForm,
+                        sendOptionalPasswordReset: e.target.checked,
+                      })
+                    }
+                    className="mt-0.5"
+                  />
+                  <span className="text-slate-600 dark:text-slate-300">
+                    {tr(
+                      'إرسال رابط إعادة تعيين كلمة المرور عبر البريد الإلكتروني بعد الربط (اختياري — لا يتم تعديل كلمة المرور مباشرة)',
+                      'Send optional password reset email after assignment (password is never modified directly)',
+                      'منسلک کرنے کے بعد پاس ورڈ ری سیٹ لنک ای میل کریں (اختیاری)'
+                    )}
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={assignMemberConfirmed}
+                    onChange={(e) => setAssignMemberConfirmed(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span className="font-semibold text-amber-900 dark:text-amber-200">
+                    {tr(
+                      'أؤكد إعادة ربط هذا العضو المحرر بالمؤسسة المختارة بصلاحيات جديدة وتوثيق العملية ذرياً في memberOrgHistory و platformAuditLogs.',
+                      'I confirm assigning this released member to the selected organization with fresh permissions and atomic history/audit logging.',
+                      'میں نئے ادارے سے اس رکن کو منسلک کرنے کی تصدیق کرتا ہوں۔'
+                    )}
+                  </span>
+                </label>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setAssignMemberTarget(null)}
+                    className="px-4 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] font-semibold"
+                  >
+                    {tr('إلغاء', 'Cancel', 'منسوخ کریں')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={
+                      busyAction ||
+                      !assignMemberConfirmed ||
+                      !assignMemberForm.targetOrgId ||
+                      (needsBranch && !assignMemberForm.branchId)
+                    }
+                    className="px-5 py-2 rounded-xl bg-[#1764FF] hover:bg-[#1052D8] text-white font-bold disabled:opacity-50"
+                  >
+                    {busyAction
+                      ? tr('جاري الربط...', 'Assigning...', 'کارروائی جاری ہے...')
+                      : tr('تأكيد إعادة الربط', 'Confirm Assignment', 'منسلک کرنے کی تصدیق')}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL 19: Member Details, Immutable Membership History & Audit Trail */}
+      {memberDetailUid && (() => {
+        const detailMember = userMap.get(memberDetailUid);
+        if (!detailMember) return null;
+        const parentOrg = detailMember.orgId ? orgMap.get(detailMember.orgId) : undefined;
+        const status = resolveMemberMembershipStatus(detailMember);
+        const isReleased = status === 'released';
+        const isArchived = !isReleased && (status === 'archived' || detailMember.isActive === false);
+        const editable = canManageMember(detailMember);
+        const releaseEligible = isMemberEligibleForRelease(detailMember, parentOrg);
+        const memberHistory = allMemberOrgHistory.filter((h) => h.uid === detailMember.uid);
+        const memberAudits = platformAuditLogs.filter(
+          (l) => l.targetId === detailMember.uid && l.targetType === 'member'
+        );
+
+        return (
+          <div className="fixed inset-0 z-50 bg-[#0B1B32]/75 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-[#DCE6FA] dark:border-[#1F3B66] flex items-center justify-between">
+                <h2 className="font-bold text-base flex items-center gap-2">
+                  <History className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF]" />
+                  <span>
+                    {tr('تفاصيل وسجل عضويات الموظف', 'Member Details & Organization History', 'رکن کی تفصیلات اور تاریخ')}
+                  </span>
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setMemberDetailUid(null)}
+                  className="p-1.5 rounded-lg"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-6 space-y-5 text-xs max-h-[82vh] overflow-y-auto">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-4 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66]">
+                  <div>
+                    <div className="text-[11px] text-slate-500">{tr('الاسم', 'Name', 'نام')}</div>
+                    <div className="font-bold text-sm">{detailMember.displayName}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">{tr('البريد الإلكتروني', 'Email', 'ای میل')}</div>
+                    <div className="font-mono" dir="ltr">{detailMember.email}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">UID</div>
+                    <div className="font-mono text-[11px]" dir="ltr">{detailMember.uid}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">{tr('حالة العضوية', 'Membership Status', 'حیثیت')}</div>
+                    <div className="font-bold">
+                      {isReleased
+                        ? tr('محرر نهائياً (released)', 'Permanently Released', 'مستقل آزاد')
+                        : isArchived
+                        ? tr('مؤرشف / معطل', 'Archived / Disabled', 'آرکائیو')
+                        : tr('نشط', 'Active', 'فعال')}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">{tr('المؤسسة الحالية', 'Current Org', 'موجودہ ادارہ')}</div>
+                    <div className="font-semibold">
+                      {isReleased
+                        ? tr('لا توجد مؤسسة مرتبطة حالياً', 'None (Released)', 'کوئی نہیں')
+                        : parentOrg?.name || detailMember.orgId}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">{tr('الدور والفرع', 'Role & Branch', 'کردار اور برانچ')}</div>
+                    <div className="font-semibold">
+                      {getUserRoleLabel(detailMember.role, language)}
+                      {detailMember.branchName ? ` — ${detailMember.branchName}` : ''}
+                    </div>
+                  </div>
+                  {detailMember.releasedFromOrgId && (
+                    <div className="sm:col-span-2 pt-2 border-t border-[#DCE6FA] dark:border-[#1F3B66]">
+                      <div className="text-[11px] text-slate-500">
+                        {tr('بيانات آخر فصل عضوية نهائي:', 'Last Permanent Release:', 'آخری مستقل علیحدگی:')}
+                      </div>
+                      <div className="text-[11px] mt-0.5">
+                        {tr('من مؤسسة:', 'From:', 'ادارے سے:')}{' '}
+                        <span className="font-bold">
+                          {detailMember.releasedFromOrgName ||
+                            orgMap.get(detailMember.releasedFromOrgId)?.name ||
+                            detailMember.releasedFromOrgId}
+                        </span>{' '}
+                        · {formatIsoDate(detailMember.releasedAt)} · {detailMember.releasedBy || '—'}
+                      </div>
+                      {detailMember.releaseReason && (
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          {tr('السبب:', 'Reason:', 'وجہ:')} {detailMember.releaseReason}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Quick Governance Actions */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {isReleased && editable && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMemberDetailUid(null);
+                        openAssignMemberModal(detailMember);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1764FF] hover:bg-[#1052D8] text-white"
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                      <span>{tr('إعادة ربط بمؤسسة', 'Assign to Organization', 'ادارے سے منسلک کریں')}</span>
+                    </button>
+                  )}
+                  {releaseEligible && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMemberDetailUid(null);
+                        openReleaseMemberModal(detailMember);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30 hover:bg-rose-500/25"
+                    >
+                      <Unlink className="w-3.5 h-3.5" />
+                      <span>{tr('فصل العضوية نهائياً', 'Release Permanently', 'مستقل علیحدگی')}</span>
+                    </button>
+                  )}
+                  {!isReleased && editable && !isArchived && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMemberDetailUid(null);
+                        openMemberLifecycleModal(detailMember, 'archive');
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                    >
+                      <Archive className="w-3.5 h-3.5" />
+                      <span>{tr('أرشفة العضو', 'Archive Member', 'آرکائیو')}</span>
+                    </button>
+                  )}
+                  {!isReleased && editable && isArchived && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMemberDetailUid(null);
+                        openMemberLifecycleModal(detailMember, 'reactivate');
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#08C99B]/15 text-[#048264] dark:text-[#08C99B]"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>{tr('إعادة تفعيل', 'Reactivate', 'دوبارہ فعال')}</span>
+                    </button>
+                  )}
+                  {editable && (
+                    <button
+                      type="button"
+                      disabled={busyAction}
+                      onClick={() => handleSendSuperAdminPasswordReset(detailMember)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] hover:border-[#1764FF]"
+                    >
+                      <KeyRound className="w-3.5 h-3.5" />
+                      <span>
+                        {tr(
+                          'إرسال رابط إعادة تعيين كلمة المرور (اختياري)',
+                          'Send Password Reset Link (Optional)',
+                          'پاس ورڈ ری سیٹ لنک بھیجیں'
+                        )}
+                      </span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Immutable memberOrgHistory Section */}
+                <div className="space-y-2">
+                  <h3 className="font-bold text-xs text-[#0B1B32] dark:text-white">
+                    {tr(
+                      `سجل عضويات المؤسسات التاريخي غير القابل للتعديل (memberOrgHistory: ${memberHistory.length})`,
+                      `Immutable Membership History (memberOrgHistory: ${memberHistory.length})`,
+                      `اداروں کی رکنیت کی تاریخ (${memberHistory.length})`
+                    )}
+                  </h3>
+                  {memberHistory.length === 0 ? (
+                    <div className="p-3 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] text-slate-500 text-[11px]">
+                      {tr(
+                        'لا توجد أحداث فصل أو إعادة ربط مسجلة لهذا العضو حتى الآن.',
+                        'No permanent release or re-assignment events recorded for this member yet.',
+                        'اس رکن کے لیے کوئی علیحدگی یا منتقلی ریکارڈ نہیں۔'
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {memberHistory.map((h) => (
+                        <div
+                          key={h.id}
+                          className="p-3 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF]/70 dark:bg-[#0E203A]/70 space-y-1"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                h.eventType === 'released'
+                                  ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300'
+                                  : 'bg-[#08C99B]/15 text-[#048264] dark:text-[#08C99B]'
+                              }`}
+                            >
+                              {h.eventType === 'released'
+                                ? tr('فصل عضوية نهائي (released)', 'Permanently Released', 'مستقل علیحدگی')
+                                : tr('إعادة ربط بمؤسسة (assigned)', 'Assigned to Org', 'ادارے سے منسلک')}
+                            </span>
+                            <span className="font-mono text-[10px] text-slate-500">
+                              {formatIsoDate(h.effectiveAt)}
+                            </span>
+                          </div>
+                          <div className="font-semibold text-[#0B1B32] dark:text-white">
+                            {h.orgName} ({h.orgId}) · {getUserRoleLabel(h.role, language)}
+                            {h.branchName ? ` — ${h.branchName}` : ''}
+                          </div>
+                          {h.previousOrgId && (
+                            <div className="text-[11px] text-slate-500">
+                              {tr('المؤسسة السابقة:', 'Previous Org:', 'سابقہ ادارہ:')}{' '}
+                              {h.previousOrgName || h.previousOrgId}
+                            </div>
+                          )}
+                          <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                            {tr('السبب:', 'Reason:', 'وجہ:')} {h.reason}
+                          </div>
+                          <div className="text-[10px] font-mono text-slate-400" dir="ltr">
+                            Actor: {h.actorEmail} · Audit: {h.auditLogId}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Member Platform Audit Logs */}
+                <div className="space-y-2">
+                  <h3 className="font-bold text-xs text-[#0B1B32] dark:text-white">
+                    {tr(
+                      `سجل تدقيق المنصة للعضو (platformAuditLogs: ${memberAudits.length})`,
+                      `Member Platform Audit Trail (${memberAudits.length})`,
+                      `پلیٹ فارم آڈٹ لاگ (${memberAudits.length})`
+                    )}
+                  </h3>
+                  {memberAudits.length === 0 ? (
+                    <div className="p-3 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] text-slate-500 text-[11px]">
+                      {tr('لا توجد سجلات تدقيق خاصة بهذا العضو.', 'No audit logs for this member.', 'کوئی آڈٹ ریکارڈ نہیں۔')}
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {memberAudits.slice(0, 10).map((log) => (
+                        <div
+                          key={log.id}
+                          className="p-2.5 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-white dark:bg-[#0E203A] space-y-0.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-bold text-[11px] text-[#1764FF] dark:text-[#6CA2FF]">
+                              {getPlatformAuditActionLabel(log.action, language)}
+                            </span>
+                            <span className="font-mono text-[10px] text-slate-500">
+                              {formatIsoDate(log.timestamp)}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-600 dark:text-slate-300">{log.details}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         );

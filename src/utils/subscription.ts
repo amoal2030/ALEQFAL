@@ -1,6 +1,7 @@
 import {
   DeactivationReason,
   EffectiveSubscriptionState,
+  ExemptionClassification,
   Organization,
   SubscriptionPlan,
   SubscriptionStatus,
@@ -269,8 +270,12 @@ export interface OrganizationSubscriptionEvaluation {
   isAllowed: boolean;
   notStarted?: boolean;
   isLegacy: boolean;
+  /** True when legacy_unrestricted was explicitly granted by Super Admin via owner-bound exemption (independent of historical subscription fields). */
+  isExplicitLegacyUnrestricted: boolean;
   isBillingExempt: boolean;
+  /** Unified billing-exemption predicate across billing_exempt, explicit legacy_unrestricted, and implicit legacy_unrestricted. */
   isFeeExempt: boolean;
+  exemptionMode: ExemptionClassification | 'none';
   plan: SubscriptionPlan | null;
   rawStatus: SubscriptionStatus | null;
   startDate: Date | null;
@@ -300,6 +305,7 @@ export type OrganizationSubscriptionFields = Pick<
       | 'ownerEmail'
       | 'billingExempt'
       | 'billingExemptScope'
+      | 'billingExemptMode'
       | 'billingExemptVerifiedOwnerId'
       | 'billingExemptVerifiedOwnerEmail'
     >
@@ -319,6 +325,7 @@ export function isOrgPermanentlyBillingExempt(
           | 'ownerEmail'
           | 'billingExempt'
           | 'billingExemptScope'
+          | 'billingExemptMode'
           | 'billingExemptVerifiedOwnerId'
           | 'billingExemptVerifiedOwnerEmail'
         >
@@ -352,6 +359,35 @@ export function isOrgPermanentlyBillingExempt(
 }
 
 /**
+ * Resolves the explicit exemption classification for an owner-verified exempt organization.
+ * Defaults to 'billing_exempt' when billingExemptMode is omitted (backward compatible).
+ */
+export function getOrgExemptionClassification(
+  org:
+    | Partial<
+        Pick<
+          Organization,
+          | 'ownerId'
+          | 'ownerEmail'
+          | 'billingExempt'
+          | 'billingExemptScope'
+          | 'billingExemptMode'
+          | 'billingExemptVerifiedOwnerId'
+          | 'billingExemptVerifiedOwnerEmail'
+        >
+      >
+    | null
+    | undefined
+): ExemptionClassification | 'none' {
+  if (!isOrgPermanentlyBillingExempt(org)) {
+    return 'none';
+  }
+  return org?.billingExemptMode === 'legacy_unrestricted'
+    ? 'legacy_unrestricted'
+    : 'billing_exempt';
+}
+
+/**
  * Evaluates an organization's effective subscription state:
  * - 'suspended': org.isActive === false (manual suspension ALWAYS wins), subscriptionStatus === 'suspended', or 7-day no-paid-branch grace expired
  * - 'billing_exempt': Super-Admin-granted permanent exemption bound to verified ownerId + ownerEmail (preserves historical subscription fields)
@@ -370,8 +406,10 @@ export function evaluateOrganizationSubscription(
       state: 'suspended',
       isAllowed: false,
       isLegacy: false,
+      isExplicitLegacyUnrestricted: false,
       isBillingExempt: false,
       isFeeExempt: false,
+      exemptionMode: 'none',
       plan: null,
       rawStatus: null,
       startDate: null,
@@ -388,7 +426,10 @@ export function evaluateOrganizationSubscription(
   const parsedEndDate = toValidDate(org.subscriptionEndAt);
   const graceStartedAt = toValidDate(org.noPaidBranchGraceStartedAt);
   const deactivationDueAt = toValidDate(org.deactivationDueAt);
-  const isBillingExempt = isOrgPermanentlyBillingExempt(org);
+  const hasPermanentOwnerExemption = isOrgPermanentlyBillingExempt(org);
+  const permanentMode = getOrgExemptionClassification(org);
+  const isExplicitLegacy = hasPermanentOwnerExemption && permanentMode === 'legacy_unrestricted';
+  const isBillingExempt = hasPermanentOwnerExemption && permanentMode === 'billing_exempt';
   const hasSubscriptionConfiguration =
     org.subscriptionEndAt !== undefined && org.subscriptionEndAt !== null
       ? true
@@ -396,13 +437,21 @@ export function evaluateOrganizationSubscription(
 
   // Manual suspension (isActive === false) ALWAYS blocks access even for permanently exempt orgs
   if (org.isActive === false) {
-    const isLegacyWhenSuspended = !isBillingExempt && !hasSubscriptionConfiguration;
+    const isImplicitLegacyWhenSuspended = !hasPermanentOwnerExemption && !hasSubscriptionConfiguration;
+    const isLegacyWhenSuspended = isExplicitLegacy || isImplicitLegacyWhenSuspended;
+    const exemptionModeWhenSuspended: ExemptionClassification | 'none' = isBillingExempt
+      ? 'billing_exempt'
+      : isLegacyWhenSuspended
+      ? 'legacy_unrestricted'
+      : 'none';
     return {
       state: 'suspended',
       isAllowed: false,
       isLegacy: isLegacyWhenSuspended,
+      isExplicitLegacyUnrestricted: isExplicitLegacy,
       isBillingExempt,
       isFeeExempt: isLegacyWhenSuspended || isBillingExempt,
+      exemptionMode: exemptionModeWhenSuspended,
       plan,
       rawStatus,
       startDate,
@@ -415,15 +464,18 @@ export function evaluateOrganizationSubscription(
     };
   }
 
-  // Official permanent billing exemption: overrides expiry/grace while preserving historical subscription fields
-  if (isBillingExempt) {
+  // Official permanent organization exemption (either 'billing_exempt' or explicit 'legacy_unrestricted'):
+  // overrides expiry/grace while preserving ALL historical subscription fields untouched.
+  if (hasPermanentOwnerExemption) {
     return {
-      state: 'billing_exempt',
+      state: isExplicitLegacy ? 'legacy_unrestricted' : 'billing_exempt',
       isAllowed: true,
       notStarted: false,
-      isLegacy: false,
-      isBillingExempt: true,
+      isLegacy: isExplicitLegacy,
+      isExplicitLegacyUnrestricted: isExplicitLegacy,
+      isBillingExempt: !isExplicitLegacy,
       isFeeExempt: true,
+      exemptionMode: permanentMode,
       plan,
       rawStatus,
       startDate,
@@ -441,8 +493,10 @@ export function evaluateOrganizationSubscription(
       state: 'legacy_unrestricted',
       isAllowed: true,
       isLegacy: true,
+      isExplicitLegacyUnrestricted: false,
       isBillingExempt: false,
       isFeeExempt: true,
+      exemptionMode: 'legacy_unrestricted',
       plan,
       rawStatus: null,
       startDate,
@@ -463,8 +517,10 @@ export function evaluateOrganizationSubscription(
       state: 'suspended',
       isAllowed: false,
       isLegacy: false,
+      isExplicitLegacyUnrestricted: false,
       isBillingExempt: false,
       isFeeExempt: false,
+      exemptionMode: 'none',
       plan,
       rawStatus,
       startDate,
@@ -482,8 +538,10 @@ export function evaluateOrganizationSubscription(
       state: 'suspended',
       isAllowed: false,
       isLegacy: false,
+      isExplicitLegacyUnrestricted: false,
       isBillingExempt: false,
       isFeeExempt: false,
+      exemptionMode: 'none',
       plan,
       rawStatus,
       startDate,
@@ -498,8 +556,10 @@ export function evaluateOrganizationSubscription(
       state: 'expired',
       isAllowed: false,
       isLegacy: false,
+      isExplicitLegacyUnrestricted: false,
       isBillingExempt: false,
       isFeeExempt: false,
+      exemptionMode: 'none',
       plan,
       rawStatus,
       startDate,
@@ -514,8 +574,10 @@ export function evaluateOrganizationSubscription(
       state: 'expired',
       isAllowed: false,
       isLegacy: false,
+      isExplicitLegacyUnrestricted: false,
       isBillingExempt: false,
       isFeeExempt: false,
+      exemptionMode: 'none',
       plan,
       rawStatus,
       startDate,
@@ -531,8 +593,10 @@ export function evaluateOrganizationSubscription(
       isAllowed: false,
       notStarted: false,
       isLegacy: false,
+      isExplicitLegacyUnrestricted: false,
       isBillingExempt: false,
       isFeeExempt: false,
+      exemptionMode: 'none',
       plan,
       rawStatus,
       startDate,
@@ -548,8 +612,10 @@ export function evaluateOrganizationSubscription(
       isAllowed: false,
       notStarted: true,
       isLegacy: false,
+      isExplicitLegacyUnrestricted: false,
       isBillingExempt: false,
       isFeeExempt: false,
+      exemptionMode: 'none',
       plan,
       rawStatus,
       startDate,
@@ -566,8 +632,10 @@ export function evaluateOrganizationSubscription(
       isAllowed: false,
       notStarted: false,
       isLegacy: false,
+      isExplicitLegacyUnrestricted: false,
       isBillingExempt: false,
       isFeeExempt: false,
+      exemptionMode: 'none',
       plan,
       rawStatus,
       startDate,
@@ -582,8 +650,10 @@ export function evaluateOrganizationSubscription(
     isAllowed: true,
     notStarted: false,
     isLegacy: false,
+    isExplicitLegacyUnrestricted: false,
     isBillingExempt: false,
     isFeeExempt: false,
+    exemptionMode: 'none',
     plan,
     rawStatus,
     startDate,

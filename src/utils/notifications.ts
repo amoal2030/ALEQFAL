@@ -1041,7 +1041,7 @@ export function buildSuperAdminPlatformNotification(params: {
   body: string;
   targetType: NotificationTargetType;
   targetId: string;
-  tab?: 'organizations' | 'branches' | 'invites' | 'auditLogs';
+  tab?: 'organizations' | 'branches' | 'members' | 'invites' | 'auditLogs';
   createdAt?: string;
 }): AppNotification {
   return createNotificationPayload({

@@ -56,8 +56,10 @@ import {
   ManagerInvite,
   PlatformAuditAction,
   PlatformAuditLog,
+  MemberOrgHistoryRecord,
   FeePaymentStatus,
   BranchPaymentStatus,
+  ExemptionClassification,
   SubscriptionPlan,
   SubscriptionStatus,
   DeactivationReason,
@@ -89,6 +91,7 @@ import {
   BRANCH_PRICING_MODEL,
   BRANCH_SUSPENSION_GRACE_DAYS,
   BranchDriveBackupVerificationResult,
+  evaluateOrganizationBranchPricing,
   isBranchCountedAsPaid,
   NEW_ORG_INCLUDED_BRANCHES_COUNT,
   NO_PAID_BRANCH_GRACE_DAYS,
@@ -96,11 +99,29 @@ import {
   verifyBranchDriveBackupCompleteness,
 } from '../utils/branchPricing';
 import {
+  buildSuperAdminAssignReleasedMemberBundle,
+  buildSuperAdminBranchExemptionGrantBundle,
+  buildSuperAdminBranchExemptionRevokeBundle,
+  buildSuperAdminBulkBranchesExemptionBundles,
+  buildSuperAdminMemberArchiveBundle,
+  buildSuperAdminMemberCreateBundle,
+  buildSuperAdminMemberReactivateBundle,
+  buildSuperAdminMemberReleaseBundle,
+  buildSuperAdminMemberUpdateBundle,
+  buildSuperAdminOrgExemptionGrantBundle,
+  buildSuperAdminOrgExemptionRevokeBundle,
+  InFlightActionGuard,
+  resolveOrgExemptionRevokeAuditAction,
+  SuperAdminAssignableMemberRole,
+  validateSuperAdminMemberCreateInput,
+} from '../utils/superAdminGovernance';
+import {
   buildAtomicInviteClaimPayloads,
   evaluateFirestoreErrorCategory,
   getSubscriptionBlockReason,
   isGoogleProviderUser,
   isValidNormalizedEmailDocId,
+  resolveMemberMembershipStatus,
   normalizeEmail,
   resolveProfiledUserAccess,
   resolveUnprofiledUserAccess,
@@ -322,12 +343,75 @@ interface AuthContextType {
   grantSuperAdminOrgBillingExemption: (input: {
     orgId: string;
     expectedOwnerEmail?: string;
+    mode?: ExemptionClassification;
     reason: string;
   }) => Promise<{ auditLogId: string; ownerId: string; ownerEmail: string }>;
   revokeSuperAdminOrgBillingExemption: (input: {
     orgId: string;
     reason: string;
   }) => Promise<{ auditLogId: string }>;
+  grantSuperAdminBranchExemption: (input: {
+    branchId: string;
+    mode?: ExemptionClassification;
+    reason: string;
+  }) => Promise<{ auditLogId: string }>;
+  revokeSuperAdminBranchExemption: (input: {
+    branchId: string;
+    restoredPaymentStatus?: Exclude<BranchPaymentStatus, 'exempt'>;
+    restoredMonthlyFeeSar?: number;
+    reason: string;
+  }) => Promise<{ auditLogId: string; parentOrgRemainsExempt: boolean }>;
+  grantSuperAdminBulkOrgBranchesExemption: (input: {
+    orgId: string;
+    mode?: ExemptionClassification;
+    reason: string;
+  }) => Promise<{ exemptedCount: number; auditLogIds: string[] }>;
+  createSuperAdminOrgMember: (input: {
+    orgId: string;
+    email: string;
+    password: string;
+    displayName: string;
+    role: SuperAdminAssignableMemberRole;
+    branchId?: string;
+    phone?: string;
+    supervisorPermissions?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+  }) => Promise<{ member: UserProfile; auditLogId: string }>;
+  updateSuperAdminOrgMember: (input: {
+    memberUid: string;
+    displayName: string;
+    phone?: string;
+    role: SuperAdminAssignableMemberRole;
+    branchId?: string;
+    supervisorPermissions?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+    reason?: string;
+  }) => Promise<{
+    action: 'MEMBER_ROLE_CHANGED' | 'MEMBER_BRANCH_CHANGED' | 'MEMBER_UPDATED';
+    auditLogId: string;
+  }>;
+  archiveSuperAdminOrgMember: (input: {
+    memberUid: string;
+    reason: string;
+  }) => Promise<{ auditLogId: string }>;
+  reactivateSuperAdminOrgMember: (input: {
+    memberUid: string;
+    reason?: string;
+  }) => Promise<{ auditLogId: string }>;
+  releaseSuperAdminOrgMember: (input: {
+    memberUid: string;
+    reason: string;
+  }) => Promise<{ auditLogId: string; historyId: string }>;
+  assignReleasedMemberToOrganization: (input: {
+    memberUid: string;
+    targetOrgId: string;
+    role: SuperAdminAssignableMemberRole;
+    branchId?: string;
+    supervisorPermissions?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+    reason?: string;
+    sendOptionalPasswordReset?: boolean;
+  }) => Promise<{ auditLogId: string; historyId: string; passwordResetSent: boolean }>;
+  sendSuperAdminMemberPasswordReset: (memberUid: string) => Promise<{ email: string }>;
+  loadSuperAdminReleasedMembers: () => Promise<UserProfile[]>;
+  loadSuperAdminMemberOrgHistory: (memberUid?: string) => Promise<MemberOrgHistoryRecord[]>;
   upsertSuperAdminManagerInvite: (input: {
     email: string;
     orgId: string;
@@ -441,6 +525,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const notificationSoundEnabledRef = useRef<boolean>(true);
   const emittedThresholdTrackerRef = useRef(new NotificationPersistenceTracker());
   const loadedNotificationIdsRef = useRef<Set<string>>(new Set());
+  const inFlightSuperAdminActionsRef = useRef(new InFlightActionGuard());
 
   activeUserUidRef.current = currentUser?.uid ?? null;
   activeOrgIdRef.current = currentOrg?.id ?? null;
@@ -635,6 +720,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         (docSnap) => {
           if (!docSnap.exists()) return;
           const data: UserProfile = { ...(docSnap.data() as UserProfile), uid: currentUser.uid };
+          if (resolveMemberMembershipStatus(data) === 'released') {
+            clearDriveSession();
+            clearOperationalState();
+            setUserProfile(null);
+            setCurrentOrg(null);
+            setSubscriptionEvaluation(null);
+            setSubscriptionBlockReason(null);
+            setInviteBlockInfo(null);
+            setAccessErrorInfo({ reason: 'membership_released' });
+            setTenantStatus('access_error');
+            return;
+          }
           if (data.isActive === false) {
             // Instantly terminate disabled session for BOTH manager & employee
             clearDriveSession();
@@ -1335,6 +1432,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (userDocSnap.exists()) {
         const profile: UserProfile = { ...(userDocSnap.data() as UserProfile), uid: fbUser.uid };
 
+        // Permanently released member: show dedicated clear notice without signing out or leaking any tenant data
+        if (resolveMemberMembershipStatus(profile) === 'released') {
+          clearDriveSession();
+          clearOperationalState();
+          setUserProfile(null);
+          setCurrentOrg(null);
+          setSubscriptionEvaluation(null);
+          setSubscriptionBlockReason(null);
+          setInviteBlockInfo(null);
+          setAccessErrorInfo({ reason: 'membership_released' });
+          setTenantStatus('access_error');
+          setLoading(false);
+          return;
+        }
+
         // Disabled user enforcement (both Manager and Employee)
         if (profile.isActive === false) {
           clearDriveSession();
@@ -1749,6 +1861,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         phone: data.phone?.trim().slice(0, 25) || '',
         isActive: true,
         isArchived: false,
+        membershipStatus: 'active',
         permissions: canonicalPermissions,
         createdAt: nowIso,
         updatedAt: nowIso,
@@ -1805,6 +1918,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } catch {
         // ignore
       }
+      if (error?.code === 'auth/email-already-in-use') {
+        throw new Error(
+          'هذا البريد الإلكتروني مسجل مسبقاً في المنصة (قد يكون مرتبطاً بمؤسسة أخرى أو مؤرشفاً لديها). لا يمكن إضافته مباشرة؛ يرجى التواصل مع إدارة المنصة لفصل عضويته نهائياً من مؤسسته السابقة وإعادة ربطه بمؤسستكم.'
+        );
+      }
       throw error;
     }
   };
@@ -1818,8 +1936,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const targetEmployee = employees.find((e) => e.uid === employeeUid);
-    if (targetEmployee && (targetEmployee.orgId !== currentOrg.id || targetEmployee.role === 'manager')) {
-      throw new Error('لا يمكن تعديل حساب خارج المؤسسة أو حساب مدير المؤسسة.');
+    if (
+      targetEmployee &&
+      (targetEmployee.orgId !== currentOrg.id ||
+        targetEmployee.role === 'manager' ||
+        resolveMemberMembershipStatus(targetEmployee) === 'released')
+    ) {
+      throw new Error('لا يمكن تعديل حساب خارج المؤسسة أو محرر نهائياً أو حساب مدير المؤسسة.');
     }
 
     const safeActorName =
@@ -1838,6 +1961,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
     if (isActive) {
       statusUpdatePayload.isArchived = false;
+      statusUpdatePayload.membershipStatus = 'active';
       statusUpdatePayload.archivedAt = deleteField();
       statusUpdatePayload.archivedBy = deleteField();
     }
@@ -1964,8 +2088,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('حساب الموظف غير موجود في قاعدة البيانات.');
     }
     const prevProfile = existingSnap.data() as UserProfile;
-    if (prevProfile.orgId !== currentOrg.id) {
-      throw new Error('لا يمكن تعديل حساب يتبع لمؤسسة أخرى.');
+    if (
+      prevProfile.orgId !== currentOrg.id ||
+      resolveMemberMembershipStatus(prevProfile) === 'released'
+    ) {
+      throw new Error('لا يمكن تعديل حساب يتبع لمؤسسة أخرى أو تم فصل عضويته نهائياً.');
     }
     if (prevProfile.role === 'manager') {
       throw new Error('لا يمكن تعديل حساب مدير المؤسسة من إدارة الموظفين.');
@@ -2107,8 +2234,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('حساب الموظف غير موجود.');
     }
     const target = snap.data() as UserProfile;
-    if (target.orgId !== currentOrg.id || target.role === 'manager') {
-      throw new Error('لا يمكن أرشفة حساب خارج المؤسسة أو حساب مدير المؤسسة.');
+    if (
+      target.orgId !== currentOrg.id ||
+      target.role === 'manager' ||
+      resolveMemberMembershipStatus(target) === 'released'
+    ) {
+      throw new Error('لا يمكن أرشفة حساب خارج المؤسسة أو محرر نهائياً أو حساب مدير المؤسسة.');
     }
 
     const safeActorName =
@@ -2125,6 +2256,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     batch.update(userRef, {
       isActive: false,
       isArchived: true,
+      membershipStatus: 'archived',
       archivedAt: nowIso,
       archivedBy: userProfile.uid,
       updatedAt: nowIso,
@@ -3525,7 +3657,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
-      setSuperAdminOverview(overview);
+      // Fetch immutable memberOrgHistory non-blockingly so older deployed rulesets never break overview load
+      let memberOrgHistory: MemberOrgHistoryRecord[] = [];
+      try {
+        const histColRef = collection(db, 'memberOrgHistory');
+        const histSnap = await getDocsFromServer(histColRef).catch(() => getDocs(histColRef));
+        histSnap.forEach((docSnap) => {
+          memberOrgHistory.push(docSnap.data() as MemberOrgHistoryRecord);
+        });
+        memberOrgHistory.sort(
+          (a, b) => new Date(b.effectiveAt || b.createdAt).getTime() - new Date(a.effectiveAt || a.createdAt).getTime()
+        );
+      } catch {
+        memberOrgHistory = [];
+      }
+
+      setSuperAdminOverview({
+        ...overview,
+        memberOrgHistory,
+      });
       if (overview.diagnosticMessage) {
         setSuperAdminError(overview.diagnosticMessage);
       }
@@ -3860,16 +4010,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // If ownerEmail changes while org is billing-exempt, atomically revoke exemption + write coupled audit log
       let autoRevokeAuditLog: PlatformAuditLog | null = null;
       if (ownerEmailChangedWhileExempt) {
+        const autoRevokeAction = resolveOrgExemptionRevokeAuditAction(existingOrg.billingExemptMode);
         const autoRevokeReason = `إلغاء تلقائي للإعفاء الدائم بسبب تغيير بريد المالك من ${prevOwnerEmailLower} إلى ${nextOwnerEmailLower}`;
         autoRevokeAuditLog = createPlatformAuditPayload({
           actor,
-          action: 'ORG_BILLING_EXEMPTION_REVOKED',
+          action: autoRevokeAction,
           targetType: 'billing',
           targetId: input.orgId,
           orgId: input.orgId,
           details: `إلغاء تلقائي للإعفاء الدائم لمؤسسة "${input.name.trim()}" بسبب تغيير بريد المالك (${prevOwnerEmailLower} → ${nextOwnerEmailLower})`,
           metadata: {
             orgId: input.orgId,
+            previousMode: existingOrg.billingExemptMode || 'billing_exempt',
             previousOwnerEmail: prevOwnerEmailLower,
             newOwnerEmail: nextOwnerEmailLower,
             reason: autoRevokeReason,
@@ -4036,194 +4188,142 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const grantSuperAdminOrgBillingExemption: AuthContextType['grantSuperAdminOrgBillingExemption'] = async (
     input
   ) => {
-    const actor = assertAuthorizedSuperAdmin();
-    await actor.getIdToken();
+    return inFlightSuperAdminActionsRef.current.runExclusive(`org_exempt_grant:${input.orgId}`, async () => {
+      const actor = assertAuthorizedSuperAdmin();
+      await actor.getIdToken();
 
-    const cleanReason = (input.reason || '').trim();
-    if (cleanReason.length < 5 || cleanReason.length > 500) {
-      throw new Error('يجب إدخال سبب واضح لمنح الإعفاء الدائم (بين 5 و 500 حرف).');
-    }
-
-    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
-    const orgRef = doc(db, 'organizations', input.orgId);
-    const orgSnap = await getDocFromServer(orgRef).catch(() => getDoc(orgRef));
-    if (!orgSnap.exists()) {
-      throw new Error('المؤسسة غير موجودة.');
-    }
-    const existingOrg = orgSnap.data() as Organization;
-    const subEval = evaluateOrganizationSubscription(existingOrg);
-    if (subEval.isBillingExempt) {
-      throw new Error('هذه المؤسسة مشمولة بالفعل بالإعفاء الدائم الشامل.');
-    }
-
-    const ownerId = (existingOrg.ownerId || '').trim();
-    const ownerEmailLower = (existingOrg.ownerEmail || '').trim().toLowerCase();
-    if (!ownerId) {
-      throw new Error('لا يمكن منح الإعفاء الدائم قبل ربط معرّف المالك (ownerId) بوثيقة المؤسسة.');
-    }
-    if (ownerEmailLower.length < 3) {
-      throw new Error('بريد المالك المسجّل في وثيقة المؤسسة غير صالح.');
-    }
-    if (input.expectedOwnerEmail && input.expectedOwnerEmail.trim().toLowerCase() !== ownerEmailLower) {
-      throw new Error('عدم تطابق بريد المالك مع البريد المسجل في وثيقة المؤسسة.');
-    }
-
-    const ownerUserRef = doc(db, 'users', ownerId);
-    const ownerUserSnap = await getDocFromServer(ownerUserRef).catch(() => getDoc(ownerUserRef));
-    if (!ownerUserSnap.exists()) {
-      throw new Error('وثيقة حساب المالك غير موجودة في users؛ تعذر التحقق من ملكية المؤسسة.');
-    }
-    const ownerUser = ownerUserSnap.data() as UserProfile;
-    const ownerUserEmailLower = (ownerUser.email || '').trim().toLowerCase();
-    if (
-      ownerUser.orgId !== existingOrg.id ||
-      ownerUser.role !== 'manager' ||
-      ownerUserEmailLower !== ownerEmailLower
-    ) {
-      throw new Error('بيانات وثيقة المالك في users لا تطابق المؤسسة أو الدور (manager) أو البريد الإلكتروني.');
-    }
-
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const auditLog = createPlatformAuditPayload({
-      actor,
-      action: 'ORG_BILLING_EXEMPTION_GRANTED',
-      targetType: 'billing',
-      targetId: existingOrg.id,
-      orgId: existingOrg.id,
-      details: `منح إعفاء دائم شامل (full_permanent) للمؤسسة "${existingOrg.name}" (${existingOrg.id}) للمالك الموثق ${ownerEmailLower} (${ownerId}) — السبب: ${cleanReason}`,
-      metadata: {
-        orgId: existingOrg.id,
-        ownerId,
-        ownerEmail: ownerEmailLower,
-        scope: 'full_permanent',
-        reason: cleanReason,
-      },
-    });
-
-    const orgUpdate: Record<string, any> = {
-      billingExempt: true,
-      billingExemptScope: 'full_permanent',
-      billingExemptReason: cleanReason,
-      billingExemptGrantedAt: Timestamp.fromDate(now),
-      billingExemptGrantedBy: actorEmail,
-      billingExemptVerifiedOwnerId: ownerId,
-      billingExemptVerifiedOwnerEmail: ownerEmailLower,
-      billingExemptRevokedAt: null,
-      billingExemptRevokedBy: null,
-      billingExemptRevokeReason: null,
-      billingExemptLastAuditLogId: auditLog.id,
-      updatedAt: nowIso,
-    };
-
-    // Clear active no-paid-branch grace/deactivation without deleting historical subscription or payment fields
-    if (existingOrg.deactivationReason === 'no_paid_branches') {
-      orgUpdate.deactivationReason = null;
-      orgUpdate.noPaidBranchGraceStartedAt = null;
-      orgUpdate.deactivationDueAt = null;
-      if (existingOrg.isActive === false) {
-        orgUpdate.isActive = true;
-        orgUpdate.deactivatedAt = null;
+      const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+      const orgRef = doc(db, 'organizations', input.orgId);
+      const orgSnap = await getDocFromServer(orgRef).catch(() => getDoc(orgRef));
+      if (!orgSnap.exists()) {
+        throw new Error('المؤسسة غير موجودة.');
       }
-    } else if (existingOrg.noPaidBranchGraceStartedAt || existingOrg.deactivationDueAt) {
-      orgUpdate.noPaidBranchGraceStartedAt = null;
-      orgUpdate.deactivationDueAt = null;
-    }
+      const existingOrg = orgSnap.data() as Organization;
 
-    const batch = writeBatch(db);
-    batch.update(orgRef, orgUpdate);
-    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
-    const saGrantNotif = buildSuperAdminPlatformNotification({
-      dedupKey: `sa_org_billing_exempt_grant:${existingOrg.id}:${auditLog.id}`,
-      category: 'security_admin',
-      type: 'SA_ORG_BILLING_EXEMPTION_GRANTED',
-      severity: 'success',
-      relatedOrgId: existingOrg.id,
-      actorUid: actor.uid,
-      actorName: actor.displayName || actorEmail,
-      title: `اعتماد الإعفاء الدائم الشامل لمؤسسة "${existingOrg.name}"`,
-      body: `تم منح إعفاء دائم شامل للمالك الموثق ${ownerEmailLower} مع الاحتفاظ بكامل السجلات التاريخية.`,
-      targetType: 'organization',
-      targetId: existingOrg.id,
-      tab: 'organizations',
-      createdAt: nowIso,
+      const ownerIdClean = (existingOrg.ownerId || '').trim();
+      let ownerUser: UserProfile | null = null;
+      if (ownerIdClean) {
+        const ownerUserRef = doc(db, 'users', ownerIdClean);
+        const ownerUserSnap = await getDocFromServer(ownerUserRef).catch(() => getDoc(ownerUserRef));
+        if (ownerUserSnap.exists()) {
+          ownerUser = ownerUserSnap.data() as UserProfile;
+        }
+      }
+
+      const orgBranchesSnap = await getDocs(
+        query(collection(db, 'branches'), where('orgId', '==', existingOrg.id))
+      );
+      const orgBranches = orgBranchesSnap.docs.map((d) => d.data() as Branch);
+
+      const now = new Date();
+      const mode: ExemptionClassification =
+        input.mode === 'legacy_unrestricted' ? 'legacy_unrestricted' : 'billing_exempt';
+
+      const { orgPatch, auditLog, ownerId, ownerEmail } = buildSuperAdminOrgExemptionGrantBundle({
+        actor: {
+          uid: actor.uid,
+          email: actor.email,
+          emailVerified: actor.emailVerified,
+          displayName: actor.displayName,
+        },
+        org: existingOrg,
+        ownerUser,
+        orgBranches,
+        mode,
+        reason: input.reason,
+        expectedOwnerEmail: input.expectedOwnerEmail,
+        now,
+        grantedAtValue: Timestamp.fromDate(now),
+      });
+
+      const batch = writeBatch(db);
+      batch.update(orgRef, orgPatch);
+      batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+      const saGrantNotif = buildSuperAdminPlatformNotification({
+        dedupKey: `sa_org_billing_exempt_grant:${existingOrg.id}:${auditLog.id}`,
+        category: 'security_admin',
+        type:
+          mode === 'legacy_unrestricted'
+            ? 'SA_ORG_LEGACY_UNRESTRICTED_GRANTED'
+            : 'SA_ORG_BILLING_EXEMPTION_GRANTED',
+        severity: 'success',
+        relatedOrgId: existingOrg.id,
+        actorUid: actor.uid,
+        actorName: actor.displayName || actorEmail,
+        title:
+          mode === 'legacy_unrestricted'
+            ? `اعتماد إعفاء legacy_unrestricted لمؤسسة "${existingOrg.name}"`
+            : `اعتماد الإعفاء الدائم الشامل لمؤسسة "${existingOrg.name}"`,
+        body: `تم منح الإعفاء الدائم (${mode}) للمالك الموثق ${ownerEmail} مع الاحتفاظ بكامل السجلات التاريخية.`,
+        targetType: 'organization',
+        targetId: existingOrg.id,
+        tab: 'organizations',
+        createdAt: now.toISOString(),
+      });
+      batch.set(doc(db, 'notifications', saGrantNotif.id), saGrantNotif);
+
+      await batch.commit();
+      await loadSuperAdminOverview();
+      return { auditLogId: auditLog.id, ownerId, ownerEmail };
     });
-    batch.set(doc(db, 'notifications', saGrantNotif.id), saGrantNotif);
-
-    await batch.commit();
-    await loadSuperAdminOverview();
-    return { auditLogId: auditLog.id, ownerId, ownerEmail: ownerEmailLower };
   };
 
   const revokeSuperAdminOrgBillingExemption: AuthContextType['revokeSuperAdminOrgBillingExemption'] = async (
     input
   ) => {
-    const actor = assertAuthorizedSuperAdmin();
-    await actor.getIdToken();
+    return inFlightSuperAdminActionsRef.current.runExclusive(`org_exempt_revoke:${input.orgId}`, async () => {
+      const actor = assertAuthorizedSuperAdmin();
+      await actor.getIdToken();
 
-    const cleanReason = (input.reason || '').trim();
-    if (cleanReason.length < 5 || cleanReason.length > 500) {
-      throw new Error('يجب إدخال سبب واضح لإلغاء الإعفاء الدائم (بين 5 و 500 حرف).');
-    }
+      const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+      const orgRef = doc(db, 'organizations', input.orgId);
+      const orgSnap = await getDocFromServer(orgRef).catch(() => getDoc(orgRef));
+      if (!orgSnap.exists()) {
+        throw new Error('المؤسسة غير موجودة.');
+      }
+      const existingOrg = orgSnap.data() as Organization;
+      const now = new Date();
 
-    const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
-    const orgRef = doc(db, 'organizations', input.orgId);
-    const orgSnap = await getDocFromServer(orgRef).catch(() => getDoc(orgRef));
-    if (!orgSnap.exists()) {
-      throw new Error('المؤسسة غير موجودة.');
-    }
-    const existingOrg = orgSnap.data() as Organization;
-    if (existingOrg.billingExempt !== true) {
-      throw new Error('هذه المؤسسة ليست مشمولة بالإعفاء الدائم حالياً.');
-    }
+      const { orgPatch, auditLog } = buildSuperAdminOrgExemptionRevokeBundle({
+        actor: {
+          uid: actor.uid,
+          email: actor.email,
+          emailVerified: actor.emailVerified,
+          displayName: actor.displayName,
+        },
+        org: existingOrg,
+        reason: input.reason,
+        now,
+        revokedAtValue: Timestamp.fromDate(now),
+      });
 
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const auditLog = createPlatformAuditPayload({
-      actor,
-      action: 'ORG_BILLING_EXEMPTION_REVOKED',
-      targetType: 'billing',
-      targetId: existingOrg.id,
-      orgId: existingOrg.id,
-      details: `إلغاء الإعفاء الدائم الشامل للمؤسسة "${existingOrg.name}" (${existingOrg.id}) وإعادتها لنظام الاشتراكات القياسي دون حذف أي بيانات تاريخية — السبب: ${cleanReason}`,
-      metadata: {
-        orgId: existingOrg.id,
-        ownerId: existingOrg.ownerId || null,
-        ownerEmail: (existingOrg.ownerEmail || '').trim().toLowerCase() || null,
-        reason: cleanReason,
-      },
+      const batch = writeBatch(db);
+      batch.update(orgRef, orgPatch);
+      batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+      const saRevokeNotif = buildSuperAdminPlatformNotification({
+        dedupKey: `sa_org_billing_exempt_revoke:${existingOrg.id}:${auditLog.id}`,
+        category: 'security_admin',
+        type:
+          auditLog.action === 'ORG_LEGACY_UNRESTRICTED_REVOKED'
+            ? 'SA_ORG_LEGACY_UNRESTRICTED_REVOKED'
+            : 'SA_ORG_BILLING_EXEMPTION_REVOKED',
+        severity: 'warning',
+        relatedOrgId: existingOrg.id,
+        actorUid: actor.uid,
+        actorName: actor.displayName || actorEmail,
+        title: `إلغاء الإعفاء الدائم لمؤسسة "${existingOrg.name}"`,
+        body: `تم إلغاء الإعفاء الدائم وإعادة المؤسسة إلى نظام الاشتراكات القياسي مع حفظ كامل السجلات التاريخية.`,
+        targetType: 'organization',
+        targetId: existingOrg.id,
+        tab: 'organizations',
+        createdAt: now.toISOString(),
+      });
+      batch.set(doc(db, 'notifications', saRevokeNotif.id), saRevokeNotif);
+
+      await batch.commit();
+      await loadSuperAdminOverview();
+      return { auditLogId: auditLog.id };
     });
-
-    const batch = writeBatch(db);
-    batch.update(orgRef, {
-      billingExempt: false,
-      billingExemptRevokedAt: Timestamp.fromDate(now),
-      billingExemptRevokedBy: actorEmail,
-      billingExemptRevokeReason: cleanReason,
-      billingExemptLastAuditLogId: auditLog.id,
-      updatedAt: nowIso,
-    });
-    batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
-    const saRevokeNotif = buildSuperAdminPlatformNotification({
-      dedupKey: `sa_org_billing_exempt_revoke:${existingOrg.id}:${auditLog.id}`,
-      category: 'security_admin',
-      type: 'SA_ORG_BILLING_EXEMPTION_REVOKED',
-      severity: 'warning',
-      relatedOrgId: existingOrg.id,
-      actorUid: actor.uid,
-      actorName: actor.displayName || actorEmail,
-      title: `إلغاء الإعفاء الدائم لمؤسسة "${existingOrg.name}"`,
-      body: `تم إلغاء الإعفاء الدائم وإعادة المؤسسة إلى نظام الاشتراكات القياسي مع حفظ كامل السجلات التاريخية.`,
-      targetType: 'organization',
-      targetId: existingOrg.id,
-      tab: 'organizations',
-      createdAt: nowIso,
-    });
-    batch.set(doc(db, 'notifications', saRevokeNotif.id), saRevokeNotif);
-
-    await batch.commit();
-    await loadSuperAdminOverview();
-    return { auditLogId: auditLog.id };
   };
 
   const upsertSuperAdminManagerInvite: AuthContextType['upsertSuperAdminManagerInvite'] = async (
@@ -4342,16 +4442,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (subEval.isFeeExempt) return;
 
     const paidBranches = updatedBranches.filter((b) => isBranchCountedAsPaid(b, org, now));
-    const activeBranches = updatedBranches.filter(
-      (b) => b.isActive !== false && b.lifecycleStatus !== 'suspended' && b.lifecycleStatus !== 'purged_from_db'
-    );
-    const included = org.includedBranchesCount ?? NEW_ORG_INCLUDED_BRANCHES_COUNT;
-    const perBranch = org.extraBranchMonthlyFeeSar ?? BRANCH_MONTHLY_FEE_SAR;
-    const billableCount = Math.max(0, activeBranches.length - included);
+    const pricingEval = evaluateOrganizationBranchPricing({
+      org,
+      branches: updatedBranches,
+      now,
+    });
 
     const orgUpdate: Record<string, any> = {
-      extraBranchesCount: billableCount,
-      extraBranchesMonthlyTotalSar: billableCount * perBranch,
+      extraBranchesCount: pricingEval.billableBranchesCount,
+      extraBranchesMonthlyTotalSar: pricingEval.estimatedMonthlyBranchTotalSar,
       branchPricingUpdatedAt: serverTimestamp(),
       branchPricingUpdatedBy: actorEmail,
       updatedAt: now.toISOString(),
@@ -4498,6 +4597,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     const org = orgSnap.data() as Organization;
     const subEval = evaluateOrganizationSubscription(org);
+    if (existingBranch.billingExempt === true) {
+      throw new Error(
+        'هذا الفرع يحمل إعفاءً فردياً دائماً؛ لتغيير حالته إلى مدفوع أو غير مدفوع يرجى استخدام نافذة «إدارة إعفاء الفرع» وإلغاء الإعفاء بسجل تدقيق رسمي أولاً.'
+      );
+    }
+    if (!subEval.isBillingExempt && input.paymentStatus === 'exempt' && existingBranch.paymentStatus !== 'exempt') {
+      throw new Error(
+        'لمنح إعفاء دائم للفرع بشكل رسمي وموثّق في سجل المنصة، يرجى استخدام زر «إعفاء الفرع» المخصص بدلاً من نافذة السداد.'
+      );
+    }
     const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
     const now = new Date();
     const paidDate = parseDateInputOrFallback(input.paidDateIso, now);
@@ -4669,14 +4778,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     const org = orgSnap.data() as Organization;
     const subEval = evaluateOrganizationSubscription(org);
+    const isIndividuallyExempt = existingBranch.billingExempt === true;
+    const branchIsFeeExempt = subEval.isFeeExempt || isIndividuallyExempt;
+    if (!branchIsFeeExempt && input.paymentStatus === 'exempt') {
+      throw new Error(
+        'لمنح إعفاء دائم للفرع، أعد تنشيطه أولاً ثم استخدم زر «إعفاء الفرع» المخصص لتسجيل الإعفاء ذرياً في سجل التدقيق.'
+      );
+    }
     const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
     const now = new Date();
     const dueDate = parseDateInputOrFallback(
       input.feeDueDateIso,
       new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
     );
-    const paymentStatus: BranchPaymentStatus = subEval.isFeeExempt ? 'exempt' : input.paymentStatus;
-    const monthlyFeeSar = subEval.isFeeExempt
+    const paymentStatus: BranchPaymentStatus = branchIsFeeExempt ? 'exempt' : input.paymentStatus;
+    const monthlyFeeSar = branchIsFeeExempt
       ? 0
       : existingBranch.monthlyFeeSar ?? BRANCH_MONTHLY_FEE_SAR;
     const isPaid = paymentStatus === 'paid' || paymentStatus === 'exempt';
@@ -4690,7 +4806,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       lifecycleStatus: 'active',
       monthlyFeeSar,
       paymentStatus,
-      feeDueAt: subEval.isFeeExempt ? null : Timestamp.fromDate(dueDate),
+      feeDueAt: branchIsFeeExempt ? null : Timestamp.fromDate(dueDate),
       driveBackupVerified: false,
     };
     const mergedBranches = existingOrgBranchesSnap.docs.map((d) =>
@@ -4703,7 +4819,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       lifecycleStatus: 'active',
       monthlyFeeSar,
       paymentStatus,
-      feeDueAt: subEval.isFeeExempt ? null : Timestamp.fromDate(dueDate),
+      feeDueAt: branchIsFeeExempt ? null : Timestamp.fromDate(dueDate),
       lastPaidAt: isPaid ? Timestamp.fromDate(now) : existingBranch.lastPaidAt || null,
       lastPaidBy: isPaid ? actorEmail : existingBranch.lastPaidBy || null,
       ...(input.paymentNote?.trim() ? { paymentNote: input.paymentNote.trim().slice(0, 500) } : {}),
@@ -4953,6 +5069,767 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   };
 
+  // Phase C — Individual Branch Exemption, Bulk Org Branch Exemption & Cross-Org Member Management
+  const grantSuperAdminBranchExemption: AuthContextType['grantSuperAdminBranchExemption'] = async (
+    input
+  ) => {
+    return inFlightSuperAdminActionsRef.current.runExclusive(
+      `branch_exempt_grant:${input.branchId}`,
+      async () => {
+        const actor = assertAuthorizedSuperAdmin();
+        await actor.getIdToken();
+
+        const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+        const branchRef = doc(db, 'branches', input.branchId);
+        const branchSnap = await getDocFromServer(branchRef).catch(() => getDoc(branchRef));
+        if (!branchSnap.exists()) {
+          throw new Error('الفرع غير موجود.');
+        }
+        const existingBranch = branchSnap.data() as Branch;
+
+        const orgSnap = await getDocFromServer(doc(db, 'organizations', existingBranch.orgId)).catch(
+          () => getDoc(doc(db, 'organizations', existingBranch.orgId))
+        );
+        if (!orgSnap.exists()) {
+          throw new Error('المؤسسة المالكة للفرع غير موجودة.');
+        }
+        const org = orgSnap.data() as Organization;
+        const now = new Date();
+        const mode: ExemptionClassification =
+          input.mode === 'legacy_unrestricted' ? 'legacy_unrestricted' : 'billing_exempt';
+
+        const { branchPatch, auditLog } = buildSuperAdminBranchExemptionGrantBundle({
+          actor: {
+            uid: actor.uid,
+            email: actor.email,
+            emailVerified: actor.emailVerified,
+            displayName: actor.displayName,
+          },
+          org,
+          branch: existingBranch,
+          mode,
+          reason: input.reason,
+          now,
+          grantedAtValue: Timestamp.fromDate(now),
+        });
+
+        const existingOrgBranchesSnap = await getDocs(
+          query(collection(db, 'branches'), where('orgId', '==', existingBranch.orgId))
+        );
+        const mergedBranches = existingOrgBranchesSnap.docs.map((d) =>
+          d.id === existingBranch.id
+            ? ({ ...existingBranch, ...branchPatch } as Branch)
+            : (d.data() as Branch)
+        );
+
+        const batch = writeBatch(db);
+        batch.update(branchRef, branchPatch);
+        batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+        await syncOrgBranchBillingTotalsInBatch(batch, org, mergedBranches, now, actorEmail);
+
+        const saNotif = buildSuperAdminPlatformNotification({
+          dedupKey: `sa_branch_exempt_grant:${existingBranch.id}:${auditLog.id}`,
+          category: 'security_admin',
+          type: 'SA_BRANCH_BILLING_EXEMPTION_GRANTED',
+          severity: 'success',
+          relatedOrgId: org.id,
+          branchId: existingBranch.id,
+          branchName: existingBranch.name,
+          actorUid: actor.uid,
+          actorName: actor.displayName || actorEmail,
+          title: `إعفاء دائم للفرع "${existingBranch.name}"`,
+          body: `تم منح إعفاء دائم (${mode}) للفرع "${existingBranch.name}" في مؤسسة "${org.name}" (0 ر.س مع حفظ سجلات الدفع التاريخية).`,
+          targetType: 'branch',
+          targetId: existingBranch.id,
+          tab: 'branches',
+          createdAt: now.toISOString(),
+        });
+        batch.set(doc(db, 'notifications', saNotif.id), saNotif);
+
+        await batch.commit();
+        await loadSuperAdminOverview();
+        return { auditLogId: auditLog.id };
+      }
+    );
+  };
+
+  const revokeSuperAdminBranchExemption: AuthContextType['revokeSuperAdminBranchExemption'] = async (
+    input
+  ) => {
+    return inFlightSuperAdminActionsRef.current.runExclusive(
+      `branch_exempt_revoke:${input.branchId}`,
+      async () => {
+        const actor = assertAuthorizedSuperAdmin();
+        await actor.getIdToken();
+
+        const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+        const branchRef = doc(db, 'branches', input.branchId);
+        const branchSnap = await getDocFromServer(branchRef).catch(() => getDoc(branchRef));
+        if (!branchSnap.exists()) {
+          throw new Error('الفرع غير موجود.');
+        }
+        const existingBranch = branchSnap.data() as Branch;
+
+        const orgSnap = await getDocFromServer(doc(db, 'organizations', existingBranch.orgId)).catch(
+          () => getDoc(doc(db, 'organizations', existingBranch.orgId))
+        );
+        if (!orgSnap.exists()) {
+          throw new Error('المؤسسة المالكة للفرع غير موجودة.');
+        }
+        const org = orgSnap.data() as Organization;
+        const now = new Date();
+
+        const { branchPatch, auditLog, parentOrgRemainsExempt } =
+          buildSuperAdminBranchExemptionRevokeBundle({
+            actor: {
+              uid: actor.uid,
+              email: actor.email,
+              emailVerified: actor.emailVerified,
+              displayName: actor.displayName,
+            },
+            org,
+            branch: existingBranch,
+            restoredPaymentStatus: input.restoredPaymentStatus,
+            restoredMonthlyFeeSar: input.restoredMonthlyFeeSar,
+            reason: input.reason,
+            now,
+            revokedAtValue: Timestamp.fromDate(now),
+          });
+
+        const existingOrgBranchesSnap = await getDocs(
+          query(collection(db, 'branches'), where('orgId', '==', existingBranch.orgId))
+        );
+        const mergedBranches = existingOrgBranchesSnap.docs.map((d) =>
+          d.id === existingBranch.id
+            ? ({ ...existingBranch, ...branchPatch } as Branch)
+            : (d.data() as Branch)
+        );
+
+        const batch = writeBatch(db);
+        batch.update(branchRef, branchPatch);
+        batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+        await syncOrgBranchBillingTotalsInBatch(batch, org, mergedBranches, now, actorEmail);
+
+        const saNotif = buildSuperAdminPlatformNotification({
+          dedupKey: `sa_branch_exempt_revoke:${existingBranch.id}:${auditLog.id}`,
+          category: 'security_admin',
+          type: 'SA_BRANCH_BILLING_EXEMPTION_REVOKED',
+          severity: 'warning',
+          relatedOrgId: org.id,
+          branchId: existingBranch.id,
+          branchName: existingBranch.name,
+          actorUid: actor.uid,
+          actorName: actor.displayName || actorEmail,
+          title: `إلغاء الإعفاء الفردي للفرع "${existingBranch.name}"`,
+          body: parentOrgRemainsExempt
+            ? `تم إلغاء الإعفاء الفردي للفرع مع بقاء إعفاء المؤسسة الأم سارياً.`
+            : `تم إلغاء الإعفاء الفردي للفرع "${existingBranch.name}" وإعادته لنظام الرسوم القياسي مع حفظ كامل السجلات التاريخية.`,
+          targetType: 'branch',
+          targetId: existingBranch.id,
+          tab: 'branches',
+          createdAt: now.toISOString(),
+        });
+        batch.set(doc(db, 'notifications', saNotif.id), saNotif);
+
+        await batch.commit();
+        await loadSuperAdminOverview();
+        return { auditLogId: auditLog.id, parentOrgRemainsExempt };
+      }
+    );
+  };
+
+  const grantSuperAdminBulkOrgBranchesExemption: AuthContextType['grantSuperAdminBulkOrgBranchesExemption'] =
+    async (input) => {
+      return inFlightSuperAdminActionsRef.current.runExclusive(
+        `org_branches_bulk_exempt:${input.orgId}`,
+        async () => {
+          const actor = assertAuthorizedSuperAdmin();
+          await actor.getIdToken();
+
+          const actorEmail = (actor.email || 'amoal2030@gmail.com').trim().toLowerCase();
+          const orgSnap = await getDocFromServer(doc(db, 'organizations', input.orgId)).catch(() =>
+            getDoc(doc(db, 'organizations', input.orgId))
+          );
+          if (!orgSnap.exists()) {
+            throw new Error('المؤسسة غير موجودة.');
+          }
+          const org = orgSnap.data() as Organization;
+
+          const orgBranchesSnap = await getDocs(
+            query(collection(db, 'branches'), where('orgId', '==', org.id))
+          );
+          const orgBranches = orgBranchesSnap.docs.map((d) => d.data() as Branch);
+          const now = new Date();
+          const mode: ExemptionClassification =
+            input.mode === 'legacy_unrestricted' ? 'legacy_unrestricted' : 'billing_exempt';
+
+          const chunks = buildSuperAdminBulkBranchesExemptionBundles({
+            actor: {
+              uid: actor.uid,
+              email: actor.email,
+              emailVerified: actor.emailVerified,
+              displayName: actor.displayName,
+            },
+            org,
+            branches: orgBranches,
+            mode,
+            reason: input.reason,
+            now,
+            grantedAtValue: Timestamp.fromDate(now),
+          });
+
+          const auditLogIds: string[] = [];
+          const updatedMap = new Map<string, Branch>(orgBranches.map((b) => [b.id, b]));
+          let exemptedCount = 0;
+
+          for (let i = 0; i < chunks.length; i += 1) {
+            const chunk = chunks[i];
+            const batch = writeBatch(db);
+            for (const item of chunk.branches) {
+              batch.update(doc(db, 'branches', item.branch.id), item.patch);
+              updatedMap.set(item.branch.id, { ...item.branch, ...item.patch } as Branch);
+              exemptedCount += 1;
+            }
+            batch.set(doc(db, 'platformAuditLogs', chunk.auditLog.id), chunk.auditLog);
+            auditLogIds.push(chunk.auditLog.id);
+
+            if (i === chunks.length - 1) {
+              await syncOrgBranchBillingTotalsInBatch(
+                batch,
+                org,
+                Array.from(updatedMap.values()),
+                now,
+                actorEmail
+              );
+              const saNotif = buildSuperAdminPlatformNotification({
+                dedupKey: `sa_org_bulk_branch_exempt:${org.id}:${chunk.auditLog.id}`,
+                category: 'security_admin',
+                type: 'SA_ORG_BRANCHES_BULK_EXEMPTION_GRANTED',
+                severity: 'success',
+                relatedOrgId: org.id,
+                actorUid: actor.uid,
+                actorName: actor.displayName || actorEmail,
+                title: `إعفاء جماعي لفروع مؤسسة "${org.name}"`,
+                body: `تم إعفاء ${exemptedCount} فرعاً بشكل دائم (${mode}) مع حفظ جميع سجلات الدفع التاريخية.`,
+                targetType: 'organization',
+                targetId: org.id,
+                tab: 'branches',
+                createdAt: now.toISOString(),
+              });
+              batch.set(doc(db, 'notifications', saNotif.id), saNotif);
+            }
+
+            await batch.commit();
+          }
+
+          await loadSuperAdminOverview();
+          return { exemptedCount, auditLogIds };
+        }
+      );
+    };
+
+  const createSuperAdminOrgMember: AuthContextType['createSuperAdminOrgMember'] = async (input) => {
+    const emailKey = normalizeEmail(input.email);
+    return inFlightSuperAdminActionsRef.current.runExclusive(
+      `sa_member_create:${input.orgId}:${emailKey}`,
+      async () => {
+        const actor = assertAuthorizedSuperAdmin();
+        await actor.getIdToken();
+
+        const orgSnap = await getDocFromServer(doc(db, 'organizations', input.orgId)).catch(() =>
+          getDoc(doc(db, 'organizations', input.orgId))
+        );
+        if (!orgSnap.exists()) {
+          throw new Error('المؤسسة المستهدفة غير موجودة.');
+        }
+        const org = orgSnap.data() as Organization;
+
+        const orgBranchesSnap = await getDocs(
+          query(collection(db, 'branches'), where('orgId', '==', org.id))
+        );
+        const orgBranches = orgBranchesSnap.docs.map((d) => d.data() as Branch);
+
+        const validated = validateSuperAdminMemberCreateInput({
+          actor: {
+            email: actor.email,
+            emailVerified: actor.emailVerified,
+          },
+          org,
+          orgBranches,
+          email: input.email,
+          password: input.password,
+          displayName: input.displayName,
+          role: input.role,
+          branchId: input.branchId,
+          phone: input.phone,
+          supervisorPermissions: input.supervisorPermissions,
+        });
+
+        const secondaryAuth = getSecondaryAuth();
+        let newUid = '';
+        try {
+          const cred = await createUserWithEmailAndPassword(
+            secondaryAuth,
+            validated.email,
+            input.password
+          );
+          newUid = cred.user.uid;
+        } catch (authErr: any) {
+          if (authErr?.code === 'auth/email-already-in-use') {
+            throw new Error(
+              'هذا البريد مسجّل مسبقاً في Firebase Auth (مثل حساب Google قائم). لا يمكن إنشاء حساب جديد أو تخمين معرّفه تلقائياً؛ استخدم بريداً جديداً للموظف أو اربط الحساب عبر آلية الدعوة الرسمية.'
+            );
+          }
+          if (authErr?.code === 'auth/weak-password') {
+            throw new Error('كلمة المرور ضعيفة جداً؛ يجب أن تكون 6 أحرف على الأقل.');
+          }
+          if (authErr?.code === 'auth/invalid-email') {
+            throw new Error('صيغة البريد الإلكتروني غير صالحة.');
+          }
+          throw authErr;
+        } finally {
+          await signOut(secondaryAuth).catch(() => {});
+        }
+
+        const now = new Date();
+        const { userDoc, auditLog } = buildSuperAdminMemberCreateBundle({
+          actor: {
+            uid: actor.uid,
+            email: actor.email,
+            emailVerified: actor.emailVerified,
+            displayName: actor.displayName,
+          },
+          org,
+          newUid,
+          validated,
+          now,
+        });
+
+        const batch = writeBatch(db);
+        batch.set(doc(db, 'users', newUid), userDoc);
+        batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+        const saNotif = buildSuperAdminPlatformNotification({
+          dedupKey: `sa_member_created:${newUid}:${auditLog.id}`,
+          category: 'security_admin',
+          type: 'SA_MEMBER_CREATED',
+          severity: 'info',
+          relatedOrgId: org.id,
+          branchId: userDoc.branchId,
+          branchName: userDoc.branchName,
+          actorUid: actor.uid,
+          actorName: actor.displayName || actor.email || 'صاحب الموقع',
+          title: `إضافة عضو "${userDoc.displayName}"`,
+          body: `تم إنشاء العضو (${userDoc.role}) في مؤسسة "${org.name}" بنجاح.`,
+          targetType: 'organization',
+          targetId: org.id,
+          tab: 'members',
+          createdAt: now.toISOString(),
+        });
+        batch.set(doc(db, 'notifications', saNotif.id), saNotif);
+
+        await batch.commit();
+        await loadSuperAdminOverview();
+        return { member: userDoc, auditLogId: auditLog.id };
+      }
+    );
+  };
+
+  const updateSuperAdminOrgMember: AuthContextType['updateSuperAdminOrgMember'] = async (input) => {
+    return inFlightSuperAdminActionsRef.current.runExclusive(
+      `sa_member_update:${input.memberUid}`,
+      async () => {
+        const actor = assertAuthorizedSuperAdmin();
+        await actor.getIdToken();
+
+        const memberRef = doc(db, 'users', input.memberUid);
+        const memberSnap = await getDocFromServer(memberRef).catch(() => getDoc(memberRef));
+        if (!memberSnap.exists()) {
+          throw new Error('العضو المطلوب غير موجود.');
+        }
+        const existingMember = memberSnap.data() as UserProfile;
+
+        const orgSnap = await getDocFromServer(doc(db, 'organizations', existingMember.orgId)).catch(
+          () => getDoc(doc(db, 'organizations', existingMember.orgId))
+        );
+        if (!orgSnap.exists()) {
+          throw new Error('المؤسسة المرتبطة بالعضو غير موجودة.');
+        }
+        const org = orgSnap.data() as Organization;
+
+        const orgBranchesSnap = await getDocs(
+          query(collection(db, 'branches'), where('orgId', '==', org.id))
+        );
+        const orgBranches = orgBranchesSnap.docs.map((d) => d.data() as Branch);
+        const now = new Date();
+
+        const { action, userPatch, auditLog } = buildSuperAdminMemberUpdateBundle({
+          actor: {
+            uid: actor.uid,
+            email: actor.email,
+            emailVerified: actor.emailVerified,
+            displayName: actor.displayName,
+          },
+          org,
+          existingMember,
+          orgBranches,
+          displayName: input.displayName,
+          phone: input.phone,
+          role: input.role,
+          branchId: input.branchId,
+          supervisorPermissions: input.supervisorPermissions,
+          reason: input.reason,
+          now,
+          deleteFieldSentinel: deleteField(),
+        });
+
+        const batch = writeBatch(db);
+        batch.update(memberRef, userPatch);
+        batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+        await batch.commit();
+        await loadSuperAdminOverview();
+        return { action, auditLogId: auditLog.id };
+      }
+    );
+  };
+
+  const archiveSuperAdminOrgMember: AuthContextType['archiveSuperAdminOrgMember'] = async (
+    input
+  ) => {
+    return inFlightSuperAdminActionsRef.current.runExclusive(
+      `sa_member_archive:${input.memberUid}`,
+      async () => {
+        const actor = assertAuthorizedSuperAdmin();
+        await actor.getIdToken();
+
+        const memberRef = doc(db, 'users', input.memberUid);
+        const memberSnap = await getDocFromServer(memberRef).catch(() => getDoc(memberRef));
+        if (!memberSnap.exists()) {
+          throw new Error('العضو المطلوب غير موجود.');
+        }
+        const existingMember = memberSnap.data() as UserProfile;
+
+        const orgSnap = await getDocFromServer(doc(db, 'organizations', existingMember.orgId)).catch(
+          () => getDoc(doc(db, 'organizations', existingMember.orgId))
+        );
+        if (!orgSnap.exists()) {
+          throw new Error('المؤسسة المرتبطة بالعضو غير موجودة.');
+        }
+        const org = orgSnap.data() as Organization;
+        const now = new Date();
+
+        const { userPatch, auditLog } = buildSuperAdminMemberArchiveBundle({
+          actor: {
+            uid: actor.uid,
+            email: actor.email,
+            emailVerified: actor.emailVerified,
+            displayName: actor.displayName,
+          },
+          org,
+          existingMember,
+          reason: input.reason,
+          now,
+        });
+
+        const batch = writeBatch(db);
+        batch.update(memberRef, userPatch);
+        batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+        const saNotif = buildSuperAdminPlatformNotification({
+          dedupKey: `sa_member_archived:${existingMember.uid}:${auditLog.id}`,
+          category: 'security_admin',
+          type: 'SA_MEMBER_ARCHIVED',
+          severity: 'warning',
+          relatedOrgId: org.id,
+          branchId: existingMember.branchId,
+          branchName: existingMember.branchName,
+          actorUid: actor.uid,
+          actorName: actor.displayName || actor.email || 'صاحب الموقع',
+          title: `أرشفة عضو "${existingMember.displayName}"`,
+          body: `تم تعطيل وأرشفة العضو في مؤسسة "${org.name}" دون حذف أي سجلات تاريخية.`,
+          targetType: 'organization',
+          targetId: org.id,
+          tab: 'members',
+          createdAt: now.toISOString(),
+        });
+        batch.set(doc(db, 'notifications', saNotif.id), saNotif);
+
+        await batch.commit();
+        await loadSuperAdminOverview();
+        return { auditLogId: auditLog.id };
+      }
+    );
+  };
+
+  const reactivateSuperAdminOrgMember: AuthContextType['reactivateSuperAdminOrgMember'] = async (
+    input
+  ) => {
+    return inFlightSuperAdminActionsRef.current.runExclusive(
+      `sa_member_reactivate:${input.memberUid}`,
+      async () => {
+        const actor = assertAuthorizedSuperAdmin();
+        await actor.getIdToken();
+
+        const memberRef = doc(db, 'users', input.memberUid);
+        const memberSnap = await getDocFromServer(memberRef).catch(() => getDoc(memberRef));
+        if (!memberSnap.exists()) {
+          throw new Error('العضو المطلوب غير موجود.');
+        }
+        const existingMember = memberSnap.data() as UserProfile;
+
+        const orgSnap = await getDocFromServer(doc(db, 'organizations', existingMember.orgId)).catch(
+          () => getDoc(doc(db, 'organizations', existingMember.orgId))
+        );
+        if (!orgSnap.exists()) {
+          throw new Error('المؤسسة المرتبطة بالعضو غير موجودة.');
+        }
+        const org = orgSnap.data() as Organization;
+        const now = new Date();
+
+        const { userPatch, auditLog } = buildSuperAdminMemberReactivateBundle({
+          actor: {
+            uid: actor.uid,
+            email: actor.email,
+            emailVerified: actor.emailVerified,
+            displayName: actor.displayName,
+          },
+          org,
+          existingMember,
+          reason: input.reason,
+          now,
+        });
+
+        const batch = writeBatch(db);
+        batch.update(memberRef, userPatch);
+        batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+        await batch.commit();
+        await loadSuperAdminOverview();
+        return { auditLogId: auditLog.id };
+      }
+    );
+  };
+
+  const releaseSuperAdminOrgMember: AuthContextType['releaseSuperAdminOrgMember'] = async (
+    input
+  ) => {
+    return inFlightSuperAdminActionsRef.current.runExclusive(
+      `sa_member_release:${input.memberUid}`,
+      async () => {
+        const actor = assertAuthorizedSuperAdmin();
+        await actor.getIdToken();
+
+        const memberRef = doc(db, 'users', input.memberUid);
+        const memberSnap = await getDocFromServer(memberRef).catch(() => getDoc(memberRef));
+        if (!memberSnap.exists()) {
+          throw new Error('العضو المطلوب غير موجود.');
+        }
+        const existingMember = memberSnap.data() as UserProfile;
+
+        if (!existingMember.orgId || resolveMemberMembershipStatus(existingMember) === 'released') {
+          throw new Error('هذا العضو محرر نهائياً بالفعل ولا يرتبط بأي مؤسسة حالياً.');
+        }
+
+        const orgSnap = await getDocFromServer(doc(db, 'organizations', existingMember.orgId)).catch(
+          () => getDoc(doc(db, 'organizations', existingMember.orgId))
+        );
+        if (!orgSnap.exists()) {
+          throw new Error('المؤسسة المرتبطة بالعضو غير موجودة.');
+        }
+        const org = orgSnap.data() as Organization;
+        const now = new Date();
+
+        const { userPatch, historyRecord, auditLog } = buildSuperAdminMemberReleaseBundle({
+          actor: {
+            uid: actor.uid,
+            email: actor.email,
+            emailVerified: actor.emailVerified,
+            displayName: actor.displayName,
+          },
+          org,
+          existingMember,
+          reason: input.reason,
+          now,
+          deleteFieldSentinel: deleteField(),
+        });
+
+        const batch = writeBatch(db);
+        batch.update(memberRef, userPatch);
+        batch.set(doc(db, 'memberOrgHistory', historyRecord.id), historyRecord);
+        batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+        const saNotif = buildSuperAdminPlatformNotification({
+          dedupKey: `sa_member_released:${existingMember.uid}:${auditLog.id}`,
+          category: 'security_admin',
+          type: 'SA_MEMBER_RELEASED',
+          severity: 'warning',
+          relatedOrgId: org.id,
+          actorUid: actor.uid,
+          actorName: actor.displayName || actor.email || 'صاحب الموقع',
+          title: `فصل عضوية "${existingMember.displayName}" نهائياً`,
+          body: `تم فصل العضو نهائياً عن مؤسسة "${org.name}" مع الاحتفاظ بحساب المصادقة وكافة السجلات التاريخية.`,
+          targetType: 'organization',
+          targetId: org.id,
+          tab: 'members',
+          createdAt: now.toISOString(),
+        });
+        batch.set(doc(db, 'notifications', saNotif.id), saNotif);
+
+        await batch.commit();
+        await loadSuperAdminOverview();
+        return { auditLogId: auditLog.id, historyId: historyRecord.id };
+      }
+    );
+  };
+
+  const assignReleasedMemberToOrganization: AuthContextType['assignReleasedMemberToOrganization'] =
+    async (input) => {
+      return inFlightSuperAdminActionsRef.current.runExclusive(
+        `sa_member_assign:${input.memberUid}`,
+        async () => {
+          const actor = assertAuthorizedSuperAdmin();
+          await actor.getIdToken();
+
+          const memberRef = doc(db, 'users', input.memberUid);
+          const memberSnap = await getDocFromServer(memberRef).catch(() => getDoc(memberRef));
+          if (!memberSnap.exists()) {
+            throw new Error('العضو المطلوب غير موجود.');
+          }
+          const existingMember = memberSnap.data() as UserProfile;
+
+          const targetOrgSnap = await getDocFromServer(
+            doc(db, 'organizations', input.targetOrgId)
+          ).catch(() => getDoc(doc(db, 'organizations', input.targetOrgId)));
+          if (!targetOrgSnap.exists()) {
+            throw new Error('المؤسسة الهدف غير موجودة.');
+          }
+          const targetOrg = targetOrgSnap.data() as Organization;
+
+          const branchesQuery = query(
+            collection(db, 'branches'),
+            where('orgId', '==', targetOrg.id)
+          );
+          const branchesSnap = await getDocsFromServer(branchesQuery).catch(() =>
+            getDocs(branchesQuery)
+          );
+          const targetOrgBranches: Branch[] = [];
+          branchesSnap.forEach((b) => targetOrgBranches.push(b.data() as Branch));
+
+          const now = new Date();
+          const { userPatch, historyRecord, auditLog } = buildSuperAdminAssignReleasedMemberBundle({
+            actor: {
+              uid: actor.uid,
+              email: actor.email,
+              emailVerified: actor.emailVerified,
+              displayName: actor.displayName,
+            },
+            existingMember,
+            targetOrg,
+            targetOrgBranches,
+            role: input.role,
+            branchId: input.branchId,
+            supervisorPermissions: input.supervisorPermissions,
+            reason: input.reason,
+            now,
+            deleteFieldSentinel: deleteField(),
+          });
+
+          const batch = writeBatch(db);
+          batch.update(memberRef, userPatch);
+          batch.set(doc(db, 'memberOrgHistory', historyRecord.id), historyRecord);
+          batch.set(doc(db, 'platformAuditLogs', auditLog.id), auditLog);
+          const saNotif = buildSuperAdminPlatformNotification({
+            dedupKey: `sa_member_assigned:${existingMember.uid}:${auditLog.id}`,
+            category: 'security_admin',
+            type: 'SA_MEMBER_ASSIGNED',
+            severity: 'success',
+            relatedOrgId: targetOrg.id,
+            branchId: historyRecord.branchId,
+            branchName: historyRecord.branchName,
+            actorUid: actor.uid,
+            actorName: actor.displayName || actor.email || 'صاحب الموقع',
+            title: `إعادة ربط "${existingMember.displayName}" بمؤسسة "${targetOrg.name}"`,
+            body: `تم ربط العضو المحرر بنفس حسابه السابق بدور ${input.role} وصلاحيات جديدة مستقلة تماماً.`,
+            targetType: 'organization',
+            targetId: targetOrg.id,
+            tab: 'members',
+            createdAt: now.toISOString(),
+          });
+          batch.set(doc(db, 'notifications', saNotif.id), saNotif);
+
+          await batch.commit();
+
+          let passwordResetSent = false;
+          if (input.sendOptionalPasswordReset && existingMember.email) {
+            try {
+              await sendPasswordResetEmail(auth, existingMember.email.trim());
+              passwordResetSent = true;
+            } catch (resetErr) {
+              console.warn('Optional password reset email failed after member assignment:', resetErr);
+            }
+          }
+
+          await loadSuperAdminOverview();
+          return {
+            auditLogId: auditLog.id,
+            historyId: historyRecord.id,
+            passwordResetSent,
+          };
+        }
+      );
+    };
+
+  const sendSuperAdminMemberPasswordReset: AuthContextType['sendSuperAdminMemberPasswordReset'] =
+    async (memberUid) => {
+      return inFlightSuperAdminActionsRef.current.runExclusive(
+        `sa_member_pwd_reset:${memberUid}`,
+        async () => {
+          const actor = assertAuthorizedSuperAdmin();
+          await actor.getIdToken();
+
+          const memberRef = doc(db, 'users', memberUid);
+          const memberSnap = await getDocFromServer(memberRef).catch(() => getDoc(memberRef));
+          if (!memberSnap.exists()) {
+            throw new Error('العضو المطلوب غير موجود.');
+          }
+          const member = memberSnap.data() as UserProfile;
+          const cleanEmail = (member.email || '').trim();
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+            throw new Error('لا يملك هذا العضو بريداً إلكترونياً صالحاً لاستلام رابط إعادة التعيين.');
+          }
+          await sendPasswordResetEmail(auth, cleanEmail);
+          return { email: cleanEmail };
+        }
+      );
+    };
+
+  const loadSuperAdminReleasedMembers: AuthContextType['loadSuperAdminReleasedMembers'] =
+    async () => {
+      assertAuthorizedSuperAdmin();
+      const q = query(collection(db, 'users'), where('membershipStatus', '==', 'released'));
+      const snap = await getDocsFromServer(q).catch(() => getDocs(q));
+      const released: UserProfile[] = [];
+      snap.forEach((d) => released.push(d.data() as UserProfile));
+      released.sort(
+        (a, b) =>
+          new Date(b.releasedAt || b.updatedAt || b.createdAt).getTime() -
+          new Date(a.releasedAt || a.updatedAt || a.createdAt).getTime()
+      );
+      return released;
+    };
+
+  const loadSuperAdminMemberOrgHistory: AuthContextType['loadSuperAdminMemberOrgHistory'] =
+    async (memberUid) => {
+      assertAuthorizedSuperAdmin();
+      const baseRef = collection(db, 'memberOrgHistory');
+      const q = memberUid ? query(baseRef, where('uid', '==', memberUid)) : baseRef;
+      const snap = await getDocsFromServer(q).catch(() => getDocs(q));
+      const records: MemberOrgHistoryRecord[] = [];
+      snap.forEach((d) => records.push(d.data() as MemberOrgHistoryRecord));
+      records.sort(
+        (a, b) =>
+          new Date(b.effectiveAt || b.createdAt).getTime() -
+          new Date(a.effectiveAt || a.createdAt).getTime()
+      );
+      return records;
+    };
+
   const logout = async () => {
     setLoading(true);
     try {
@@ -5048,6 +5925,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateSuperAdminOrgStatus,
         grantSuperAdminOrgBillingExemption,
         revokeSuperAdminOrgBillingExemption,
+        grantSuperAdminBranchExemption,
+        revokeSuperAdminBranchExemption,
+        grantSuperAdminBulkOrgBranchesExemption,
+        createSuperAdminOrgMember,
+        updateSuperAdminOrgMember,
+        archiveSuperAdminOrgMember,
+        reactivateSuperAdminOrgMember,
+        releaseSuperAdminOrgMember,
+        assignReleasedMemberToOrganization,
+        sendSuperAdminMemberPasswordReset,
+        loadSuperAdminReleasedMembers,
+        loadSuperAdminMemberOrgHistory,
         upsertSuperAdminManagerInvite,
         cancelSuperAdminManagerInvite,
         createSuperAdminBranch,

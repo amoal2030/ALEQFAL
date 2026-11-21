@@ -95,6 +95,27 @@ export const FinancialReports: React.FC = () => {
     return true;
   });
 
+  const employeeFilterOptions = React.useMemo(() => {
+    const map = new Map<string, { uid: string; label: string; isHistoricalOnly: boolean }>();
+    employees.forEach((emp) => {
+      map.set(emp.uid, {
+        uid: emp.uid,
+        label: emp.displayName || emp.email || emp.uid,
+        isHistoricalOnly: false,
+      });
+    });
+    closings.forEach((c) => {
+      if (c.employeeId && !map.has(c.employeeId)) {
+        map.set(c.employeeId, {
+          uid: c.employeeId,
+          label: `${c.employeeName || c.employeeId} (${tr('عضو سابق', 'Former Member', 'سابق رکن')})`,
+          isHistoricalOnly: true,
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [employees, closings, tr]);
+
   const totalCash = filtered.reduce((acc, c) => acc + c.cashSales, 0);
   const totalCard = filtered.reduce((acc, c) => acc + c.cardSales, 0);
   const totalSales = filtered.reduce((acc, c) => acc + c.totalSales, 0);
@@ -338,9 +359,9 @@ export const FinancialReports: React.FC = () => {
                 className={`${SELECT_CLASS} py-2 text-xs`}
               >
                 <option value="all">{tr('جميع الموظفين', 'All Staff', 'تمام ملازمین')}</option>
-                {employees.map((emp) => (
+                {employeeFilterOptions.map((emp) => (
                   <option key={emp.uid} value={emp.uid}>
-                    {emp.displayName}
+                    {emp.label}
                   </option>
                 ))}
               </select>

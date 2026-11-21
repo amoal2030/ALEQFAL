@@ -257,6 +257,7 @@ service cloud.firestore {
       return changed.hasAny([
         'billingExempt',
         'billingExemptScope',
+        'billingExemptMode',
         'billingExemptReason',
         'billingExemptGrantedAt',
         'billingExemptGrantedBy',
@@ -269,9 +270,28 @@ service cloud.firestore {
       ]);
     }
 
+    function hasHistoricalOrgBillingFieldsModified(changed) {
+      return changed.hasAny([
+        'subscriptionPlan',
+        'subscriptionStatus',
+        'subscriptionStartAt',
+        'subscriptionEndAt',
+        'subscriptionUpdatedAt',
+        'subscriptionUpdatedBy',
+        'subscriptionNote',
+        'accountSetupFeeSar',
+        'setupFeeStatus',
+        'setupFeePaidAt',
+        'reactivationFeeSar',
+        'reactivationFeeStatus',
+        'reactivationFeePaidAt'
+      ]);
+    }
+
     function hasValidBillingExemptionPayloadTypes(data) {
       return (!('billingExempt' in data) || data.billingExempt is bool) &&
         (!('billingExemptScope' in data) || data.billingExemptScope == null || data.billingExemptScope == 'full_permanent') &&
+        (!('billingExemptMode' in data) || data.billingExemptMode == null || data.billingExemptMode in ['billing_exempt', 'legacy_unrestricted']) &&
         (!('billingExemptReason' in data) || data.billingExemptReason == null || (data.billingExemptReason is string && data.billingExemptReason.trim().size() >= 5 && data.billingExemptReason.size() <= 500)) &&
         (!('billingExemptGrantedAt' in data) || data.billingExemptGrantedAt == null || data.billingExemptGrantedAt is timestamp) &&
         (!('billingExemptGrantedBy' in data) || data.billingExemptGrantedBy == null || (data.billingExemptGrantedBy is string && data.billingExemptGrantedBy.size() <= 150)) &&
@@ -318,10 +338,12 @@ service cloud.firestore {
         (!('isActive' in next) || next.isActive is bool);
     }
 
-    // 1B. Super Admin atomic Permanent Billing Exemption GRANT body
+    // 1B. Super Admin atomic Permanent Billing Exemption GRANT body (supports 'billing_exempt' and 'legacy_unrestricted'; blocks manually suspended orgs)
     function canSuperAdminGrantOrgBillingExemption(orgId, next, prev) {
       let nextAuditId = next.get('billingExemptLastAuditLogId', '');
-      return hasValidBillingExemptionPayloadTypes(next) &&
+      return prev.get('isActive', true) == true &&
+        next.get('isActive', true) == true &&
+        hasValidBillingExemptionPayloadTypes(next) &&
         nextAuditId is string &&
         isValidId(nextAuditId) &&
         nextAuditId != prev.get('billingExemptLastAuditLogId', '') &&
@@ -336,10 +358,14 @@ service cloud.firestore {
         next.billingExemptGrantedBy is string &&
         next.billingExemptGrantedBy.trim().lower() == authEmailLower() &&
         isVerifiedOrgOwnerDoc(orgId, next.ownerId, next.ownerEmail.trim().lower()) &&
-        hasAtomicBillingExemptionAuditLog(orgId, nextAuditId, 'ORG_BILLING_EXEMPTION_GRANTED');
+        (
+          next.get('billingExemptMode', 'billing_exempt') == 'legacy_unrestricted'
+            ? hasAtomicBillingExemptionAuditLog(orgId, nextAuditId, 'ORG_LEGACY_UNRESTRICTED_GRANTED')
+            : hasAtomicBillingExemptionAuditLog(orgId, nextAuditId, 'ORG_BILLING_EXEMPTION_GRANTED')
+        );
     }
 
-    // 1C. Super Admin atomic Permanent Billing Exemption REVOKE body
+    // 1C. Super Admin atomic Permanent Billing Exemption REVOKE body (preserves historical subscription & original grant metadata)
     function canSuperAdminRevokeOrgBillingExemption(orgId, next, prev) {
       let nextAuditId = next.get('billingExemptLastAuditLogId', '');
       return prev.get('billingExempt', false) == true &&
@@ -356,7 +382,11 @@ service cloud.firestore {
         'billingExemptRevokeReason' in next &&
         next.billingExemptRevokeReason is string &&
         next.billingExemptRevokeReason.trim().size() >= 5 &&
-        hasAtomicBillingExemptionAuditLog(orgId, nextAuditId, 'ORG_BILLING_EXEMPTION_REVOKED');
+        (
+          prev.get('billingExemptMode', 'billing_exempt') == 'legacy_unrestricted'
+            ? hasAtomicBillingExemptionAuditLog(orgId, nextAuditId, 'ORG_LEGACY_UNRESTRICTED_REVOKED')
+            : hasAtomicBillingExemptionAuditLog(orgId, nextAuditId, 'ORG_BILLING_EXEMPTION_REVOKED')
+        );
     }
 
     // Super Admin organization update dispatcher with ternary guards (prevents CEL pre-read expansion and evaluates only affected field groups)
@@ -376,7 +406,7 @@ service cloud.firestore {
           'reactivationFeeSar', 'reactivationFeeStatus', 'reactivationFeePaidAt',
           'reactivatedAt', 'reactivatedBy',
           'deactivationReason', 'noPaidBranchGraceStartedAt', 'deactivationDueAt', 'deactivatedAt',
-          'billingExempt', 'billingExemptScope', 'billingExemptReason',
+          'billingExempt', 'billingExemptScope', 'billingExemptMode', 'billingExemptReason',
           'billingExemptGrantedAt', 'billingExemptGrantedBy',
           'billingExemptVerifiedOwnerId', 'billingExemptVerifiedOwnerEmail',
           'billingExemptRevokedAt', 'billingExemptRevokedBy', 'billingExemptRevokeReason',
@@ -417,9 +447,11 @@ service cloud.firestore {
           ) &&
           (
             hasBillingExemptionFieldsModified(changed) ? (
-              next.get('billingExempt', false) == true
-                ? canSuperAdminGrantOrgBillingExemption(orgId, next, prev)
-                : canSuperAdminRevokeOrgBillingExemption(orgId, next, prev)
+              !hasHistoricalOrgBillingFieldsModified(changed) && (
+                next.get('billingExempt', false) == true
+                  ? canSuperAdminGrantOrgBillingExemption(orgId, next, prev)
+                  : canSuperAdminRevokeOrgBillingExemption(orgId, next, prev)
+              )
             ) : (
               next.get('billingExempt', false) == true
                 ? isOrgPermanentlyBillingExempt(next)
@@ -436,15 +468,23 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/organizations/$(orgId)) &&
         orgBefore.get('billingExemptLastAuditLogId', '') != logId &&
         orgAfter.get('billingExemptLastAuditLogId', '') == logId && (
-          (
-            action == 'ORG_BILLING_EXEMPTION_GRANTED' &&
+          action == 'ORG_BILLING_EXEMPTION_GRANTED' ? (
             !isOrgPermanentlyBillingExempt(orgBefore) &&
-            isOrgPermanentlyBillingExempt(orgAfter)
-          ) || (
-            action == 'ORG_BILLING_EXEMPTION_REVOKED' &&
+            isOrgPermanentlyBillingExempt(orgAfter) &&
+            orgAfter.get('billingExemptMode', 'billing_exempt') == 'billing_exempt'
+          ) : action == 'ORG_LEGACY_UNRESTRICTED_GRANTED' ? (
+            !isOrgPermanentlyBillingExempt(orgBefore) &&
+            isOrgPermanentlyBillingExempt(orgAfter) &&
+            orgAfter.get('billingExemptMode', '') == 'legacy_unrestricted'
+          ) : action == 'ORG_BILLING_EXEMPTION_REVOKED' ? (
             orgBefore.get('billingExempt', false) == true &&
+            orgBefore.get('billingExemptMode', 'billing_exempt') == 'billing_exempt' &&
             orgAfter.get('billingExempt', false) == false
-          )
+          ) : action == 'ORG_LEGACY_UNRESTRICTED_REVOKED' ? (
+            orgBefore.get('billingExempt', false) == true &&
+            orgBefore.get('billingExemptMode', '') == 'legacy_unrestricted' &&
+            orgAfter.get('billingExempt', false) == false
+          ) : false
         );
     }
 
@@ -1173,12 +1213,16 @@ service cloud.firestore {
       return (
         prev.role in ['supervisor', 'branch_manager', 'employee'] &&
         next.role in ['supervisor', 'branch_manager', 'employee'] &&
+        prev.get('membershipStatus', 'active') != 'released' &&
+        next.get('membershipStatus', 'active') != 'released' &&
+        isValidId(prev.orgId) &&
         next.orgId == prev.orgId &&
         next.uid == prev.uid
       ) ? (
         changed.hasOnly([
           'role', 'branchId', 'branchIds', 'branchName', 'permissions', 'isActive',
-          'displayName', 'phone', 'email', 'isArchived', 'archivedAt', 'archivedBy', 'updatedAt'
+          'displayName', 'phone', 'email', 'isArchived', 'archivedAt', 'archivedBy',
+          'membershipStatus', 'updatedAt'
         ]) ? (
           isOrgManager(prev.orgId) &&
           hasActiveOrgSubscription(prev.orgId) &&
@@ -1186,11 +1230,447 @@ service cloud.firestore {
           (changed.hasAny(['displayName']) ? (next.displayName is string && next.displayName.trim().size() >= 1 && next.displayName.size() <= 100) : true) &&
           (changed.hasAny(['phone']) ? (!('phone' in next) || (next.phone is string && next.phone.size() <= 25)) : true) &&
           next.isActive is bool &&
+          (changed.hasAny(['membershipStatus', 'isArchived']) ? (!('membershipStatus' in next) || next.membershipStatus == (next.get('isArchived', false) == true ? 'archived' : 'active')) : true) &&
           (changed.hasAny(['isActive', 'isArchived', 'archivedAt', 'archivedBy']) ? isValidStaffArchiveState(next) : true) &&
           (changed.hasAny(['role', 'branchId', 'branchIds']) ? hasValidStaffBranchBinding(next) : true) &&
           (changed.hasAny(['role', 'permissions']) ? (!('permissions' in next) || hasSafeNonManagerPermissions(next.role, next.permissions)) : true)
         ) : false
       ) : false;
+    }
+
+    // Super Admin Cross-Organization Member Management helpers (exclusively for amoal2030@gmail.com; strict atomic audit coupling)
+    function isTargetOrgOwner(orgId, userId, emailLower) {
+      let org = get(/databases/$(database)/documents/organizations/$(orgId)).data;
+      return org.get('ownerId', '') == userId ||
+        org.get('ownerEmail', '').trim().lower() == emailLower;
+    }
+
+    function isTargetOrgActiveAndNotOwner(orgId, userId, emailLower) {
+      let org = get(/databases/$(database)/documents/organizations/$(orgId)).data;
+      return org.get('isActive', true) == true &&
+        org.get('ownerId', '') != userId &&
+        org.get('ownerEmail', '').trim().lower() != emailLower;
+    }
+
+    function hasZeroedReleasedPermissions(perms) {
+      return perms is map &&
+        perms.keys().hasOnly([
+          'canCreateClosing', 'canViewAllClosings', 'canApproveClosings',
+          'canManageBranches', 'canManageEmployees', 'canExportReports',
+          'canManagePurchases', 'canManageSuppliers', 'canViewSuppliers',
+          'canViewFinancialReports'
+        ]) &&
+        perms.get('canCreateClosing', false) == false &&
+        perms.get('canViewAllClosings', false) == false &&
+        perms.get('canApproveClosings', false) == false &&
+        perms.get('canManageBranches', false) == false &&
+        perms.get('canManageEmployees', false) == false &&
+        perms.get('canExportReports', false) == false &&
+        perms.get('canManagePurchases', false) == false &&
+        perms.get('canManageSuppliers', false) == false &&
+        perms.get('canViewSuppliers', false) == false &&
+        perms.get('canViewFinancialReports', false) == false;
+    }
+
+    function hasAtomicMemberCreateAuditLog(userId, orgId, logId) {
+      let logAfter = getAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)).data;
+      return isValidId(logId) &&
+        !exists(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        existsAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        logAfter.id == logId &&
+        logAfter.orgId == orgId &&
+        logAfter.targetType == 'member' &&
+        logAfter.targetId == userId &&
+        logAfter.action == 'MEMBER_CREATED' &&
+        logAfter.actorUid == request.auth.uid;
+    }
+
+    function hasAtomicMemberUpdateAuditLog(userId, next, prev, logId) {
+      let logAfter = getAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)).data;
+      return isValidId(logId) &&
+        !exists(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        existsAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        logAfter.id == logId &&
+        logAfter.orgId == prev.orgId &&
+        logAfter.targetType == 'member' &&
+        logAfter.targetId == userId &&
+        logAfter.actorUid == request.auth.uid && (
+          logAfter.action == 'MEMBER_ARCHIVED' ? (
+            prev.get('isArchived', false) == false &&
+            next.get('isArchived', false) == true &&
+            next.isActive == false
+          ) : logAfter.action == 'MEMBER_REACTIVATED' ? (
+            prev.get('membershipStatus', 'active') != 'released' &&
+            isValidId(prev.orgId) &&
+            (prev.get('isArchived', false) == true || prev.isActive == false) &&
+            next.isActive == true &&
+            next.get('isArchived', false) == false
+          ) : logAfter.action == 'MEMBER_ROLE_CHANGED' ? (
+            next.role != prev.role &&
+            next.get('isArchived', false) == prev.get('isArchived', false)
+          ) : logAfter.action == 'MEMBER_BRANCH_CHANGED' ? (
+            next.get('branchId', '') != prev.get('branchId', '') &&
+            next.get('isArchived', false) == prev.get('isArchived', false)
+          ) : logAfter.action == 'MEMBER_UPDATED' ? (
+            next.get('isArchived', false) == prev.get('isArchived', false) &&
+            next.isActive == prev.isActive
+          ) : false
+        );
+    }
+
+    function hasAtomicMemberReleaseLinks(userId, prevOrgId, historyId, logId) {
+      let histAfter = getAfter(/databases/$(database)/documents/memberOrgHistory/$(historyId)).data;
+      let logAfter = getAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)).data;
+      return isValidId(historyId) &&
+        isValidId(logId) &&
+        !exists(/databases/$(database)/documents/memberOrgHistory/$(historyId)) &&
+        existsAfter(/databases/$(database)/documents/memberOrgHistory/$(historyId)) &&
+        !exists(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        existsAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        histAfter.id == historyId &&
+        histAfter.eventType == 'released' &&
+        histAfter.uid == userId &&
+        histAfter.orgId == prevOrgId &&
+        histAfter.auditLogId == logId &&
+        histAfter.actorUid == request.auth.uid &&
+        logAfter.id == logId &&
+        logAfter.action == 'MEMBER_ORG_MEMBERSHIP_RELEASED' &&
+        logAfter.targetType == 'member' &&
+        logAfter.targetId == userId &&
+        logAfter.orgId == prevOrgId &&
+        logAfter.actorUid == request.auth.uid;
+    }
+
+    function hasAtomicMemberAssignLinks(userId, targetOrgId, historyId, logId) {
+      let histAfter = getAfter(/databases/$(database)/documents/memberOrgHistory/$(historyId)).data;
+      let logAfter = getAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)).data;
+      return isValidId(historyId) &&
+        isValidId(logId) &&
+        !exists(/databases/$(database)/documents/memberOrgHistory/$(historyId)) &&
+        existsAfter(/databases/$(database)/documents/memberOrgHistory/$(historyId)) &&
+        !exists(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        existsAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        histAfter.id == historyId &&
+        histAfter.eventType == 'assigned' &&
+        histAfter.uid == userId &&
+        histAfter.orgId == targetOrgId &&
+        histAfter.auditLogId == logId &&
+        histAfter.actorUid == request.auth.uid &&
+        logAfter.id == logId &&
+        logAfter.action == 'MEMBER_ORG_MEMBERSHIP_ASSIGNED' &&
+        logAfter.targetType == 'member' &&
+        logAfter.targetId == userId &&
+        logAfter.orgId == targetOrgId &&
+        logAfter.actorUid == request.auth.uid;
+    }
+
+    function canSuperAdminCreateOrgMember(userId, next) {
+      return next.keys().hasAll([
+          'uid', 'orgId', 'email', 'displayName', 'role', 'isActive',
+          'lastPlatformAuditLogId', 'createdAt'
+        ]) &&
+        next.keys().hasOnly([
+          'uid', 'orgId', 'email', 'displayName', 'role',
+          'branchId', 'branchIds', 'branchName', 'phone',
+          'isActive', 'isArchived', 'membershipStatus', 'permissions',
+          'lastPlatformAuditLogId', 'createdAt', 'updatedAt'
+        ]) &&
+        next.uid == userId &&
+        isValidId(next.orgId) &&
+        exists(/databases/$(database)/documents/organizations/$(next.orgId)) &&
+        next.role in ['supervisor', 'branch_manager', 'employee'] &&
+        isValidUserEmailString(next.email) &&
+        next.email.trim().lower() != 'amoal2030@gmail.com' &&
+        next.displayName is string &&
+        next.displayName.trim().size() >= 1 &&
+        next.displayName.size() <= 100 &&
+        (!('phone' in next) || (next.phone is string && next.phone.size() <= 25)) &&
+        (!('branchName' in next) || (next.branchName is string && next.branchName.size() <= 120)) &&
+        next.isActive == true &&
+        (!('isArchived' in next) || next.isArchived == false) &&
+        (!('membershipStatus' in next) || next.membershipStatus == 'active') &&
+        (next.createdAt is timestamp || isValidIsoTimestamp(next.createdAt)) &&
+        (!('updatedAt' in next) || next.updatedAt is timestamp || isValidIsoTimestamp(next.updatedAt)) &&
+        hasValidStaffBranchBinding(next) &&
+        (!('permissions' in next) || hasSafeNonManagerPermissions(next.role, next.permissions)) &&
+        hasAtomicMemberCreateAuditLog(userId, next.orgId, next.lastPlatformAuditLogId);
+    }
+
+    function canSuperAdminReleaseOrgMember(userId, next, prev, changed) {
+      let nextAuditId = next.get('lastPlatformAuditLogId', '');
+      let nextHistoryId = next.get('lastMemberOrgHistoryId', '');
+      let prevEmailLower = prev.get('email', '').trim().lower();
+      return (
+        prev.get('membershipStatus', 'active') != 'released' &&
+        isValidId(prev.orgId) &&
+        prev.role in ['supervisor', 'branch_manager', 'employee'] &&
+        next.role == prev.role &&
+        next.orgId == '' &&
+        next.get('membershipStatus', '') == 'released' &&
+        next.isActive == false &&
+        next.get('isArchived', false) == false &&
+        !('branchId' in next) &&
+        !('branchIds' in next) &&
+        !('branchName' in next)
+      ) ? (
+        changed.hasOnly([
+          'orgId', 'membershipStatus', 'isActive', 'isArchived',
+          'branchId', 'branchIds', 'branchName', 'permissions',
+          'releasedFromOrgId', 'releasedFromOrgName', 'releasedAt', 'releasedBy', 'releaseReason',
+          'lastMemberOrgHistoryId', 'lastPlatformAuditLogId', 'updatedAt'
+        ]) ? (
+          exists(/databases/$(database)/documents/organizations/$(prev.orgId)) &&
+          !isTargetOrgOwner(prev.orgId, userId, prevEmailLower) &&
+          'permissions' in next &&
+          hasZeroedReleasedPermissions(next.permissions) &&
+          next.get('releasedFromOrgId', '') == prev.orgId &&
+          (!('releasedFromOrgName' in next) || (next.releasedFromOrgName is string && next.releasedFromOrgName.size() <= 120)) &&
+          isValidIsoTimestamp(next.get('releasedAt', '')) &&
+          next.get('releasedBy', '') is string &&
+          next.releasedBy.trim().lower() == authEmailLower() &&
+          next.get('releaseReason', '') is string &&
+          next.releaseReason.trim().size() >= 5 &&
+          next.releaseReason.size() <= 500 &&
+          (!('updatedAt' in next) || next.updatedAt is timestamp || isValidIsoTimestamp(next.updatedAt)) &&
+          nextHistoryId is string &&
+          isValidId(nextHistoryId) &&
+          nextHistoryId != prev.get('lastMemberOrgHistoryId', '') &&
+          nextAuditId is string &&
+          isValidId(nextAuditId) &&
+          nextAuditId != prev.get('lastPlatformAuditLogId', '') &&
+          hasAtomicMemberReleaseLinks(userId, prev.orgId, nextHistoryId, nextAuditId)
+        ) : false
+      ) : false;
+    }
+
+    function canSuperAdminAssignReleasedOrgMember(userId, next, prev, changed) {
+      let nextAuditId = next.get('lastPlatformAuditLogId', '');
+      let nextHistoryId = next.get('lastMemberOrgHistoryId', '');
+      let prevEmailLower = prev.get('email', '').trim().lower();
+      return (
+        prev.get('membershipStatus', '') == 'released' &&
+        prev.orgId == '' &&
+        prev.isActive == false &&
+        isValidId(next.orgId) &&
+        next.role in ['supervisor', 'branch_manager', 'employee'] &&
+        next.get('membershipStatus', '') == 'active' &&
+        next.isActive == true &&
+        next.get('isArchived', false) == false
+      ) ? (
+        changed.hasOnly([
+          'orgId', 'role', 'branchId', 'branchIds', 'branchName', 'permissions',
+          'membershipStatus', 'isActive', 'isArchived',
+          'reassignedAt', 'reassignedBy',
+          'lastMemberOrgHistoryId', 'lastPlatformAuditLogId', 'updatedAt'
+        ]) ? (
+          exists(/databases/$(database)/documents/organizations/$(next.orgId)) &&
+          isTargetOrgActiveAndNotOwner(next.orgId, userId, prevEmailLower) &&
+          hasValidStaffBranchBinding(next) &&
+          (!('branchName' in next) || (next.branchName is string && next.branchName.size() <= 120)) &&
+          'permissions' in next &&
+          hasSafeNonManagerPermissions(next.role, next.permissions) &&
+          isValidIsoTimestamp(next.get('reassignedAt', '')) &&
+          next.get('reassignedBy', '') is string &&
+          next.reassignedBy.trim().lower() == authEmailLower() &&
+          (!('updatedAt' in next) || next.updatedAt is timestamp || isValidIsoTimestamp(next.updatedAt)) &&
+          nextHistoryId is string &&
+          isValidId(nextHistoryId) &&
+          nextHistoryId != prev.get('lastMemberOrgHistoryId', '') &&
+          nextAuditId is string &&
+          isValidId(nextAuditId) &&
+          nextAuditId != prev.get('lastPlatformAuditLogId', '') &&
+          hasAtomicMemberAssignLinks(userId, next.orgId, nextHistoryId, nextAuditId)
+        ) : false
+      ) : false;
+    }
+
+    function canSuperAdminStandardOrgMemberUpdate(userId, next, prev, changed) {
+      let nextAuditId = next.get('lastPlatformAuditLogId', '');
+      return (
+        prev.role in ['supervisor', 'branch_manager', 'employee'] &&
+        next.role in ['supervisor', 'branch_manager', 'employee'] &&
+        prev.get('membershipStatus', 'active') != 'released' &&
+        next.get('membershipStatus', 'active') != 'released' &&
+        isValidId(prev.orgId) &&
+        next.orgId == prev.orgId
+      ) ? (
+        changed.hasOnly([
+          'role', 'branchId', 'branchIds', 'branchName', 'permissions', 'isActive',
+          'displayName', 'phone', 'email', 'isArchived', 'archivedAt', 'archivedBy',
+          'membershipStatus', 'lastPlatformAuditLogId', 'updatedAt'
+        ]) ? (
+          exists(/databases/$(database)/documents/organizations/$(prev.orgId)) &&
+          nextAuditId is string &&
+          isValidId(nextAuditId) &&
+          nextAuditId != prev.get('lastPlatformAuditLogId', '') &&
+          (changed.hasAny(['email']) ? isValidUserEmailString(next.email) : true) &&
+          (changed.hasAny(['displayName']) ? (next.displayName is string && next.displayName.trim().size() >= 1 && next.displayName.size() <= 100) : true) &&
+          (changed.hasAny(['phone']) ? (!('phone' in next) || (next.phone is string && next.phone.size() <= 25)) : true) &&
+          (changed.hasAny(['branchName']) ? (!('branchName' in next) || (next.branchName is string && next.branchName.size() <= 120)) : true) &&
+          next.isActive is bool &&
+          (changed.hasAny(['membershipStatus', 'isArchived']) ? (!('membershipStatus' in next) || next.membershipStatus == (next.get('isArchived', false) == true ? 'archived' : 'active')) : true) &&
+          (changed.hasAny(['isActive', 'isArchived', 'archivedAt', 'archivedBy']) ? isValidStaffArchiveState(next) : true) &&
+          (changed.hasAny(['role', 'branchId', 'branchIds']) ? hasValidStaffBranchBinding(next) : true) &&
+          (changed.hasAny(['role', 'permissions']) ? (!('permissions' in next) || hasSafeNonManagerPermissions(next.role, next.permissions)) : true) &&
+          hasAtomicMemberUpdateAuditLog(userId, next, prev, nextAuditId)
+        ) : false
+      ) : false;
+    }
+
+    function canSuperAdminUpdateOrgMember(userId, next, prev) {
+      let changed = next.diff(prev).affectedKeys();
+      let isIdentitySafe = next.uid == prev.uid &&
+        next.uid == userId &&
+        prev.get('email', '').trim().lower() != 'amoal2030@gmail.com' &&
+        next.get('email', '').trim().lower() != 'amoal2030@gmail.com';
+      return !isIdentitySafe ? false : (
+        next.get('membershipStatus', 'active') == 'released' ? (
+          canSuperAdminReleaseOrgMember(userId, next, prev, changed)
+        ) : prev.get('membershipStatus', 'active') == 'released' ? (
+          canSuperAdminAssignReleasedOrgMember(userId, next, prev, changed)
+        ) : (
+          canSuperAdminStandardOrgMemberUpdate(userId, next, prev, changed)
+        )
+      );
+    }
+
+    function hasValidMemberTransitionForAudit(logId, memberId, orgId, action) {
+      return action == 'MEMBER_CREATED' ? (
+        !exists(/databases/$(database)/documents/users/$(memberId)) &&
+        existsAfter(/databases/$(database)/documents/users/$(memberId)) &&
+        getAfter(/databases/$(database)/documents/users/$(memberId)).data.uid == memberId &&
+        getAfter(/databases/$(database)/documents/users/$(memberId)).data.orgId == orgId &&
+        getAfter(/databases/$(database)/documents/users/$(memberId)).data.role in ['supervisor', 'branch_manager', 'employee'] &&
+        getAfter(/databases/$(database)/documents/users/$(memberId)).data.get('lastPlatformAuditLogId', '') == logId
+      ) : (
+        exists(/databases/$(database)/documents/users/$(memberId)) &&
+        hasValidMemberUpdateTransitionForAudit(logId, memberId, orgId, action)
+      );
+    }
+
+    function hasValidMemberUpdateTransitionForAudit(logId, memberId, orgId, action) {
+      let uBefore = get(/databases/$(database)/documents/users/$(memberId)).data;
+      let uAfter = getAfter(/databases/$(database)/documents/users/$(memberId)).data;
+      return uBefore.orgId == orgId &&
+        uAfter.orgId == orgId &&
+        uBefore.get('membershipStatus', 'active') != 'released' &&
+        uAfter.get('membershipStatus', 'active') != 'released' &&
+        uBefore.role in ['supervisor', 'branch_manager', 'employee'] &&
+        uAfter.role in ['supervisor', 'branch_manager', 'employee'] &&
+        uBefore.get('lastPlatformAuditLogId', '') != logId &&
+        uAfter.get('lastPlatformAuditLogId', '') == logId && (
+          action == 'MEMBER_ARCHIVED' ? (
+            uBefore.get('isArchived', false) == false &&
+            uAfter.get('isArchived', false) == true &&
+            uAfter.isActive == false
+          ) : action == 'MEMBER_REACTIVATED' ? (
+            (uBefore.get('isArchived', false) == true || uBefore.isActive == false) &&
+            uAfter.isActive == true &&
+            uAfter.get('isArchived', false) == false
+          ) : action == 'MEMBER_ROLE_CHANGED' ? (
+            uAfter.role != uBefore.role
+          ) : action == 'MEMBER_BRANCH_CHANGED' ? (
+            uAfter.get('branchId', '') != uBefore.get('branchId', '')
+          ) : action == 'MEMBER_UPDATED' ? (
+            uAfter.get('isArchived', false) == uBefore.get('isArchived', false) &&
+            uAfter.isActive == uBefore.isActive
+          ) : false
+        );
+    }
+
+    function hasValidMemberReleaseOrAssignForAudit(logId, data) {
+      let historyId = ('metadata' in data && data.metadata is map) ? data.metadata.get('historyId', '') : '';
+      let memberId = data.targetId;
+      let uBefore = get(/databases/$(database)/documents/users/$(memberId)).data;
+      let uAfter = getAfter(/databases/$(database)/documents/users/$(memberId)).data;
+      let histAfter = getAfter(/databases/$(database)/documents/memberOrgHistory/$(historyId)).data;
+      return isValidId(historyId) &&
+        exists(/databases/$(database)/documents/users/$(memberId)) &&
+        existsAfter(/databases/$(database)/documents/memberOrgHistory/$(historyId)) &&
+        uBefore.get('lastPlatformAuditLogId', '') != logId &&
+        uAfter.get('lastPlatformAuditLogId', '') == logId &&
+        uAfter.get('lastMemberOrgHistoryId', '') == historyId &&
+        histAfter.id == historyId &&
+        histAfter.uid == memberId &&
+        histAfter.orgId == data.orgId &&
+        histAfter.auditLogId == logId && (
+          data.action == 'MEMBER_ORG_MEMBERSHIP_RELEASED' ? (
+            histAfter.eventType == 'released' &&
+            uBefore.orgId == data.orgId &&
+            uBefore.get('membershipStatus', 'active') != 'released' &&
+            uAfter.orgId == '' &&
+            uAfter.get('membershipStatus', '') == 'released' &&
+            uAfter.isActive == false
+          ) : data.action == 'MEMBER_ORG_MEMBERSHIP_ASSIGNED' ? (
+            histAfter.eventType == 'assigned' &&
+            uBefore.orgId == '' &&
+            uBefore.get('membershipStatus', '') == 'released' &&
+            uBefore.isActive == false &&
+            uAfter.orgId == data.orgId &&
+            uAfter.get('membershipStatus', '') == 'active' &&
+            uAfter.isActive == true
+          ) : false
+        );
+    }
+
+    function canSuperAdminCreateMemberOrgHistory(historyId, data) {
+      let uBefore = get(/databases/$(database)/documents/users/$(data.uid)).data;
+      let uAfter = getAfter(/databases/$(database)/documents/users/$(data.uid)).data;
+      let logAfter = getAfter(/databases/$(database)/documents/platformAuditLogs/$(data.auditLogId)).data;
+      return data.keys().hasAll([
+          'id', 'eventType', 'uid', 'email', 'displayName', 'orgId', 'orgName',
+          'role', 'effectiveAt', 'actorUid', 'actorEmail', 'reason', 'auditLogId', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'eventType', 'uid', 'email', 'displayName', 'orgId', 'orgName',
+          'previousOrgId', 'previousOrgName', 'role', 'branchId', 'branchName',
+          'joinedAt', 'effectiveAt', 'actorUid', 'actorEmail', 'reason', 'auditLogId', 'createdAt'
+        ]) &&
+        data.id == historyId &&
+        data.eventType in ['released', 'assigned'] &&
+        isValidId(data.uid) &&
+        isValidUserEmailString(data.email) &&
+        data.email.trim().lower() != 'amoal2030@gmail.com' &&
+        data.displayName is string && data.displayName.trim().size() >= 1 && data.displayName.size() <= 100 &&
+        isValidId(data.orgId) &&
+        data.orgName is string && data.orgName.trim().size() >= 1 && data.orgName.size() <= 120 &&
+        (!('previousOrgId' in data) || isValidId(data.previousOrgId)) &&
+        (!('previousOrgName' in data) || (data.previousOrgName is string && data.previousOrgName.size() <= 120)) &&
+        data.role in ['supervisor', 'branch_manager', 'employee'] &&
+        (!('branchId' in data) || isValidId(data.branchId)) &&
+        (!('branchName' in data) || (data.branchName is string && data.branchName.size() <= 120)) &&
+        (!('joinedAt' in data) || data.joinedAt is timestamp || isValidIsoTimestamp(data.joinedAt)) &&
+        isValidIsoTimestamp(data.effectiveAt) &&
+        isValidIsoTimestamp(data.createdAt) &&
+        data.actorUid == request.auth.uid &&
+        data.actorEmail is string && data.actorEmail.trim().lower() == authEmailLower() &&
+        data.reason is string && data.reason.trim().size() >= 5 && data.reason.size() <= 500 &&
+        isValidId(data.auditLogId) &&
+        exists(/databases/$(database)/documents/users/$(data.uid)) &&
+        existsAfter(/databases/$(database)/documents/platformAuditLogs/$(data.auditLogId)) &&
+        uAfter.get('lastMemberOrgHistoryId', '') == historyId &&
+        uAfter.get('lastPlatformAuditLogId', '') == data.auditLogId &&
+        logAfter.id == data.auditLogId &&
+        logAfter.targetId == data.uid &&
+        logAfter.orgId == data.orgId &&
+        logAfter.actorUid == request.auth.uid && (
+          data.eventType == 'released' ? (
+            uBefore.orgId == data.orgId &&
+            uBefore.get('membershipStatus', 'active') != 'released' &&
+            uAfter.orgId == '' &&
+            uAfter.get('membershipStatus', '') == 'released' &&
+            uAfter.isActive == false &&
+            logAfter.action == 'MEMBER_ORG_MEMBERSHIP_RELEASED'
+          ) : (
+            uBefore.orgId == '' &&
+            uBefore.get('membershipStatus', '') == 'released' &&
+            uBefore.isActive == false &&
+            uAfter.orgId == data.orgId &&
+            uAfter.get('membershipStatus', '') == 'active' &&
+            uAfter.isActive == true &&
+            logAfter.action == 'MEMBER_ORG_MEMBERSHIP_ASSIGNED'
+          )
+        );
     }
 
     // Users Collection
@@ -1220,30 +1700,37 @@ service cloud.firestore {
         )
       );
 
-      // Invite-based manager onboarding OR active manager provisioning supervisor / branch_manager / employee under active subscription
+      // Verified Super Admin cross-org member provisioning OR invite-based manager onboarding OR active manager provisioning org staff
       allow create: if isSignedIn() && isValidId(userId) && (
-        isValidInvitedManagerUserCreate(userId, incoming()) ||
-        (
-          hasValidUserDoc() &&
-          isOrgManager(incoming().orgId) &&
-          hasActiveOrgSubscription(incoming().orgId) &&
-          incoming().role in ['supervisor', 'branch_manager', 'employee'] &&
-          incoming().uid == userId &&
-          isValidUserEmailString(incoming().email) &&
-          incoming().displayName is string &&
-          incoming().displayName.trim().size() >= 1 &&
-          incoming().displayName.size() <= 100 &&
-          (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25)) &&
-          incoming().isActive is bool &&
-          (!('isArchived' in incoming()) || incoming().isArchived == false) &&
-          hasValidStaffBranchBinding(incoming()) &&
-          (!('permissions' in incoming()) || hasSafeNonManagerPermissions(incoming().role, incoming().permissions))
+        isSuperAdmin() ? (
+          canSuperAdminCreateOrgMember(userId, incoming())
+        ) : (
+          isValidInvitedManagerUserCreate(userId, incoming()) ||
+          (
+            hasValidUserDoc() &&
+            isOrgManager(incoming().orgId) &&
+            hasActiveOrgSubscription(incoming().orgId) &&
+            incoming().role in ['supervisor', 'branch_manager', 'employee'] &&
+            incoming().uid == userId &&
+            isValidUserEmailString(incoming().email) &&
+            incoming().displayName is string &&
+            incoming().displayName.trim().size() >= 1 &&
+            incoming().displayName.size() <= 100 &&
+            (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25)) &&
+            incoming().isActive is bool &&
+            (!('isArchived' in incoming()) || incoming().isArchived == false) &&
+            hasValidStaffBranchBinding(incoming()) &&
+            (!('permissions' in incoming()) || hasSafeNonManagerPermissions(incoming().role, incoming().permissions))
+          )
         )
       );
 
-      // Harden user updates: requires active org subscription + strict allowlist + blocks self-privilege escalation and promotion to manager/super_admin
+      // Harden user updates: Super Admin cross-org staff governance, self profile update, or org manager staff update; blocks manager/super_admin escalation
       allow update: if isSignedIn() && isValidId(userId) && (
-        request.auth.uid == userId ? (
+        isSuperAdmin() ? (
+          // Case 0: Verified Super Admin managing org members (supervisor / branch_manager / employee) with mandatory atomic audit log
+          canSuperAdminUpdateOrgMember(userId, request.resource.data, resource.data)
+        ) : request.auth.uid == userId ? (
           // Case 1: Active user self-updating displayName or phone ONLY (blocks disabled users, role changes, and permissions tampering)
           (resource.data.isActive == true && request.resource.data.role == resource.data.role && request.resource.data.orgId == resource.data.orgId && request.resource.data.isActive == resource.data.isActive) ? (
             request.resource.data.role in ['manager', 'supervisor', 'branch_manager', 'employee'] &&
@@ -1343,8 +1830,197 @@ service cloud.firestore {
       );
     }
 
+    // Independent Branch Exemption & Bulk All-Branch Exemption helpers (Super Admin only; atomic audit coupling)
+    function hasBranchExemptionFieldsModified(changed) {
+      return changed.hasAny([
+        'billingExempt',
+        'billingExemptMode',
+        'billingExemptScope',
+        'exemptReason',
+        'exemptGrantedAt',
+        'exemptGrantedBy',
+        'exemptRevokedAt',
+        'exemptRevokedBy',
+        'exemptRevokeReason',
+        'exemptLastAuditLogId'
+      ]);
+    }
+
+    function hasBranchExemptionTransition(changed, next, prev) {
+      return hasBranchExemptionFieldsModified(changed) ||
+        (
+          changed.hasAny(['paymentStatus']) &&
+          (next.get('paymentStatus', '') == 'exempt' || prev.get('paymentStatus', '') == 'exempt')
+        );
+    }
+
+    function hasValidBranchExemptionPayloadTypes(data) {
+      return (!('billingExempt' in data) || data.billingExempt is bool) &&
+        (!('billingExemptMode' in data) || data.billingExemptMode == null || data.billingExemptMode in ['billing_exempt', 'legacy_unrestricted']) &&
+        (!('billingExemptScope' in data) || data.billingExemptScope == null || data.billingExemptScope == 'branch_permanent') &&
+        (!('exemptReason' in data) || data.exemptReason == null || (data.exemptReason is string && data.exemptReason.trim().size() >= 5 && data.exemptReason.size() <= 500)) &&
+        (!('exemptGrantedAt' in data) || data.exemptGrantedAt == null || data.exemptGrantedAt is timestamp) &&
+        (!('exemptGrantedBy' in data) || data.exemptGrantedBy == null || (data.exemptGrantedBy is string && data.exemptGrantedBy.size() <= 150)) &&
+        (!('exemptRevokedAt' in data) || data.exemptRevokedAt == null || data.exemptRevokedAt is timestamp) &&
+        (!('exemptRevokedBy' in data) || data.exemptRevokedBy == null || (data.exemptRevokedBy is string && data.exemptRevokedBy.size() <= 150)) &&
+        (!('exemptRevokeReason' in data) || data.exemptRevokeReason == null || (data.exemptRevokeReason is string && data.exemptRevokeReason.trim().size() >= 5 && data.exemptRevokeReason.size() <= 500)) &&
+        (!('exemptLastAuditLogId' in data) || data.exemptLastAuditLogId == null || isValidId(data.exemptLastAuditLogId));
+    }
+
+    function hasAtomicSingleOrBulkBranchGrantAuditLog(branchId, orgId, logId) {
+      let logAfter = getAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)).data;
+      return isValidId(logId) &&
+        !exists(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        existsAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        logAfter.id == logId &&
+        logAfter.orgId == orgId &&
+        logAfter.actorUid == request.auth.uid && (
+          logAfter.action == 'BRANCH_BILLING_EXEMPTION_GRANTED' ? (
+            logAfter.targetType == 'branch' &&
+            logAfter.targetId == branchId
+          ) : logAfter.action == 'ORG_BRANCHES_BULK_EXEMPTION_GRANTED' ? (
+            logAfter.targetType in ['organization', 'branch'] &&
+            logAfter.targetId == orgId
+          ) : false
+        );
+    }
+
+    function hasAtomicBranchRevokeAuditLog(branchId, orgId, logId) {
+      let logAfter = getAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)).data;
+      return isValidId(logId) &&
+        !exists(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        existsAfter(/databases/$(database)/documents/platformAuditLogs/$(logId)) &&
+        logAfter.id == logId &&
+        logAfter.orgId == orgId &&
+        logAfter.targetType == 'branch' &&
+        logAfter.targetId == branchId &&
+        logAfter.action == 'BRANCH_BILLING_EXEMPTION_REVOKED' &&
+        logAfter.actorUid == request.auth.uid;
+    }
+
+    function canSuperAdminGrantBranchExemption(branchId, next, prev, changed) {
+      let nextAuditId = next.get('exemptLastAuditLogId', '');
+      return prev.get('lifecycleStatus', 'active') != 'purged_from_db' &&
+        !changed.hasAny(['subscriptionStartAt', 'lastPaidAt', 'lastPaidBy', 'paymentNote']) &&
+        hasValidBranchExemptionPayloadTypes(next) &&
+        next.get('billingExempt', false) == true &&
+        next.get('billingExemptScope', '') == 'branch_permanent' &&
+        next.get('billingExemptMode', '') in ['billing_exempt', 'legacy_unrestricted'] &&
+        next.get('paymentStatus', '') == 'exempt' &&
+        next.get('monthlyFeeSar', -1) == 0 &&
+        'exemptReason' in next &&
+        next.exemptReason is string &&
+        next.exemptReason.trim().size() >= 5 &&
+        'exemptGrantedAt' in next &&
+        next.exemptGrantedAt is timestamp &&
+        'exemptGrantedBy' in next &&
+        next.exemptGrantedBy is string &&
+        next.exemptGrantedBy.trim().lower() == authEmailLower() &&
+        nextAuditId is string &&
+        isValidId(nextAuditId) &&
+        nextAuditId != prev.get('exemptLastAuditLogId', '') &&
+        hasAtomicSingleOrBulkBranchGrantAuditLog(branchId, prev.orgId, nextAuditId);
+    }
+
+    function canSuperAdminRevokeBranchExemption(branchId, next, prev, changed) {
+      let nextAuditId = next.get('exemptLastAuditLogId', '');
+      return (prev.get('billingExempt', false) == true || prev.get('paymentStatus', '') == 'exempt') &&
+        !changed.hasAny(['subscriptionStartAt', 'lastPaidAt', 'lastPaidBy', 'paymentNote', 'exemptGrantedAt', 'exemptGrantedBy', 'exemptReason']) &&
+        hasValidBranchExemptionPayloadTypes(next) &&
+        next.get('billingExempt', false) == false &&
+        next.get('paymentStatus', '') in ['paid', 'unpaid', 'overdue'] &&
+        'exemptRevokedAt' in next &&
+        next.exemptRevokedAt is timestamp &&
+        'exemptRevokedBy' in next &&
+        next.exemptRevokedBy is string &&
+        next.exemptRevokedBy.trim().lower() == authEmailLower() &&
+        'exemptRevokeReason' in next &&
+        next.exemptRevokeReason is string &&
+        next.exemptRevokeReason.trim().size() >= 5 &&
+        nextAuditId is string &&
+        isValidId(nextAuditId) &&
+        nextAuditId != prev.get('exemptLastAuditLogId', '') &&
+        hasAtomicBranchRevokeAuditLog(branchId, prev.orgId, nextAuditId);
+    }
+
+    function hasValidBranchExemptionTransitionForAudit(logId, branchId, orgId, action) {
+      let bBefore = get(/databases/$(database)/documents/branches/$(branchId)).data;
+      let bAfter = getAfter(/databases/$(database)/documents/branches/$(branchId)).data;
+      return exists(/databases/$(database)/documents/branches/$(branchId)) &&
+        bBefore.orgId == orgId &&
+        bAfter.orgId == orgId &&
+        bBefore.get('exemptLastAuditLogId', '') != logId &&
+        bAfter.get('exemptLastAuditLogId', '') == logId && (
+          action == 'BRANCH_BILLING_EXEMPTION_GRANTED' ? (
+            bAfter.get('billingExempt', false) == true &&
+            bAfter.get('paymentStatus', '') == 'exempt' &&
+            bAfter.get('monthlyFeeSar', -1) == 0
+          ) : action == 'BRANCH_BILLING_EXEMPTION_REVOKED' ? (
+            (bBefore.get('billingExempt', false) == true || bBefore.get('paymentStatus', '') == 'exempt') &&
+            bAfter.get('billingExempt', false) == false &&
+            bAfter.get('paymentStatus', '') in ['paid', 'unpaid', 'overdue']
+          ) : false
+        );
+    }
+
+    function hasValidBulkBranchesExemptionForAudit(logId, orgId, data) {
+      let primaryBranchId = 'metadata' in data && data.metadata is map ? data.metadata.get('primaryBranchId', '') : '';
+      let bBefore = get(/databases/$(database)/documents/branches/$(primaryBranchId)).data;
+      let bAfter = getAfter(/databases/$(database)/documents/branches/$(primaryBranchId)).data;
+      return isValidId(primaryBranchId) &&
+        exists(/databases/$(database)/documents/organizations/$(orgId)) &&
+        exists(/databases/$(database)/documents/branches/$(primaryBranchId)) &&
+        bBefore.orgId == orgId &&
+        bAfter.orgId == orgId &&
+        bBefore.get('exemptLastAuditLogId', '') != logId &&
+        bAfter.get('exemptLastAuditLogId', '') == logId &&
+        bAfter.get('billingExempt', false) == true &&
+        bAfter.get('paymentStatus', '') == 'exempt' &&
+        bAfter.get('monthlyFeeSar', -1) == 0;
+    }
+
+    function canSuperAdminUpdateBranch(branchId, next, prev) {
+      let changed = next.diff(prev).affectedKeys();
+      return (next.id == prev.id && next.orgId == prev.orgId) ? (
+        changed.hasOnly([
+          'name', 'code', 'address', 'phone', 'isActive', 'lifecycleStatus',
+          'subscriptionStartAt', 'feeDueAt', 'monthlyFeeSar',
+          'paymentStatus', 'lastPaidAt', 'lastPaidBy', 'paymentNote',
+          'suspendedAt', 'suspendedBy', 'suspensionReason', 'gracePeriodEndsAt',
+          'driveBackupVerified', 'driveBackupVerifiedAt', 'driveBackupVerifiedBy', 'driveBackupArchivedClosingsCount',
+          'purgedFromDbAt', 'purgedFromDbBy',
+          'billingExempt', 'billingExemptMode', 'billingExemptScope',
+          'exemptReason', 'exemptGrantedAt', 'exemptGrantedBy',
+          'exemptRevokedAt', 'exemptRevokedBy', 'exemptRevokeReason',
+          'exemptLastAuditLogId',
+          'updatedAt'
+        ]) ? (
+          (changed.hasAny(['name']) ? (next.name is string && next.name.size() >= 2 && next.name.size() <= 100) : true) &&
+          next.isActive is bool &&
+          hasValidBranchBillingFields(next) &&
+          (
+            changed.hasAny(['isActive', 'lifecycleStatus', 'suspendedAt', 'gracePeriodEndsAt', 'driveBackupVerified', 'driveBackupVerifiedAt'])
+              ? hasValidBranchLifecycleState(next)
+              : true
+          ) &&
+          (
+            hasBranchExemptionTransition(changed, next, prev) ? (
+              next.get('billingExempt', false) == true
+                ? canSuperAdminGrantBranchExemption(branchId, next, prev, changed)
+                : canSuperAdminRevokeBranchExemption(branchId, next, prev, changed)
+            ) : true
+          )
+        ) : false
+      ) : false;
+    }
+
+    function isParentOrgFeeExemptForBranchCreate(orgId) {
+      let org = getAfter(/databases/$(database)/documents/organizations/$(orgId)).data;
+      return isOrgPermanentlyBillingExempt(org) || !hasAnySubscriptionField(org);
+    }
+
     // Branches Collection
-    // Branch creation, billing, suspension, and verified DB purge are strictly restricted to verified Super Admin (amoal2030@gmail.com).
+    // Branch creation, billing, exemptions, suspension, and verified DB purge are strictly restricted to verified Super Admin (amoal2030@gmail.com).
     match /branches/{branchId} {
       allow get: if isSignedIn() && isValidId(branchId) && (
         isSuperAdmin() ||
@@ -1375,25 +2051,16 @@ service cloud.firestore {
         existsAfter(/databases/$(database)/documents/organizations/$(incoming().orgId)) &&
         incoming().name is string && incoming().name.size() >= 2 && incoming().name.size() <= 100 &&
         incoming().isActive == true &&
-        hasValidBranchBillingFields(incoming());
+        hasValidBranchBillingFields(incoming()) && (
+          incoming().get('paymentStatus', '') == 'exempt'
+            ? (incoming().get('monthlyFeeSar', 0) == 0 && isParentOrgFeeExemptForBranchCreate(incoming().orgId))
+            : true
+        );
 
       allow update: if isSignedIn() && isValidId(branchId) && (
         isSuperAdmin() ? (
-          // 1. Verified Super Admin managing branch lifecycle, billing/payment dates, 30-day suspension grace, and verified Drive backup attestation
-          request.resource.data.id == resource.data.id &&
-          request.resource.data.orgId == resource.data.orgId &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'name', 'code', 'address', 'phone', 'isActive', 'lifecycleStatus',
-            'subscriptionStartAt', 'feeDueAt', 'monthlyFeeSar',
-            'paymentStatus', 'lastPaidAt', 'lastPaidBy', 'paymentNote',
-            'suspendedAt', 'suspendedBy', 'suspensionReason', 'gracePeriodEndsAt',
-            'driveBackupVerified', 'driveBackupVerifiedAt', 'driveBackupVerifiedBy', 'driveBackupArchivedClosingsCount',
-            'purgedFromDbAt', 'purgedFromDbBy', 'updatedAt'
-          ]) &&
-          request.resource.data.name is string && request.resource.data.name.size() >= 2 && request.resource.data.name.size() <= 100 &&
-          request.resource.data.isActive is bool &&
-          hasValidBranchBillingFields(request.resource.data) &&
-          hasValidBranchLifecycleState(request.resource.data)
+          // 1. Verified Super Admin managing branch lifecycle, billing/payment dates, independent/bulk exemptions, 30-day suspension grace, and verified Drive backup attestation
+          canSuperAdminUpdateBranch(branchId, request.resource.data, resource.data)
         ) : (
           // 2. Active org managers may sync ONLY Google Drive folder metadata for existing active org branches.
           isOrgManager(resource.data.orgId) &&
@@ -2315,20 +2982,55 @@ service cloud.firestore {
         incoming().actorEmail is string &&
         incoming().actorEmail.trim().lower() == authEmailLower() &&
         incoming().action is string && incoming().action.size() >= 3 && incoming().action.size() <= 80 &&
-        incoming().targetType in ['organization', 'branch', 'invite', 'billing'] &&
+        incoming().targetType in ['organization', 'branch', 'invite', 'billing', 'member'] &&
         incoming().targetId is string && incoming().targetId.size() >= 1 && incoming().targetId.size() <= 254 &&
         (!('orgId' in incoming()) || isValidId(incoming().orgId)) &&
         incoming().details is string && incoming().details.size() >= 5 && incoming().details.size() <= 1000 &&
         (!('metadata' in incoming()) || incoming().metadata is map) &&
         isValidIsoTimestamp(incoming().timestamp) && (
-          !(incoming().action in ['ORG_BILLING_EXEMPTION_GRANTED', 'ORG_BILLING_EXEMPTION_REVOKED']) || (
+          incoming().action in ['ORG_BILLING_EXEMPTION_GRANTED', 'ORG_BILLING_EXEMPTION_REVOKED', 'ORG_LEGACY_UNRESTRICTED_GRANTED', 'ORG_LEGACY_UNRESTRICTED_REVOKED'] ? (
             'orgId' in incoming() &&
             isValidId(incoming().orgId) &&
             incoming().targetId == incoming().orgId &&
             incoming().targetType in ['organization', 'billing'] &&
             hasValidOrgExemptionTransitionForAudit(logId, incoming().orgId, incoming().action)
-          )
+          ) : incoming().action in ['BRANCH_BILLING_EXEMPTION_GRANTED', 'BRANCH_BILLING_EXEMPTION_REVOKED'] ? (
+            'orgId' in incoming() &&
+            isValidId(incoming().orgId) &&
+            isValidId(incoming().targetId) &&
+            incoming().targetType == 'branch' &&
+            hasValidBranchExemptionTransitionForAudit(logId, incoming().targetId, incoming().orgId, incoming().action)
+          ) : incoming().action == 'ORG_BRANCHES_BULK_EXEMPTION_GRANTED' ? (
+            'orgId' in incoming() &&
+            isValidId(incoming().orgId) &&
+            incoming().targetId == incoming().orgId &&
+            incoming().targetType in ['organization', 'branch'] &&
+            hasValidBulkBranchesExemptionForAudit(logId, incoming().orgId, incoming())
+          ) : incoming().action in ['MEMBER_CREATED', 'MEMBER_UPDATED', 'MEMBER_ROLE_CHANGED', 'MEMBER_BRANCH_CHANGED', 'MEMBER_ARCHIVED', 'MEMBER_REACTIVATED'] ? (
+            'orgId' in incoming() &&
+            isValidId(incoming().orgId) &&
+            isValidId(incoming().targetId) &&
+            incoming().targetType == 'member' &&
+            hasValidMemberTransitionForAudit(logId, incoming().targetId, incoming().orgId, incoming().action)
+          ) : incoming().action in ['MEMBER_ORG_MEMBERSHIP_RELEASED', 'MEMBER_ORG_MEMBERSHIP_ASSIGNED'] ? (
+            'orgId' in incoming() &&
+            isValidId(incoming().orgId) &&
+            isValidId(incoming().targetId) &&
+            incoming().targetType == 'member' &&
+            hasValidMemberReleaseOrAssignForAudit(logId, incoming())
+          ) : true
         );
+
+      allow update, delete: if false;
+    }
+
+    // Member Organization History Collection (Phase C.1 — Exclusive to verified Super Admin amoal2030@gmail.com & strictly immutable)
+    match /memberOrgHistory/{historyId} {
+      allow get, list: if isSuperAdmin();
+
+      allow create: if isSuperAdmin() &&
+        isValidId(historyId) &&
+        canSuperAdminCreateMemberOrgHistory(historyId, incoming());
 
       allow update, delete: if false;
     }

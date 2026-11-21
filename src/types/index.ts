@@ -59,6 +59,12 @@ export type EffectiveSubscriptionState =
 
 export type BillingExemptionScope = 'full_permanent';
 
+export type BranchExemptionScope = 'branch_permanent';
+
+export type ExemptionClassification = 'billing_exempt' | 'legacy_unrestricted';
+
+export type ExemptionSource = 'organization' | 'branch' | 'both' | 'none';
+
 export type BranchPricingModel = 'per_branch_50_sar' | 'per_extra_branch_50_sar';
 
 export type FeePaymentStatus = 'paid' | 'unpaid' | 'waived';
@@ -80,21 +86,60 @@ export type PlatformAuditAction =
   | 'ORG_REACTIVATED'
   | 'ORG_BILLING_EXEMPTION_GRANTED'
   | 'ORG_BILLING_EXEMPTION_REVOKED'
+  | 'ORG_LEGACY_UNRESTRICTED_GRANTED'
+  | 'ORG_LEGACY_UNRESTRICTED_REVOKED'
   | 'INVITE_UPSERTED'
   | 'INVITE_CANCELLED'
   | 'BRANCH_CREATED'
   | 'BRANCH_PAYMENT_UPDATED'
+  | 'BRANCH_BILLING_EXEMPTION_GRANTED'
+  | 'BRANCH_BILLING_EXEMPTION_REVOKED'
+  | 'ORG_BRANCHES_BULK_EXEMPTION_GRANTED'
   | 'BRANCH_SUSPENDED'
   | 'BRANCH_REACTIVATED'
   | 'BRANCH_DRIVE_BACKUP_VERIFIED'
-  | 'BRANCH_DB_PURGED';
+  | 'BRANCH_DB_PURGED'
+  | 'MEMBER_CREATED'
+  | 'MEMBER_UPDATED'
+  | 'MEMBER_ROLE_CHANGED'
+  | 'MEMBER_BRANCH_CHANGED'
+  | 'MEMBER_ARCHIVED'
+  | 'MEMBER_REACTIVATED'
+  | 'MEMBER_ORG_MEMBERSHIP_RELEASED'
+  | 'MEMBER_ORG_MEMBERSHIP_ASSIGNED';
+
+export type MemberMembershipStatus = 'active' | 'archived' | 'released';
+
+export type MemberOrgHistoryEventType = 'released' | 'assigned';
+
+export interface MemberOrgHistoryRecord {
+  id: string;
+  eventType: MemberOrgHistoryEventType;
+  uid: string;
+  email: string;
+  displayName: string;
+  orgId: string;
+  orgName: string;
+  previousOrgId?: string;
+  previousOrgName?: string;
+  role: 'supervisor' | 'branch_manager' | 'employee';
+  branchId?: string;
+  branchName?: string;
+  joinedAt?: string;
+  effectiveAt: string;
+  actorUid: string;
+  actorEmail: string;
+  reason: string;
+  auditLogId: string;
+  createdAt: string;
+}
 
 export interface PlatformAuditLog {
   id: string;
   actorEmail: string;
   actorUid: string;
   action: PlatformAuditAction;
-  targetType: 'organization' | 'branch' | 'invite' | 'billing';
+  targetType: 'organization' | 'branch' | 'invite' | 'billing' | 'member';
   targetId: string;
   orgId?: string;
   details: string;
@@ -153,6 +198,7 @@ export type AccessErrorReason =
   | 'email_not_verified'
   | 'missing_employee_profile'
   | 'account_disabled'
+  | 'membership_released'
   | 'permission_denied'
   | 'network_error';
 
@@ -211,6 +257,12 @@ export interface Organization {
   // Official Permanent Billing Exemption (Super Admin only, owner-bound, preserves historical billing records)
   billingExempt?: boolean;
   billingExemptScope?: BillingExemptionScope;
+  /**
+   * Classification for Super-Admin-granted permanent organization exemption.
+   * Defaults to 'billing_exempt' when omitted. Setting 'legacy_unrestricted' grants
+   * explicit legacy_unrestricted status independently of historical subscription fields.
+   */
+  billingExemptMode?: ExemptionClassification;
   billingExemptReason?: string;
   billingExemptGrantedAt?: SubscriptionTimestampValue | null;
   billingExemptGrantedBy?: string | null;
@@ -230,6 +282,7 @@ export interface SuperAdminOverviewData {
   users: UserProfile[];
   managerInvites?: ManagerInvite[];
   platformAuditLogs?: PlatformAuditLog[];
+  memberOrgHistory?: MemberOrgHistoryRecord[];
   fetchedAt: string;
   partialDeniedCollections?: string[];
   diagnosticMessage?: string;
@@ -265,6 +318,18 @@ export interface Branch {
   driveBackupArchivedClosingsCount?: number;
   purgedFromDbAt?: SubscriptionTimestampValue;
   purgedFromDbBy?: string;
+  // Independent Branch-Level Exemption & Legacy Unrestricted Metadata (Super Admin only)
+  // Kept strictly independent from organization-level exemption and historical payment fields.
+  billingExempt?: boolean;
+  billingExemptMode?: ExemptionClassification;
+  billingExemptScope?: BranchExemptionScope;
+  exemptReason?: string | null;
+  exemptGrantedAt?: SubscriptionTimestampValue | null;
+  exemptGrantedBy?: string | null;
+  exemptRevokedAt?: SubscriptionTimestampValue | null;
+  exemptRevokedBy?: string | null;
+  exemptRevokeReason?: string | null;
+  exemptLastAuditLogId?: string | null;
   createdAt: string;
   updatedAt?: string;
 }
@@ -296,6 +361,16 @@ export interface UserProfile {
   isArchived?: boolean;
   archivedAt?: string;
   archivedBy?: string;
+  membershipStatus?: MemberMembershipStatus;
+  releasedFromOrgId?: string;
+  releasedFromOrgName?: string;
+  releasedAt?: string;
+  releasedBy?: string;
+  releaseReason?: string;
+  reassignedAt?: string;
+  reassignedBy?: string;
+  lastMemberOrgHistoryId?: string;
+  lastPlatformAuditLogId?: string;
   permissions: UserPermissions;
   createdAt: string;
   updatedAt?: string;
@@ -522,6 +597,7 @@ export interface NotificationNavTarget {
     | 'settings'
     | 'workspace'
     | 'organizations'
+    | 'members'
     | 'invites'
     | 'auditLogs';
   entityId?: string;

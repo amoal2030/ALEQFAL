@@ -68,6 +68,10 @@ export const TenantAccessNoticeView: React.FC = () => {
       case 'account_disabled':
         description = t('subAccessDisabledAccount');
         break;
+      case 'membership_released':
+        title = t('subAccessMembershipReleasedTitle');
+        description = t('subAccessMembershipReleasedDesc');
+        break;
       case 'network_error':
         description = t('subAccessNetworkError');
         isNetworkError = true;

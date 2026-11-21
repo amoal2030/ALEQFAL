@@ -377,6 +377,55 @@
           "type": "string",
           "description": "Manager UID who archived the employee account"
         },
+        "membershipStatus": {
+          "type": "string",
+          "enum": ["active", "archived", "released"],
+          "description": "Explicit membership lifecycle status (omitted on legacy docs and treated as active/archived via isArchived)"
+        },
+        "releasedFromOrgId": {
+          "type": "string",
+          "description": "Previous organization ID preserved when membership was permanently released"
+        },
+        "releasedFromOrgName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Previous organization display name preserved at release time"
+        },
+        "releasedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp when membership was permanently released by Super Admin"
+        },
+        "releasedBy": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Verified Super Admin email who executed permanent membership release"
+        },
+        "releaseReason": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Mandatory governance reason recorded at permanent release"
+        },
+        "reassignedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp when a released member was re-assigned to a target organization"
+        },
+        "reassignedBy": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Verified Super Admin email who re-assigned the released member"
+        },
+        "lastMemberOrgHistoryId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "ID of the atomically linked immutable memberOrgHistory document"
+        },
+        "lastPlatformAuditLogId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "ID of the atomically linked platformAuditLogs document"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -900,20 +949,48 @@
     },
     "PlatformAuditLog": {
       "title": "PlatformAuditLog",
-      "description": "Immutable Super Admin platform-level audit trail for organizations, invites, billing, and branch lifecycle actions",
+      "description": "Immutable Super Admin platform-level audit trail for organizations, invites, billing, member governance, and branch lifecycle actions",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "actorEmail": { "type": "string", "maxLength": 254 },
         "actorUid": { "type": "string" },
         "action": { "type": "string", "maxLength": 80 },
-        "targetType": { "type": "string", "enum": ["organization", "branch", "invite", "billing"] },
+        "targetType": { "type": "string", "enum": ["organization", "branch", "invite", "billing", "member"] },
         "targetId": { "type": "string" },
         "orgId": { "type": "string" },
         "details": { "type": "string", "maxLength": 1000 },
+        "metadata": { "type": "object" },
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "actorEmail", "actorUid", "action", "targetType", "targetId", "details", "timestamp"]
+    },
+    "MemberOrgHistory": {
+      "title": "MemberOrgHistory",
+      "description": "Immutable Super Admin membership lifecycle history recording permanent organization releases and subsequent cross-organization re-assignments without deleting historical operational data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eventType": { "type": "string", "enum": ["released", "assigned"] },
+        "uid": { "type": "string" },
+        "email": { "type": "string", "maxLength": 254 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "orgId": { "type": "string" },
+        "orgName": { "type": "string", "maxLength": 120 },
+        "previousOrgId": { "type": "string" },
+        "previousOrgName": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["supervisor", "branch_manager", "employee"] },
+        "branchId": { "type": "string" },
+        "branchName": { "type": "string", "maxLength": 120 },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "effectiveAt": { "type": "string", "format": "date-time" },
+        "actorUid": { "type": "string" },
+        "actorEmail": { "type": "string", "maxLength": 254 },
+        "reason": { "type": "string", "maxLength": 500 },
+        "auditLogId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "eventType", "uid", "email", "displayName", "orgId", "orgName", "role", "effectiveAt", "actorUid", "actorEmail", "reason", "auditLogId", "createdAt"]
     },
     "AppNotification": {
       "title": "AppNotification",
@@ -1025,6 +1102,10 @@
     "/platformAuditLogs/{logId}": {
       "schema": "PlatformAuditLog",
       "description": "Immutable Super Admin platform audit trail"
+    },
+    "/memberOrgHistory/{historyId}": {
+      "schema": "MemberOrgHistory",
+      "description": "Immutable Super Admin record of permanent member releases and cross-organization re-assignments"
     },
     "/notifications/{notificationId}": {
       "schema": "AppNotification",

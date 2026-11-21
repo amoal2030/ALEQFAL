@@ -3,6 +3,7 @@ import {
   AuditLog,
   InviteBlockReason,
   ManagerInvite,
+  MemberMembershipStatus,
   Organization,
   SubscriptionBlockReason,
   TenantAccessStatus,
@@ -92,6 +93,31 @@ export function getSubscriptionBlockReason(
   return 'expired';
 }
 
+/**
+ * Resolves the effective membership status of a user profile with full backward
+ * compatibility for legacy user documents that omit `membershipStatus`.
+ */
+export function resolveMemberMembershipStatus(
+  profile: Pick<
+    UserProfile,
+    'membershipStatus' | 'isArchived' | 'isActive' | 'orgId' | 'releasedAt'
+  > | null | undefined
+): MemberMembershipStatus {
+  if (!profile) return 'active';
+  if (
+    profile.membershipStatus === 'released' ||
+    ((!profile.orgId || profile.orgId.trim() === '') &&
+      profile.isActive === false &&
+      Boolean(profile.releasedAt))
+  ) {
+    return 'released';
+  }
+  if (profile.membershipStatus === 'archived' || profile.isArchived === true) {
+    return 'archived';
+  }
+  return 'active';
+}
+
 export type ProfiledUserAccessResolution =
   | {
       status: 'active_tenant';
@@ -108,7 +134,10 @@ export type ProfiledUserAccessResolution =
     }
   | {
       status: 'access_error';
-      errorReason: Extract<AccessErrorReason, 'account_disabled' | 'permission_denied'>;
+      errorReason: Extract<
+        AccessErrorReason,
+        'account_disabled' | 'membership_released' | 'permission_denied'
+      >;
     };
 
 export function resolveProfiledUserAccess(params: {
@@ -117,6 +146,14 @@ export function resolveProfiledUserAccess(params: {
   now?: Date;
 }): ProfiledUserAccessResolution {
   const { profile, org, now = new Date() } = params;
+
+  // Permanently released members have no active organization binding and see a dedicated notice
+  if (resolveMemberMembershipStatus(profile) === 'released') {
+    return {
+      status: 'access_error',
+      errorReason: 'membership_released',
+    };
+  }
 
   // Disabled users (both manager and employee) are strictly blocked
   if (profile.isActive === false) {
@@ -407,6 +444,7 @@ export function canRenderTenantDashboard(params: {
       hasAuthUser &&
       userProfile &&
       userProfile.isActive === true &&
+      resolveMemberMembershipStatus(userProfile) === 'active' &&
       currentOrg &&
       userProfile.orgId === currentOrg.id &&
       subscriptionEvaluation?.isAllowed === true

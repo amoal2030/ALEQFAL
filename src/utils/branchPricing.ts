@@ -3,6 +3,8 @@ import {
   BranchPaymentStatus,
   BranchPricingModel,
   ClosingArchiveRecord,
+  ExemptionClassification,
+  ExemptionSource,
   FeePaymentStatus,
   Organization,
   ShiftClosing,
@@ -41,6 +43,8 @@ export interface ExtraBranchPricingEvaluation {
   totalBranchesCount: number;
   activeBranchesCount: number;
   paidBranchesCount: number;
+  exemptBranchesCount: number;
+  billableBranchesCount: number;
   suspendedBranchesCount: number;
   extraBranchesCount: number;
   estimatedMonthlyExtraFeeSar: number;
@@ -48,6 +52,7 @@ export interface ExtraBranchPricingEvaluation {
   isLegacyExempt: boolean;
   isBillingExempt: boolean;
   isFeeExempt: boolean;
+  exemptionMode: ExemptionClassification | 'none';
   autoBillingEnabled: false;
   pricingSummary: string;
 }
@@ -57,6 +62,15 @@ export interface BranchBillingAndGraceEvaluation {
   isSuspended: boolean;
   isPurgedFromDb: boolean;
   isPaidAndActive: boolean;
+  /** Unified exemption indicator: true if parent org is fee-exempt OR this branch is independently exempt. */
+  isFeeExempt: boolean;
+  /** True only when the parent organization itself is fee-exempt (billing_exempt or legacy_unrestricted). */
+  isOrgFeeExempt: boolean;
+  /** True only when this branch has an independent branch-level exemption. */
+  isBranchIndividuallyExempt: boolean;
+  exemptionSource: ExemptionSource;
+  exemptionMode: ExemptionClassification | 'none';
+  isLegacyUnrestricted: boolean;
   monthlyFeeSar: number;
   paymentStatus: BranchPaymentStatus;
   feeDueAt: Date | null;
@@ -114,40 +128,77 @@ export function isBranchSuspendedOrPurged(
 }
 
 /**
+ * Determines whether a branch holds an independent branch-level exemption
+ * (strictly distinct from parent organization-level exemption).
+ * - Explicit `billingExempt === true` -> exempt
+ * - Explicit `billingExempt === false` -> NOT exempt (fail-closed on explicit revocation)
+ * - Undefined `billingExempt` -> backward-compatible check on `paymentStatus === 'exempt'`
+ */
+export function isBranchIndividuallyExempt(
+  branch:
+    | Partial<Pick<Branch, 'paymentStatus' | 'billingExempt' | 'billingExemptMode'>>
+    | null
+    | undefined
+): boolean {
+  if (!branch) return false;
+  if (branch.billingExempt === true) return true;
+  if (branch.billingExempt === false) return false;
+  return branch.paymentStatus === 'exempt';
+}
+
+export function getBranchIndividualExemptionMode(
+  branch:
+    | Partial<Pick<Branch, 'paymentStatus' | 'billingExempt' | 'billingExemptMode'>>
+    | null
+    | undefined
+): ExemptionClassification | 'none' {
+  if (!isBranchIndividuallyExempt(branch)) return 'none';
+  return branch?.billingExemptMode === 'legacy_unrestricted'
+    ? 'legacy_unrestricted'
+    : 'billing_exempt';
+}
+
+/**
  * Determines whether a branch counts as a currently paid, active branch.
  * - Suspended branches (even inside their 30-day grace window) NEVER count as paid.
- * - Legacy exempt orgs' active branches count as active/exempt.
- * - Non-legacy orgs require paymentStatus === 'paid' (with future or unset feeDueAt) or 'exempt';
+ * - Fee-exempt orgs' active branches count as active/exempt.
+ * - Individually exempt active branches count as covered/exempt.
+ * - Non-exempt orgs require paymentStatus === 'paid' (with future or unset feeDueAt) or exempt;
  *   explicit 'unpaid' / 'overdue' / expired feeDueAt returns false.
  */
 export function isBranchCountedAsPaid(
-  branch: Pick<
-    Branch,
-    'isActive' | 'lifecycleStatus' | 'paymentStatus' | 'feeDueAt'
-  > | null | undefined,
-  org: (Pick<
-    Organization,
-    | 'isActive'
-    | 'subscriptionPlan'
-    | 'subscriptionStatus'
-    | 'subscriptionStartAt'
-    | 'subscriptionEndAt'
-    | 'deactivationReason'
-    | 'noPaidBranchGraceStartedAt'
-    | 'deactivationDueAt'
-    | 'branchPricingModel'
-  > &
-    Partial<
-      Pick<
+  branch:
+    | (Pick<Branch, 'isActive' | 'lifecycleStatus' | 'paymentStatus' | 'feeDueAt'> &
+        Partial<Pick<Branch, 'billingExempt' | 'billingExemptMode'>>)
+    | null
+    | undefined,
+  org:
+    | (Pick<
         Organization,
-        | 'ownerId'
-        | 'ownerEmail'
-        | 'billingExempt'
-        | 'billingExemptScope'
-        | 'billingExemptVerifiedOwnerId'
-        | 'billingExemptVerifiedOwnerEmail'
-      >
-    >) | null | undefined,
+        | 'isActive'
+        | 'subscriptionPlan'
+        | 'subscriptionStatus'
+        | 'subscriptionStartAt'
+        | 'subscriptionEndAt'
+        | 'deactivationReason'
+        | 'noPaidBranchGraceStartedAt'
+        | 'deactivationDueAt'
+        | 'branchPricingModel'
+      > &
+        Partial<
+          Pick<
+            Organization,
+            | 'ownerId'
+            | 'ownerEmail'
+            | 'billingExempt'
+            | 'billingExemptScope'
+            | 'billingExemptMode'
+            | 'billingExemptVerifiedOwnerId'
+            | 'billingExemptVerifiedOwnerEmail'
+          >
+        >)
+    | null
+    | undefined,
   nowInput: Date = new Date()
 ): boolean {
   if (!branch || isBranchSuspendedOrPurged(branch)) {
@@ -161,11 +212,15 @@ export function isBranchCountedAsPaid(
     return true;
   }
 
-  if (branch.paymentStatus === 'exempt') {
+  if (isBranchIndividuallyExempt(branch)) {
     return true;
   }
 
-  if (branch.paymentStatus === 'unpaid' || branch.paymentStatus === 'overdue') {
+  if (
+    branch.paymentStatus === 'unpaid' ||
+    branch.paymentStatus === 'overdue' ||
+    (branch.billingExempt === false && branch.paymentStatus === 'exempt')
+  ) {
     return false;
   }
 
@@ -200,35 +255,57 @@ export function evaluateBranchBillingAndGrace(
     | 'gracePeriodEndsAt'
     | 'driveBackupVerified'
     | 'driveBackupVerifiedAt'
-  >,
-  org: (Pick<
-    Organization,
-    | 'isActive'
-    | 'subscriptionPlan'
-    | 'subscriptionStatus'
-    | 'subscriptionStartAt'
-    | 'subscriptionEndAt'
-    | 'deactivationReason'
-    | 'noPaidBranchGraceStartedAt'
-    | 'deactivationDueAt'
-    | 'branchPricingModel'
   > &
-    Partial<
-      Pick<
+    Partial<Pick<Branch, 'billingExempt' | 'billingExemptMode'>>,
+  org:
+    | (Pick<
         Organization,
-        | 'ownerId'
-        | 'ownerEmail'
-        | 'billingExempt'
-        | 'billingExemptScope'
-        | 'billingExemptVerifiedOwnerId'
-        | 'billingExemptVerifiedOwnerEmail'
-      >
-    >) | null | undefined,
+        | 'isActive'
+        | 'subscriptionPlan'
+        | 'subscriptionStatus'
+        | 'subscriptionStartAt'
+        | 'subscriptionEndAt'
+        | 'deactivationReason'
+        | 'noPaidBranchGraceStartedAt'
+        | 'deactivationDueAt'
+        | 'branchPricingModel'
+      > &
+        Partial<
+          Pick<
+            Organization,
+            | 'ownerId'
+            | 'ownerEmail'
+            | 'billingExempt'
+            | 'billingExemptScope'
+            | 'billingExemptMode'
+            | 'billingExemptVerifiedOwnerId'
+            | 'billingExemptVerifiedOwnerEmail'
+          >
+        >)
+    | null
+    | undefined,
   nowInput: Date = new Date()
 ): BranchBillingAndGraceEvaluation {
   const now = toValidDate(nowInput) || new Date();
   const subEval = evaluateOrganizationSubscription(org, now);
-  const isFeeExemptOrg = Boolean(org && subEval.isFeeExempt);
+  const isOrgFeeExempt = Boolean(org && subEval.isFeeExempt);
+  const isBranchExempt = isBranchIndividuallyExempt(branch);
+  const isFeeExempt = isOrgFeeExempt || isBranchExempt;
+  const exemptionSource: ExemptionSource =
+    isOrgFeeExempt && isBranchExempt
+      ? 'both'
+      : isOrgFeeExempt
+      ? 'organization'
+      : isBranchExempt
+      ? 'branch'
+      : 'none';
+  const exemptionMode: ExemptionClassification | 'none' = isOrgFeeExempt
+    ? subEval.exemptionMode
+    : isBranchExempt
+    ? getBranchIndividualExemptionMode(branch)
+    : 'none';
+  const isLegacyUnrestricted = exemptionMode === 'legacy_unrestricted';
+
   const isPurgedFromDb = branch.lifecycleStatus === 'purged_from_db';
   const isSuspended = branch.isActive === false || branch.lifecycleStatus === 'suspended';
 
@@ -257,8 +334,12 @@ export function evaluateBranchBillingAndGrace(
   }
 
   let effectivePaymentStatus: BranchPaymentStatus;
-  if (isFeeExemptOrg) {
+  if (isFeeExempt) {
     effectivePaymentStatus = 'exempt';
+  } else if (branch.billingExempt === false && branch.paymentStatus === 'exempt') {
+    // Explicit branch exemption revocation fails closed even if legacy paymentStatus wasn't updated yet
+    effectivePaymentStatus =
+      feeDueAt && feeDueAt.getTime() <= now.getTime() ? 'overdue' : 'unpaid';
   } else if (branch.paymentStatus) {
     if (
       branch.paymentStatus === 'paid' &&
@@ -274,7 +355,8 @@ export function evaluateBranchBillingAndGrace(
   }
 
   const isPaidAndActive = isBranchCountedAsPaid(branch, org, now);
-  const monthlyFeeSar = isFeeExemptOrg
+  // Exempt branches ALWAYS have 0 SAR monthly fee (whether org-exempt or individually exempt)
+  const monthlyFeeSar = isFeeExempt
     ? 0
     : normalizeNonNegativeInt(branch.monthlyFeeSar, BRANCH_MONTHLY_FEE_SAR);
   const driveBackupVerified = branch.driveBackupVerified === true;
@@ -285,6 +367,12 @@ export function evaluateBranchBillingAndGrace(
     isSuspended,
     isPurgedFromDb,
     isPaidAndActive,
+    isFeeExempt,
+    isOrgFeeExempt,
+    isBranchIndividuallyExempt: isBranchExempt,
+    exemptionSource,
+    exemptionMode,
+    isLegacyUnrestricted,
     monthlyFeeSar,
     paymentStatus: effectivePaymentStatus,
     feeDueAt,
@@ -330,12 +418,14 @@ export function evaluateOrgNoPaidBranchGrace(
         | 'ownerEmail'
         | 'billingExempt'
         | 'billingExemptScope'
+        | 'billingExemptMode'
         | 'billingExemptVerifiedOwnerId'
         | 'billingExemptVerifiedOwnerEmail'
       >
     >) | null | undefined,
   branches: Array<
-    Pick<Branch, 'id' | 'isActive' | 'lifecycleStatus' | 'paymentStatus' | 'feeDueAt'>
+    Pick<Branch, 'id' | 'isActive' | 'lifecycleStatus' | 'paymentStatus' | 'feeDueAt'> &
+      Partial<Pick<Branch, 'billingExempt' | 'billingExemptMode'>>
   >,
   nowInput: Date = new Date()
 ): OrgNoPaidBranchGraceEvaluation {
@@ -432,12 +522,14 @@ export function evaluateOrganizationBranchPricing(params: {
         | 'ownerEmail'
         | 'billingExempt'
         | 'billingExemptScope'
+        | 'billingExemptMode'
         | 'billingExemptVerifiedOwnerId'
         | 'billingExemptVerifiedOwnerEmail'
       >
     >) | null | undefined;
   branches?: Array<
-    Pick<Branch, 'id' | 'isActive' | 'lifecycleStatus' | 'paymentStatus' | 'feeDueAt'>
+    Pick<Branch, 'id' | 'isActive' | 'lifecycleStatus' | 'paymentStatus' | 'feeDueAt'> &
+      Partial<Pick<Branch, 'billingExempt' | 'billingExemptMode'>>
   >;
   totalBranchesCount?: number;
   activeBranchesCount?: number;
@@ -477,34 +569,16 @@ export function evaluateOrganizationBranchPricing(params: {
     ORG_REACTIVATION_FEE_SAR
   );
 
-  if (org && subEval.isBillingExempt) {
-    return {
-      model: org.branchPricingModel || BRANCH_PRICING_MODEL,
-      setupFeeSar: 0,
-      setupFeeStatus: 'waived',
-      reactivationFeeSar: 0,
-      feePerExtraBranchMonthlySar: 0,
-      branchMonthlyFeeSar: 0,
-      includedBranchesCount: includedCount,
-      totalBranchesCount: totalCount,
-      activeBranchesCount: activeCount,
-      paidBranchesCount: activeCount,
-      suspendedBranchesCount: suspendedCount,
-      extraBranchesCount: 0,
-      estimatedMonthlyExtraFeeSar: 0,
-      estimatedMonthlyBranchTotalSar: 0,
-      isLegacyExempt: false,
-      isBillingExempt: true,
-      isFeeExempt: true,
-      autoBillingEnabled: false,
-      pricingSummary:
-        'مؤسسة معفاة دائماً (billing_exempt): معفاة من رسوم الاشتراك والتأسيس وإعادة التنشيط وجميع الفروع الحالية والمستقبلية (0 ر.س).',
-    };
-  }
+  // Unified organization-level fee exemption (handles billing_exempt, explicit legacy_unrestricted, and implicit legacy_unrestricted)
+  if (!org || subEval.isFeeExempt) {
+    const isLegacyExempt = !org || subEval.isLegacy;
+    const isBillingExempt = Boolean(org && subEval.isBillingExempt);
+    const exemptionMode: ExemptionClassification = isBillingExempt
+      ? 'billing_exempt'
+      : 'legacy_unrestricted';
 
-  if (!org || subEval.isLegacy) {
     return {
-      model: BRANCH_PRICING_MODEL,
+      model: org?.branchPricingModel || BRANCH_PRICING_MODEL,
       setupFeeSar: 0,
       setupFeeStatus: 'waived',
       reactivationFeeSar: 0,
@@ -514,16 +588,22 @@ export function evaluateOrganizationBranchPricing(params: {
       totalBranchesCount: totalCount,
       activeBranchesCount: activeCount,
       paidBranchesCount: activeCount,
+      exemptBranchesCount: activeCount,
+      billableBranchesCount: 0,
       suspendedBranchesCount: suspendedCount,
       extraBranchesCount: 0,
       estimatedMonthlyExtraFeeSar: 0,
       estimatedMonthlyBranchTotalSar: 0,
-      isLegacyExempt: true,
-      isBillingExempt: false,
+      isLegacyExempt,
+      isBillingExempt,
       isFeeExempt: true,
+      exemptionMode,
       autoBillingEnabled: false,
-      pricingSummary:
-        'مؤسسة قديمة (legacy_unrestricted): معفاة من رسوم التأسيس واشتراك الفروع حتى التفعيل اليدوي.',
+      pricingSummary: isBillingExempt
+        ? 'مؤسسة معفاة دائماً (billing_exempt): معفاة من رسوم الاشتراك والتأسيس وإعادة التنشيط وجميع الفروع الحالية والمستقبلية (0 ر.س).'
+        : subEval.isExplicitLegacyUnrestricted
+        ? 'مؤسسة معفاة دائماً (legacy_unrestricted): معفاة من رسوم الاشتراك والتأسيس وإعادة التنشيط وجميع الفروع الحالية والمستقبلية مع حفظ السجل التاريخي (0 ر.س).'
+        : 'مؤسسة قديمة (legacy_unrestricted): معفاة من رسوم التأسيس واشتراك الفروع حتى التفعيل اليدوي.',
     };
   }
 
@@ -531,7 +611,15 @@ export function evaluateOrganizationBranchPricing(params: {
     ? branches.filter((b) => isBranchCountedAsPaid(b, org, now)).length
     : activeCount;
 
-  const billableBranchesCount = Math.max(0, activeCount - includedCount);
+  // Individually exempt active branches are excluded from billable branch fees (0 SAR each)
+  const exemptBranchesCount = Array.isArray(branches)
+    ? branches.filter(
+        (b) => !isBranchSuspendedOrPurged(b) && isBranchIndividuallyExempt(b)
+      ).length
+    : 0;
+
+  const nonExemptActiveCount = Math.max(0, activeCount - exemptBranchesCount);
+  const billableBranchesCount = Math.max(0, nonExemptActiveCount - includedCount);
   const estimatedMonthlyTotalSar = billableBranchesCount * feePerBranch;
   const setupFeeSar = normalizeNonNegativeInt(
     org.accountSetupFeeSar,
@@ -540,14 +628,19 @@ export function evaluateOrganizationBranchPricing(params: {
   const setupFeeStatus: FeePaymentStatus = org.setupFeeStatus || 'unpaid';
   const model = org.branchPricingModel || BRANCH_PRICING_MODEL;
 
+  const exemptSuffix =
+    exemptBranchesCount > 0 ? ` — ويُستثنى ${exemptBranchesCount} فرع معفى فردياً (0 ر.س)` : '';
+
   const pricingSummary =
     includedCount === 0
       ? billableBranchesCount > 0
-        ? `${billableBranchesCount} فرع فعال × ${feePerBranch} ر.س/شهرياً = ${estimatedMonthlyTotalSar} ر.س/شهرياً (التتبع اليدوي بدون خصم آلي)`
+        ? `${billableBranchesCount} فرع فعال خاضع للرسوم × ${feePerBranch} ر.س/شهرياً = ${estimatedMonthlyTotalSar} ر.س/شهرياً${exemptSuffix} (التتبع اليدوي بدون خصم آلي)`
+        : exemptBranchesCount > 0
+        ? `جميع الفروع الفعالة معفاة فردياً (${exemptBranchesCount} فرع — 0 ر.س/شهرياً)`
         : `لا توجد فروع فعالة حالياً — ${feePerBranch} ر.س/شهرياً لكل فرع بدءاً من أول فرع`
       : billableBranchesCount > 0
-      ? `${billableBranchesCount} فرع خاضع للرسوم × ${feePerBranch} ر.س/شهرياً = ${estimatedMonthlyTotalSar} ر.س/شهرياً`
-      : `ضمن الحد المشمول (${includedCount} فرع) — ${feePerBranch} ر.س/شهرياً لكل فرع إضافي`;
+      ? `${billableBranchesCount} فرع خاضع للرسوم × ${feePerBranch} ر.س/شهرياً = ${estimatedMonthlyTotalSar} ر.س/شهرياً${exemptSuffix}`
+      : `ضمن الحد المشمول (${includedCount} فرع)${exemptSuffix} — ${feePerBranch} ر.س/شهرياً لكل فرع إضافي`;
 
   return {
     model,
@@ -560,6 +653,8 @@ export function evaluateOrganizationBranchPricing(params: {
     totalBranchesCount: totalCount,
     activeBranchesCount: activeCount,
     paidBranchesCount,
+    exemptBranchesCount,
+    billableBranchesCount,
     suspendedBranchesCount: suspendedCount,
     extraBranchesCount: billableBranchesCount,
     estimatedMonthlyExtraFeeSar: estimatedMonthlyTotalSar,
@@ -567,6 +662,7 @@ export function evaluateOrganizationBranchPricing(params: {
     isLegacyExempt: false,
     isBillingExempt: false,
     isFeeExempt: false,
+    exemptionMode: 'none',
     autoBillingEnabled: false,
     pricingSummary,
   };
