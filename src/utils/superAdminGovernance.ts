@@ -677,7 +677,7 @@ export function validateSuperAdminMemberCreateInput(params: {
 
   return {
     orgId: params.org.id,
-    email: cleanEmail,
+    email: normalizedEmail,
     displayName: cleanName,
     role: params.role,
     ...(resolvedBranch
@@ -1193,6 +1193,9 @@ export function buildSuperAdminMemberReleaseBundle(params: {
     timestamp: nowIso,
   });
 
+  const currentOrgJoinedAt =
+    params.existingMember.reassignedAt || params.existingMember.createdAt;
+
   const historyRecord: MemberOrgHistoryRecord = {
     id: historyId,
     eventType: 'released',
@@ -1204,7 +1207,7 @@ export function buildSuperAdminMemberReleaseBundle(params: {
     role: params.existingMember.role,
     ...(prevBranchId ? { branchId: prevBranchId } : {}),
     ...(prevBranchName ? { branchName: prevBranchName } : {}),
-    ...(params.existingMember.createdAt ? { joinedAt: params.existingMember.createdAt } : {}),
+    ...(currentOrgJoinedAt ? { joinedAt: currentOrgJoinedAt } : {}),
     effectiveAt: nowIso,
     actorUid: params.actor.uid,
     actorEmail,
@@ -1218,6 +1221,8 @@ export function buildSuperAdminMemberReleaseBundle(params: {
     membershipStatus: 'released',
     isActive: false,
     isArchived: false,
+    archivedAt: params.deleteFieldSentinel,
+    archivedBy: params.deleteFieldSentinel,
     branchId: params.deleteFieldSentinel,
     branchIds: params.deleteFieldSentinel,
     branchName: params.deleteFieldSentinel,
@@ -1247,7 +1252,10 @@ export function buildSuperAdminMemberReleaseBundle(params: {
  * - Allowed roles strictly `supervisor | branch_manager | employee` (never `manager` / `super_admin`).
  * - Branch binding strictly verified to belong to `targetOrg.id` (never foreign org, never purged).
  * - Fresh role-scoped permissions built from scratch; ZERO legacy permissions copied.
- * - Preserves historical `releasedFromOrgId`, `releasedAt`, `releasedBy`, `releaseReason`, `createdAt`, `uid`, `email`.
+ * - Purges previous-org archive and release metadata (`archivedAt`, `archivedBy`, `releasedFromOrgId`,
+ *   `releasedFromOrgName`, `releasedAt`, `releasedBy`, `releaseReason`) from `users/{uid}` so the new
+ *   organization's manager never sees previous-org identity or internal release notes, while preserving
+ *   100% of immutable history exclusively in Super-Admin-only `memberOrgHistory` and preserving `createdAt`, `uid`, `email`.
  */
 export function buildSuperAdminAssignReleasedMemberBundle(params: {
   actor: SuperAdminActorSnapshot;
@@ -1395,6 +1403,13 @@ export function buildSuperAdminAssignReleasedMemberBundle(params: {
     membershipStatus: 'active',
     isActive: true,
     isArchived: false,
+    archivedAt: params.deleteFieldSentinel,
+    archivedBy: params.deleteFieldSentinel,
+    releasedFromOrgId: params.deleteFieldSentinel,
+    releasedFromOrgName: params.deleteFieldSentinel,
+    releasedAt: params.deleteFieldSentinel,
+    releasedBy: params.deleteFieldSentinel,
+    releaseReason: params.deleteFieldSentinel,
     reassignedAt: nowIso,
     reassignedBy: actorEmail,
     lastMemberOrgHistoryId: historyId,

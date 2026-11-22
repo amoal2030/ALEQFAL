@@ -53,6 +53,11 @@ import {
   SuperAdminAssignableMemberRole,
 } from '../../utils/superAdminGovernance';
 import { resolveMemberMembershipStatus } from '../../utils/tenantAccess';
+import {
+  detectProfileEmailDiagnostics,
+  normalizeLoginEmail,
+  validatePasswordConfirmation,
+} from '../../utils/authCredentials';
 import { SUPER_ADMIN_EMAIL } from '../../utils/superAdmin';
 import {
   Building2,
@@ -67,6 +72,7 @@ import {
   Globe,
   ChevronDown,
   Eye,
+  EyeOff,
   X,
   CheckCircle2,
   AlertTriangle,
@@ -128,6 +134,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const {
     currentUser,
     isSuperAdmin,
+    authEmailMismatch,
     superAdminOverview,
     superAdminLoading,
     superAdminError,
@@ -309,11 +316,14 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
 
   // Cross-Org Member Management Modals state (Super Admin only)
   const [showCreateMemberModal, setShowCreateMemberModal] = useState(false);
+  const [showCreateMemberPassword, setShowCreateMemberPassword] = useState(false);
+  const [showCreateMemberConfirmPassword, setShowCreateMemberConfirmPassword] = useState(false);
   const [createMemberForm, setCreateMemberForm] = useState<{
     orgId: string;
     displayName: string;
     email: string;
     password: string;
+    confirmPassword: string;
     phone: string;
     role: SuperAdminAssignableMemberRole;
     branchId: string;
@@ -323,6 +333,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     displayName: '',
     email: '',
     password: '',
+    confirmPassword: '',
     phone: '',
     role: 'employee',
     branchId: '',
@@ -532,6 +543,29 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     return m;
   }, [allUsers]);
 
+  const memberHistoryByUid = useMemo(() => {
+    const m = new Map<string, typeof allMemberOrgHistory>();
+    for (const rec of allMemberOrgHistory) {
+      const existing = m.get(rec.uid);
+      if (existing) {
+        existing.push(rec);
+      } else {
+        m.set(rec.uid, [rec]);
+      }
+    }
+    return m;
+  }, [allMemberOrgHistory]);
+
+  const latestReleaseHistoryByUid = useMemo(() => {
+    const m = new Map<string, (typeof allMemberOrgHistory)[number]>();
+    for (const rec of allMemberOrgHistory) {
+      if (rec.eventType === 'released' && !m.has(rec.uid)) {
+        m.set(rec.uid, rec);
+      }
+    }
+    return m;
+  }, [allMemberOrgHistory]);
+
   const filteredOrganizations = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     const now = new Date();
@@ -599,13 +633,15 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const filteredMembers = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     return allUsers.filter((u) => {
-      if (memberOrgFilter !== 'all' && u.orgId !== memberOrgFilter) return false;
-      if (
-        memberOrgFilter !== 'all' &&
-        u.orgId !== memberOrgFilter &&
-        u.releasedFromOrgId !== memberOrgFilter
-      ) {
-        return false;
+      const historyRecords = memberHistoryByUid.get(u.uid) || [];
+      if (memberOrgFilter !== 'all') {
+        const matchesCurrent = u.orgId === memberOrgFilter;
+        const matchesHistory = historyRecords.some(
+          (h) => h.orgId === memberOrgFilter || h.previousOrgId === memberOrgFilter
+        );
+        if (!matchesCurrent && !matchesHistory) {
+          return false;
+        }
       }
       if (memberRoleFilter !== 'all' && u.role !== memberRoleFilter) return false;
       const effectiveStatus = resolveMemberMembershipStatus(u);
@@ -617,10 +653,19 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
 
       if (!term) return true;
       const orgName = (orgMap.get(u.orgId)?.name || '').toLowerCase();
-      const prevOrgName = (
-        u.releasedFromOrgName ||
-        (u.releasedFromOrgId ? orgMap.get(u.releasedFromOrgId)?.name || '' : '')
-      ).toLowerCase();
+      const historyOrgSearchHit = historyRecords.some((h) => {
+        const histOrgName = (h.orgName || orgMap.get(h.orgId)?.name || '').toLowerCase();
+        const histPrevOrgName = (
+          h.previousOrgName ||
+          (h.previousOrgId ? orgMap.get(h.previousOrgId)?.name || '' : '')
+        ).toLowerCase();
+        return (
+          h.orgId.toLowerCase().includes(term) ||
+          histOrgName.includes(term) ||
+          (h.previousOrgId || '').toLowerCase().includes(term) ||
+          histPrevOrgName.includes(term)
+        );
+      });
       const branchLabel = (
         u.branchName ||
         (u.branchId ? branchMap.get(u.branchId)?.name || '' : '')
@@ -630,13 +675,12 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
         (u.email || '').toLowerCase().includes(term) ||
         u.uid.toLowerCase().includes(term) ||
         (u.orgId || '').toLowerCase().includes(term) ||
-        (u.releasedFromOrgId || '').toLowerCase().includes(term) ||
         orgName.includes(term) ||
-        prevOrgName.includes(term) ||
+        historyOrgSearchHit ||
         branchLabel.includes(term)
       );
     });
-  }, [allUsers, memberOrgFilter, memberRoleFilter, memberStatusFilter, searchTerm, orgMap, branchMap]);
+  }, [allUsers, memberHistoryByUid, memberOrgFilter, memberRoleFilter, memberStatusFilter, searchTerm, orgMap, branchMap]);
 
   const filteredInvites = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -906,11 +950,14 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       displayName: '',
       email: '',
       password: '',
+      confirmPassword: '',
       phone: '',
       role: 'employee',
       branchId: firstOrgBranch?.id || '',
       supervisorPermissions: {},
     });
+    setShowCreateMemberPassword(false);
+    setShowCreateMemberConfirmPassword(false);
     setShowCreateMemberModal(true);
   };
 
@@ -1031,10 +1078,31 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
 
   const handleCreateMemberSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const passCheck = validatePasswordConfirmation(
+      createMemberForm.password,
+      createMemberForm.confirmPassword,
+      6
+    );
+    if (!passCheck.valid) {
+      setActionError(
+        passCheck.reason === 'mismatch'
+          ? tr(
+              'كلمتا المرور غير متطابقتين. يرجى التأكد من تطابق كلمة المرور وتأكيدها.',
+              'Passwords do not match. Please verify both password fields.',
+              'پاس ورڈ اور تصدیقی پاس ورڈ آپس میں مطابقت نہیں رکھتے۔'
+            )
+          : tr(
+              'يجب أن تتكون كلمة المرور من 6 أحرف على الأقل.',
+              'Password must be at least 6 characters long.',
+              'پاس ورڈ کم از کم 6 حروف پر مشتمل ہونا چاہیے۔'
+            )
+      );
+      return;
+    }
     await runGuardedAction(async () => {
       const res = await createSuperAdminOrgMember({
         orgId: createMemberForm.orgId,
-        email: createMemberForm.email,
+        email: normalizeLoginEmail(createMemberForm.email),
         password: createMemberForm.password,
         displayName: createMemberForm.displayName,
         role: createMemberForm.role,
@@ -1131,8 +1199,9 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     if (!isMemberReleased(member)) return;
     clearFeedback();
     const activeOrgs = organizations.filter((o) => o.isActive !== false);
+    const lastReleaseOrgId = latestReleaseHistoryByUid.get(member.uid)?.orgId;
     const defaultOrg =
-      activeOrgs.find((o) => o.id !== member.releasedFromOrgId) || activeOrgs[0];
+      activeOrgs.find((o) => o.id !== lastReleaseOrgId) || activeOrgs[0];
     const defaultOrgId = defaultOrg?.id || '';
     const firstBranch = (branchesByOrg.get(defaultOrgId) || []).find(
       (b) => b.lifecycleStatus !== 'purged_from_db'
@@ -2410,6 +2479,49 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
               </span>
             </div>
 
+            {(() => {
+              const emailDiagnostics = detectProfileEmailDiagnostics(allUsers);
+              if (!authEmailMismatch && emailDiagnostics.length === 0) return null;
+              return (
+                <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 p-3.5 text-xs text-amber-900 dark:text-amber-200 space-y-2">
+                  <div className="font-bold flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span>
+                      {tr(
+                        'تنبيه تشخيصي لعدم تطابق أو تنسيق البريد الإلكتروني (لم تُجرَ أي مزامنة تلقائية)',
+                        'Email Mismatch / Normalization Diagnostic Alert (No Auto-Sync Performed)',
+                        'ای میل عدم مطابقت / فارمیٹنگ تشخیصی تنبیہ (کوئی خودکار ہم آہنگی نہیں کی گئی)'
+                      )}
+                    </span>
+                  </div>
+                  {authEmailMismatch && (
+                    <div className="text-[11px] font-mono bg-white/70 dark:bg-[#0E203A] rounded-lg p-2 border border-amber-500/20" dir="ltr">
+                      UID: {authEmailMismatch.uid} | Auth: {authEmailMismatch.authEmail} | Firestore:{' '}
+                      {authEmailMismatch.profileEmail}
+                    </div>
+                  )}
+                  {emailDiagnostics.length > 0 && (
+                    <div className="text-[11px] space-y-1">
+                      <p>
+                        {tr(
+                          `تم رصد ${emailDiagnostics.length} حالة تحتاج مراجعة منسّقة بين Firebase Authentication وFirestore قبل أي تعديل:`,
+                          `Detected ${emailDiagnostics.length} profile email diagnostic item(s) requiring coordinated review between Firebase Authentication and Firestore:`,
+                          `${emailDiagnostics.length} پروفائل ای میل کیسز کی نشاندہی ہوئی ہے جن کے لیے Firebase Authentication اور Firestore کے درمیان مشترکہ جائزہ درکار ہے:`
+                        )}
+                      </p>
+                      <ul className="space-y-1 max-h-28 overflow-y-auto">
+                        {emailDiagnostics.slice(0, 8).map((item, idx) => (
+                          <li key={`${item.uid}_${item.issueType}_${idx}`} className="font-mono text-[10px]" dir="ltr">
+                            [{item.issueType}] {item.displayName} ({item.uid}): "{item.storedEmail}"
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] overflow-hidden shadow-sm">
               {filteredMembers.length === 0 ? (
                 <div className="p-10 text-center text-xs text-slate-500 dark:text-slate-400">
@@ -2434,9 +2546,14 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                     <tbody className="divide-y divide-[#E6EEFC] dark:divide-[#1F3B66] text-xs">
                       {filteredMembers.map((member) => {
                         const parentOrg = member.orgId ? orgMap.get(member.orgId) : undefined;
-                        const prevOrg = member.releasedFromOrgId
-                          ? orgMap.get(member.releasedFromOrgId)
+                        const memberHistoryRecords = memberHistoryByUid.get(member.uid) || [];
+                        const latestReleaseRecord = latestReleaseHistoryByUid.get(member.uid);
+                        const prevOrgIdFromHistory = latestReleaseRecord?.orgId;
+                        const prevOrg = prevOrgIdFromHistory
+                          ? orgMap.get(prevOrgIdFromHistory)
                           : undefined;
+                        const prevOrgLabel =
+                          latestReleaseRecord?.orgName || prevOrg?.name || prevOrgIdFromHistory;
                         const branchObj = member.branchId ? branchMap.get(member.branchId) : undefined;
                         const membershipStatus = resolveMemberMembershipStatus(member);
                         const isReleased = membershipStatus === 'released';
@@ -2451,7 +2568,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                           (parentOrg?.ownerId === member.uid ||
                             (parentOrg?.ownerEmail || '').trim().toLowerCase() ===
                               (member.email || '').trim().toLowerCase());
-                        const historyCount = allMemberOrgHistory.filter((h) => h.uid === member.uid).length;
+                        const historyCount = memberHistoryRecords.length;
 
                         return (
                           <tr
@@ -2476,11 +2593,11 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                                   <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-700 dark:text-rose-300">
                                     {tr('بدون مؤسسة حالياً', 'Unassigned (Released)', 'فی الحال بغیر ادارہ')}
                                   </span>
-                                  {(member.releasedFromOrgName || prevOrg?.name || member.releasedFromOrgId) && (
+                                  {prevOrgLabel && (
                                     <div className="text-[11px] text-slate-500 dark:text-slate-400">
                                       {tr('سابقاً:', 'Previously:', 'سابقہ:')}{' '}
                                       <span className="font-semibold text-slate-700 dark:text-slate-200">
-                                        {member.releasedFromOrgName || prevOrg?.name || member.releasedFromOrgId}
+                                        {prevOrgLabel}
                                       </span>
                                     </div>
                                   )}
@@ -2493,10 +2610,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                                   <div className="text-[10px] font-mono text-slate-500" dir="ltr">
                                     {member.orgId}
                                   </div>
-                                  {member.releasedFromOrgId && (
+                                  {prevOrgLabel && (
                                     <div className="text-[10px] text-indigo-600 dark:text-indigo-300 mt-0.5">
                                       {tr('منقول سابقاً من:', 'Previously released from:', 'سابقہ ادارہ:')}{' '}
-                                      {member.releasedFromOrgName || prevOrg?.name || member.releasedFromOrgId}
+                                      {prevOrgLabel}
                                     </div>
                                   )}
                                 </>
@@ -2546,8 +2663,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                               </span>
                               <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-1">
                                 {tr('أنشئ:', 'Created:', 'تخلیق:')} {formatShortDate(member.createdAt)}
-                                {isReleased && member.releasedAt
-                                  ? ` · ${tr('فُصل:', 'Released:', 'الگ:')} ${formatShortDate(member.releasedAt)}`
+                                {isReleased && latestReleaseRecord?.effectiveAt
+                                  ? ` · ${tr('فُصل:', 'Released:', 'الگ:')} ${formatShortDate(latestReleaseRecord.effectiveAt)}`
                                   : ` · ${tr('حدّث:', 'Updated:', 'اپ ڈیٹ:')} ${formatShortDate(member.updatedAt)}`}
                               </div>
                               {historyCount > 0 && (
@@ -4673,12 +4790,21 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 </button>
               </div>
               <form onSubmit={handleCreateMemberSubmit} className="p-6 space-y-4 text-xs max-h-[82vh] overflow-y-auto">
-                <div className="p-3 rounded-xl bg-[#1764FF]/8 border border-[#1764FF]/25 text-slate-700 dark:text-slate-200 leading-relaxed">
-                  {tr(
-                    'ملاحظة تقنية وأمنية: يُنشأ حساب العضو عبر البريد وكلمة المرور دون إنهاء جلستك الحالية، وللأدوار التشغيلية فقط (مسؤول، مسؤول فرع، موظف). أما حسابات Google القائمة مسبقاً فلا يمكن إنشاء حساب Google لها أو تخمين معرّفها (UID) وتُربط عبر آلية الدعوات الآمنة فقط.',
-                    'Security Note: Member accounts are created via email/password without interrupting your Super Admin session, strictly for operational roles (supervisor, branch_manager, employee). Existing Google accounts cannot be created or have UIDs guessed and must be linked via secure invitations.',
-                    'سکیورٹی نوٹ: یہاں صرف ای میل/پاس ورڈ کے ذریعے آپریشنل اراکین بنائے جاتے ہیں۔ موجودہ Google اکاؤنٹس کو محفوظ دعوت کے ذریعے منسلک کیا جاتا ہے۔'
-                  )}
+                <div className="p-3 rounded-xl bg-[#1764FF]/8 border border-[#1764FF]/25 text-slate-700 dark:text-slate-200 leading-relaxed space-y-1.5">
+                  <p>
+                    {tr(
+                      'ملاحظة تقنية وأمنية: يُنشأ حساب العضو عبر البريد وكلمة المرور دون إنهاء جلستك الحالية، وللأدوار التشغيلية فقط (مسؤول، مسؤول فرع، موظف). أما حسابات Google القائمة مسبقاً فلا يمكن إنشاء حساب Google لها أو تخمين معرّفها (UID) وتُربط عبر آلية الدعوات الآمنة فقط.',
+                      'Security Note: Member accounts are created via email/password without interrupting your Super Admin session, strictly for operational roles (supervisor, branch_manager, employee). Existing Google accounts cannot be created or have UIDs guessed and must be linked via secure invitations.',
+                      'سکیورٹی نوٹ: یہاں صرف ای میل/پاس ورڈ کے ذریعے آپریشنل اراکین بنائے جاتے ہیں۔ موجودہ Google اکاؤنٹس کو محفوظ دعوت کے ذریعے منسلک کیا جاتا ہے۔'
+                    )}
+                  </p>
+                  <p className="text-[11px] opacity-90">
+                    {tr(
+                      'تنبيه مهم: نوع مزوّد الدخول الفعلي للحساب (البريد وكلمة المرور هنا) هو الذي يحدد طريقة تسجيل دخول العضو، وليس مجرد كون البريد من Gmail أو غيره.',
+                      'Sign-in note: The actual sign-in provider configured for the account (Email/Password here) determines how the member signs in—not merely whether the email is a Gmail address.',
+                      'لاگ ان نوٹ: اکاؤنٹ کا اصل تصدیقی فراہم کنندہ (یہاں ای میل اور پاس ورڈ) طے کرتا ہے کہ رکن کیسے لاگ ان ہوگا، نہ کہ صرف یہ کہ ای میل Gmail ہے۔'
+                    )}
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -4741,27 +4867,74 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                     <input
                       type="email"
                       required
+                      dir="ltr"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      autoComplete="email"
                       value={createMemberForm.email}
                       onChange={(e) => setCreateMemberForm({ ...createMemberForm, email: e.target.value })}
                       className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
-                      dir="ltr"
                     />
                   </div>
 
                   <div>
                     <label className="block font-semibold mb-1">{tr('كلمة المرور * (6 أحرف+)', 'Password * (6+ chars)', 'پاس ورڈ *')}</label>
-                    <input
-                      type="password"
-                      required
-                      minLength={6}
-                      value={createMemberForm.password}
-                      onChange={(e) => setCreateMemberForm({ ...createMemberForm, password: e.target.value })}
-                      className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
-                      dir="ltr"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showCreateMemberPassword ? 'text' : 'password'}
+                        required
+                        minLength={6}
+                        dir="ltr"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        autoComplete="new-password"
+                        value={createMemberForm.password}
+                        onChange={(e) => setCreateMemberForm({ ...createMemberForm, password: e.target.value })}
+                        className="w-full ps-3 pe-9 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowCreateMemberPassword((prev) => !prev)}
+                        aria-label={showCreateMemberPassword ? t('authHidePassword') : t('authShowPassword')}
+                        className="absolute end-2 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-400 hover:text-[#0B1B32] dark:hover:text-white"
+                      >
+                        {showCreateMemberPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
 
                   <div>
+                    <label className="block font-semibold mb-1">{tr('تأكيد كلمة المرور *', 'Confirm Password *', 'پاس ورڈ کی تصدیق *')}</label>
+                    <div className="relative">
+                      <input
+                        type={showCreateMemberConfirmPassword ? 'text' : 'password'}
+                        required
+                        minLength={6}
+                        dir="ltr"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        autoComplete="new-password"
+                        value={createMemberForm.confirmPassword}
+                        onChange={(e) =>
+                          setCreateMemberForm({ ...createMemberForm, confirmPassword: e.target.value })
+                        }
+                        className="w-full ps-3 pe-9 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-[#F5F8FF] dark:bg-[#0E203A] font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowCreateMemberConfirmPassword((prev) => !prev)}
+                        aria-label={showCreateMemberConfirmPassword ? t('authHidePassword') : t('authShowPassword')}
+                        className="absolute end-2 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-400 hover:text-[#0B1B32] dark:hover:text-white"
+                      >
+                        {showCreateMemberConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="sm:col-span-2">
                     <label className="block font-semibold mb-1">{tr('رقم الجوال (اختياري)', 'Phone (Optional)', 'فون نمبر (اختیاری)')}</label>
                     <input
                       value={createMemberForm.phone}
@@ -5250,22 +5423,26 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 onSubmit={handleAssignMemberSubmit}
                 className="p-6 space-y-4 text-xs max-h-[82vh] overflow-y-auto"
               >
-                <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-1">
-                  <div className="font-bold text-sm">{assignMemberTarget.displayName}</div>
-                  <div className="font-mono text-[11px] text-slate-500" dir="ltr">
-                    {assignMemberTarget.email} · UID: {assignMemberTarget.uid}
-                  </div>
-                  {assignMemberTarget.releasedFromOrgId && (
-                    <div className="text-[11px] text-slate-500">
-                      {tr('المؤسسة السابقة المفصول منها:', 'Released from:', 'سابقہ ادارہ:')}{' '}
-                      <span className="font-semibold">
-                        {assignMemberTarget.releasedFromOrgName ||
-                          orgMap.get(assignMemberTarget.releasedFromOrgId)?.name ||
-                          assignMemberTarget.releasedFromOrgId}
-                      </span>
+                {(() => {
+                  const assignLastRelease = latestReleaseHistoryByUid.get(assignMemberTarget.uid);
+                  const assignPrevOrgLabel =
+                    assignLastRelease?.orgName ||
+                    (assignLastRelease?.orgId ? orgMap.get(assignLastRelease.orgId)?.name || assignLastRelease.orgId : '');
+                  return (
+                    <div className="p-3.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-1">
+                      <div className="font-bold text-sm">{assignMemberTarget.displayName}</div>
+                      <div className="font-mono text-[11px] text-slate-500" dir="ltr">
+                        {assignMemberTarget.email} · UID: {assignMemberTarget.uid}
+                      </div>
+                      {assignPrevOrgLabel && (
+                        <div className="text-[11px] text-slate-500">
+                          {tr('المؤسسة السابقة المفصول منها:', 'Released from:', 'سابقہ ادارہ:')}{' '}
+                          <span className="font-semibold">{assignPrevOrgLabel}</span>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  );
+                })()}
 
                 <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-slate-700 dark:text-slate-200 leading-relaxed">
                   {tr(
@@ -5489,7 +5666,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
         const isArchived = !isReleased && (status === 'archived' || detailMember.isActive === false);
         const editable = canManageMember(detailMember);
         const releaseEligible = isMemberEligibleForRelease(detailMember, parentOrg);
-        const memberHistory = allMemberOrgHistory.filter((h) => h.uid === detailMember.uid);
+        const memberHistory = memberHistoryByUid.get(detailMember.uid) || [];
+        const latestDetailRelease = latestReleaseHistoryByUid.get(detailMember.uid);
         const memberAudits = platformAuditLogs.filter(
           (l) => l.targetId === detailMember.uid && l.targetType === 'member'
         );
@@ -5551,23 +5729,23 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                       {detailMember.branchName ? ` — ${detailMember.branchName}` : ''}
                     </div>
                   </div>
-                  {detailMember.releasedFromOrgId && (
+                  {latestDetailRelease && (
                     <div className="sm:col-span-2 pt-2 border-t border-[#DCE6FA] dark:border-[#1F3B66]">
                       <div className="text-[11px] text-slate-500">
-                        {tr('بيانات آخر فصل عضوية نهائي:', 'Last Permanent Release:', 'آخری مستقل علیحدگی:')}
+                        {tr('بيانات آخر فصل عضوية نهائي (من سجل memberOrgHistory):', 'Last Permanent Release (from memberOrgHistory):', 'آخری مستقل علیحدگی:')}
                       </div>
                       <div className="text-[11px] mt-0.5">
                         {tr('من مؤسسة:', 'From:', 'ادارے سے:')}{' '}
                         <span className="font-bold">
-                          {detailMember.releasedFromOrgName ||
-                            orgMap.get(detailMember.releasedFromOrgId)?.name ||
-                            detailMember.releasedFromOrgId}
+                          {latestDetailRelease.orgName ||
+                            orgMap.get(latestDetailRelease.orgId)?.name ||
+                            latestDetailRelease.orgId}
                         </span>{' '}
-                        · {formatIsoDate(detailMember.releasedAt)} · {detailMember.releasedBy || '—'}
+                        · {formatIsoDate(latestDetailRelease.effectiveAt)} · {latestDetailRelease.actorEmail || '—'}
                       </div>
-                      {detailMember.releaseReason && (
+                      {latestDetailRelease.reason && (
                         <div className="text-[11px] text-slate-500 mt-0.5">
-                          {tr('السبب:', 'Reason:', 'وجہ:')} {detailMember.releaseReason}
+                          {tr('السبب:', 'Reason:', 'وجہ:')} {latestDetailRelease.reason}
                         </div>
                       )}
                     </div>

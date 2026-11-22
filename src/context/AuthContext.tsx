@@ -127,6 +127,13 @@ import {
   resolveUnprofiledUserAccess,
 } from '../utils/tenantAccess';
 import {
+  assertProfileEmailImmutableOnEmployeeUpdate,
+  AuthProfileEmailMismatchRecord,
+  detectAuthProfileEmailMismatch,
+  normalizeLoginEmail,
+  prepareLoginCredentials,
+} from '../utils/authCredentials';
+import {
   buildDefaultPermissionsForRole,
   canUserAccessBranch,
   resolveEffectivePermissions,
@@ -196,6 +203,7 @@ interface AuthContextType {
   subscriptionBlockReason: SubscriptionBlockReason | null;
   inviteBlockInfo: { reason: InviteBlockReason; email?: string; orgName?: string } | null;
   accessErrorInfo: { reason: AccessErrorReason; detail?: string } | null;
+  authEmailMismatch: AuthProfileEmailMismatchRecord | null;
   loginWithGoogle: () => Promise<void>;
   loginWithEmailPassword: (email: string, pass: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
@@ -221,7 +229,7 @@ interface AuthContextType {
   updateEmployeeAccount: (data: {
     employeeUid: string;
     displayName: string;
-    email: string;
+    email?: string;
     phone?: string;
     role: 'employee' | 'branch_manager' | 'supervisor';
     branchId?: string;
@@ -501,6 +509,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     reason: AccessErrorReason;
     detail?: string;
   } | null>(null);
+  const [authEmailMismatch, setAuthEmailMismatch] = useState<AuthProfileEmailMismatchRecord | null>(
+    null
+  );
   const [authNotice, setAuthNotice] = useState<{ type: 'info' | 'warning' | 'error'; message: string } | null>(null);
   const [superAdminOverview, setSuperAdminOverview] = useState<SuperAdminOverviewData | null>(null);
   const [superAdminLoading, setSuperAdminLoading] = useState(false);
@@ -573,6 +584,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     if (!nextUid) {
       clearDriveSession();
+      setAuthEmailMismatch(null);
       setTenantNotifications([]);
       setTenantNotificationsHasMore(false);
       setSuperAdminNotifications([]);
@@ -720,7 +732,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         (docSnap) => {
           if (!docSnap.exists()) return;
           const data: UserProfile = { ...(docSnap.data() as UserProfile), uid: currentUser.uid };
-          if (resolveMemberMembershipStatus(data) === 'released') {
+          const membershipStatus = resolveMemberMembershipStatus(data);
+          if (membershipStatus === 'released') {
             clearDriveSession();
             clearOperationalState();
             setUserProfile(null);
@@ -732,20 +745,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setTenantStatus('access_error');
             return;
           }
-          if (data.isActive === false) {
-            // Instantly terminate disabled session for BOTH manager & employee
+          if (membershipStatus === 'archived') {
             clearDriveSession();
             clearOperationalState();
-            signOut(auth).then(() => {
-              setUserProfile(null);
-              setCurrentOrg(null);
-              setSubscriptionEvaluation(null);
-              setSubscriptionBlockReason(null);
-              setAuthNotice({
-                type: 'error',
-                message: 'تم تعطيل هذا الحساب من قبل إدارة النظام أو المؤسسة. تم إنهاء الجلسة فوراً.',
-              });
-            });
+            setUserProfile(null);
+            setCurrentOrg(null);
+            setSubscriptionEvaluation(null);
+            setSubscriptionBlockReason(null);
+            setInviteBlockInfo(null);
+            setAccessErrorInfo({ reason: 'account_archived' });
+            setTenantStatus('access_error');
+            return;
+          }
+          if (data.isActive === false) {
+            clearDriveSession();
+            clearOperationalState();
+            setUserProfile(null);
+            setCurrentOrg(null);
+            setSubscriptionEvaluation(null);
+            setSubscriptionBlockReason(null);
+            setInviteBlockInfo(null);
+            setAccessErrorInfo({ reason: 'account_disabled' });
+            setTenantStatus('access_error');
           } else {
             setUserProfile(data);
           }
@@ -1432,8 +1453,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (userDocSnap.exists()) {
         const profile: UserProfile = { ...(userDocSnap.data() as UserProfile), uid: fbUser.uid };
 
+        // Read-only email mismatch diagnostic (never auto-syncs Firestore)
+        const detectedMismatch = detectAuthProfileEmailMismatch({
+          uid: fbUser.uid,
+          authEmail: fbUser.email,
+          profileEmail: profile.email,
+        });
+        setAuthEmailMismatch(detectedMismatch);
+        if (detectedMismatch) {
+          console.warn(
+            '[AL EQFAL Auth Diagnostic] Auth/Firestore email mismatch detected (not auto-synced):',
+            detectedMismatch
+          );
+        }
+
+        const membershipStatus = resolveMemberMembershipStatus(profile);
+
         // Permanently released member: show dedicated clear notice without signing out or leaking any tenant data
-        if (resolveMemberMembershipStatus(profile) === 'released') {
+        if (membershipStatus === 'released') {
           clearDriveSession();
           clearOperationalState();
           setUserProfile(null);
@@ -1447,7 +1484,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return;
         }
 
-        // Disabled user enforcement (both Manager and Employee)
+        // Temporarily archived member: keep auth session separate from org access denial; load zero org data
+        if (membershipStatus === 'archived') {
+          clearDriveSession();
+          clearOperationalState();
+          setUserProfile(null);
+          setCurrentOrg(null);
+          setSubscriptionEvaluation(null);
+          setSubscriptionBlockReason(null);
+          setInviteBlockInfo(null);
+          setAccessErrorInfo({ reason: 'account_archived' });
+          setTenantStatus('access_error');
+          setLoading(false);
+          return;
+        }
+
+        // Disabled user enforcement (both Manager and Employee): separate auth success from access denial without loading org data
         if (profile.isActive === false) {
           clearDriveSession();
           clearOperationalState();
@@ -1459,11 +1511,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setAccessErrorInfo({ reason: 'account_disabled' });
           setTenantStatus('access_error');
           setLoading(false);
-          setAuthNotice({
-            type: 'error',
-            message: 'تم تعطيل هذا الحساب من قبل إدارة النظام أو المؤسسة. يرجى مراجعة الإدارة.',
-          });
-          await signOut(auth);
           return;
         }
 
@@ -1752,7 +1799,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loginWithEmailPassword = async (email: string, pass: string) => {
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), pass);
+      const creds = prepareLoginCredentials(email, pass);
+      await signInWithEmailAndPassword(auth, creds.email, creds.password);
     } catch (error: any) {
       console.error('Email sign-in error:', error);
       throw error;
@@ -1761,7 +1809,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const resetPassword = async (email: string) => {
     try {
-      await sendPasswordResetEmail(auth, email.trim());
+      await sendPasswordResetEmail(auth, normalizeLoginEmail(email));
     } catch (error: any) {
       console.error('Reset password error:', error);
       throw error;
@@ -1803,12 +1851,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       data.role === 'supervisor' || data.role === 'branch_manager' ? data.role : 'employee';
 
     const cleanName = data.displayName.trim();
-    const cleanEmail = data.email.trim();
+    const cleanEmail = normalizeLoginEmail(data.email);
     if (!cleanName || cleanName.length > 100) {
       throw new Error('يرجى إدخال اسم موظف صحيح (1 إلى 100 حرف).');
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       throw new Error('صيغة البريد الإلكتروني غير صحيحة.');
+    }
+    if (typeof data.password !== 'string' || data.password.length < 6) {
+      throw new Error('يجب أن تتكون كلمة المرور من 6 أحرف على الأقل.');
     }
 
     const assignmentCheck = validateRoleAssignmentInput({
@@ -2098,14 +2149,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('لا يمكن تعديل حساب مدير المؤسسة من إدارة الموظفين.');
     }
 
+    // Strictly prevent independent Firestore email mutation without an authoritative Firebase Auth update
+    assertProfileEmailImmutableOnEmployeeUpdate(prevProfile.email, data.email);
+
     const cleanName = data.displayName.trim();
-    const cleanEmail = data.email.trim();
     const cleanPhone = (data.phone || '').trim().slice(0, 25);
     if (!cleanName || cleanName.length > 100) {
       throw new Error('يرجى إدخال اسم موظف صحيح (1 إلى 100 حرف).');
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      throw new Error('صيغة البريد الإلكتروني غير صحيحة.');
     }
 
     const assignmentCheck = validateRoleAssignmentInput({
@@ -2139,7 +2189,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const nowIso = new Date().toISOString();
     const updatePayload: Record<string, any> = {
       displayName: cleanName,
-      email: cleanEmail,
       phone: cleanPhone,
       role: data.role,
       permissions: nextPermissions,
@@ -5889,6 +5938,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         subscriptionBlockReason,
         inviteBlockInfo,
         accessErrorInfo,
+        authEmailMismatch,
         loginWithGoogle,
         loginWithEmailPassword,
         resetPassword,

@@ -1,0 +1,217 @@
+import { UserProfile } from '../types';
+
+export type AuthErrorTranslationKey =
+  | 'authErrUnauthorizedDomain'
+  | 'authErrPopupBlocked'
+  | 'authErrOperationNotAllowed'
+  | 'authErrTooManyRequests'
+  | 'authErrUserDisabled'
+  | 'authErrInvalidCredentials'
+  | 'authErrEmailInUse'
+  | 'authErrInvalidEmail'
+  | 'authErrWeakPassword'
+  | 'authErrPopupClosed'
+  | 'authErrNetwork'
+  | 'authErrGeneric';
+
+export interface AuthErrorClassification {
+  translationKey: AuthErrorTranslationKey;
+  showCredentialGuidance: boolean;
+  rawMessage?: string;
+}
+
+export interface AuthProfileEmailMismatchRecord {
+  uid: string;
+  authEmail: string;
+  profileEmail: string;
+  detectedAt: string;
+}
+
+export interface ProfileEmailDiagnosticIssue {
+  uid: string;
+  displayName: string;
+  orgId: string;
+  storedEmail: string;
+  normalizedEmail: string;
+  issueType: 'non_normalized_email' | 'duplicate_normalized_email';
+}
+
+export interface PasswordConfirmationResult {
+  valid: boolean;
+  reason?: 'too_short' | 'mismatch';
+}
+
+/**
+ * Normalizes an email address for authentication and Firestore storage.
+ * Trims surrounding whitespace and converts to lowercase.
+ */
+export function normalizeLoginEmail(email: string | null | undefined): string {
+  return typeof email === 'string' ? email.trim().toLowerCase() : '';
+}
+
+/**
+ * Prepares login credentials for Firebase Authentication.
+ * - Normalizes email via trim() + toLowerCase().
+ * - Preserves the password verbatim (never trims or alters characters).
+ */
+export function prepareLoginCredentials(
+  email: string,
+  password: string
+): { email: string; password: string } {
+  return {
+    email: normalizeLoginEmail(email),
+    password: typeof password === 'string' ? password : '',
+  };
+}
+
+/**
+ * Validates password length and confirmation match without modifying or trimming either value.
+ */
+export function validatePasswordConfirmation(
+  password: string,
+  confirmPassword: string,
+  minLength = 6
+): PasswordConfirmationResult {
+  if (typeof password !== 'string' || password.length < minLength) {
+    return { valid: false, reason: 'too_short' };
+  }
+  if (password !== confirmPassword) {
+    return { valid: false, reason: 'mismatch' };
+  }
+  return { valid: true };
+}
+
+/**
+ * Prevents updating an employee's Firestore `email` independently of Firebase Authentication.
+ * Throws if an update attempt supplies a different email address than the existing profile email.
+ */
+export function assertProfileEmailImmutableOnEmployeeUpdate(
+  existingEmail: string | null | undefined,
+  attemptedEmail?: string | null
+): void {
+  if (attemptedEmail === undefined || attemptedEmail === null) {
+    return;
+  }
+  const currentNorm = normalizeLoginEmail(existingEmail);
+  const attemptedNorm = normalizeLoginEmail(attemptedEmail);
+  if (attemptedNorm !== currentNorm) {
+    throw new Error(
+      'لا يمكن تعديل بريد تسجيل دخول الموظف في قاعدة البيانات بشكل منفصل عن Firebase Authentication؛ يتطلب تغيير البريد إجراءً مخصصاً يحدّث مصدر المصادقة وFirestore معاً.'
+    );
+  }
+}
+
+/**
+ * Detects a mismatch between the signed-in Firebase Authentication email and the Firestore
+ * `users/{uid}.email` profile field.
+ *
+ * Strictly read-only diagnostic: NEVER auto-syncs or mutates Firestore.
+ */
+export function detectAuthProfileEmailMismatch(params: {
+  uid: string;
+  authEmail?: string | null;
+  profileEmail?: string | null;
+  now?: Date;
+}): AuthProfileEmailMismatchRecord | null {
+  const authNorm = normalizeLoginEmail(params.authEmail);
+  const profileNorm = normalizeLoginEmail(params.profileEmail);
+  if (!authNorm || !profileNorm || authNorm === profileNorm) {
+    return null;
+  }
+  return {
+    uid: params.uid,
+    authEmail: authNorm,
+    profileEmail: profileNorm,
+    detectedAt: (params.now || new Date()).toISOString(),
+  };
+}
+
+/**
+ * Read-only diagnostic scan over loaded user profiles for Super Admin review.
+ * Detects non-normalized stored emails (spaces/uppercase) or duplicate normalized emails across UIDs
+ * without ever auto-modifying Firestore records.
+ */
+export function detectProfileEmailDiagnostics(
+  users: Pick<UserProfile, 'uid' | 'displayName' | 'orgId' | 'email'>[]
+): ProfileEmailDiagnosticIssue[] {
+  const issues: ProfileEmailDiagnosticIssue[] = [];
+  const byNormalized = new Map<string, Pick<UserProfile, 'uid' | 'displayName' | 'orgId' | 'email'>[]>();
+
+  for (const user of users) {
+    const raw = typeof user.email === 'string' ? user.email : '';
+    const norm = normalizeLoginEmail(raw);
+    if (!norm) continue;
+
+    if (raw !== norm) {
+      issues.push({
+        uid: user.uid,
+        displayName: user.displayName || user.uid,
+        orgId: user.orgId || '',
+        storedEmail: raw,
+        normalizedEmail: norm,
+        issueType: 'non_normalized_email',
+      });
+    }
+
+    const list = byNormalized.get(norm) || [];
+    list.push(user);
+    byNormalized.set(norm, list);
+  }
+
+  for (const [norm, matchedUsers] of byNormalized.entries()) {
+    if (matchedUsers.length > 1) {
+      for (const user of matchedUsers) {
+        issues.push({
+          uid: user.uid,
+          displayName: user.displayName || user.uid,
+          orgId: user.orgId || '',
+          storedEmail: user.email || '',
+          normalizedEmail: norm,
+          issueType: 'duplicate_normalized_email',
+        });
+      }
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Classifies Firebase Auth errors into safe, non-enumerating translation keys.
+ * Never reveals whether an account exists and never assumes Gmail accounts use Google sign-in.
+ */
+export function classifyAuthSignInError(err: any): AuthErrorClassification {
+  const code = typeof err?.code === 'string' ? err.code : '';
+  switch (code) {
+    case 'auth/unauthorized-domain':
+      return { translationKey: 'authErrUnauthorizedDomain', showCredentialGuidance: false };
+    case 'auth/popup-blocked':
+      return { translationKey: 'authErrPopupBlocked', showCredentialGuidance: false };
+    case 'auth/operation-not-allowed':
+      return { translationKey: 'authErrOperationNotAllowed', showCredentialGuidance: false };
+    case 'auth/too-many-requests':
+      return { translationKey: 'authErrTooManyRequests', showCredentialGuidance: false };
+    case 'auth/user-disabled':
+      return { translationKey: 'authErrUserDisabled', showCredentialGuidance: false };
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+    case 'auth/invalid-credential':
+      return { translationKey: 'authErrInvalidCredentials', showCredentialGuidance: true };
+    case 'auth/email-already-in-use':
+      return { translationKey: 'authErrEmailInUse', showCredentialGuidance: false };
+    case 'auth/invalid-email':
+      return { translationKey: 'authErrInvalidEmail', showCredentialGuidance: false };
+    case 'auth/weak-password':
+      return { translationKey: 'authErrWeakPassword', showCredentialGuidance: false };
+    case 'auth/popup-closed-by-user':
+      return { translationKey: 'authErrPopupClosed', showCredentialGuidance: false };
+    case 'auth/network-request-failed':
+      return { translationKey: 'authErrNetwork', showCredentialGuidance: false };
+    default:
+      return {
+        translationKey: 'authErrGeneric',
+        showCredentialGuidance: false,
+        rawMessage: typeof err?.message === 'string' ? err.message : undefined,
+      };
+  }
+}

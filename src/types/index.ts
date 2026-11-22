@@ -197,6 +197,7 @@ export type InviteBlockReason =
 export type AccessErrorReason =
   | 'email_not_verified'
   | 'missing_employee_profile'
+  | 'account_archived'
   | 'account_disabled'
   | 'membership_released'
   | 'permission_denied'

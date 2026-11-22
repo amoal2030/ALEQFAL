@@ -19,7 +19,6 @@ import {
   UserCheck,
   GitBranch,
   Mail,
-  KeyRound,
   CheckCircle2,
   AlertCircle,
   X,
@@ -31,7 +30,14 @@ import {
   Edit3,
   AlertTriangle,
   Building2,
+  Eye,
+  EyeOff,
+  Lock,
 } from 'lucide-react';
+import {
+  normalizeLoginEmail,
+  validatePasswordConfirmation,
+} from '../../utils/authCredentials';
 
 type StaffAssignableRole = 'employee' | 'branch_manager' | 'supervisor';
 type StatusFilterValue = 'all' | 'active' | 'disabled' | 'archived';
@@ -174,6 +180,9 @@ export const EmployeesManager: React.FC = () => {
   const [createName, setCreateName] = useState('');
   const [createEmail, setCreateEmail] = useState('');
   const [createPassword, setCreatePassword] = useState('');
+  const [createConfirmPassword, setCreateConfirmPassword] = useState('');
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
+  const [showCreateConfirmPassword, setShowCreateConfirmPassword] = useState(false);
   const [createPhone, setCreatePhone] = useState('');
   const [createRole, setCreateRole] = useState<StaffAssignableRole>('employee');
   const [createBranchId, setCreateBranchId] = useState(activeBranches[0]?.id || '');
@@ -333,6 +342,9 @@ export const EmployeesManager: React.FC = () => {
     setCreateName('');
     setCreateEmail('');
     setCreatePassword('');
+    setCreateConfirmPassword('');
+    setShowCreatePassword(false);
+    setShowCreateConfirmPassword(false);
     setCreatePhone('');
     setCreateRole('employee');
     setCreateBranchId(activeBranches[0]?.id || '');
@@ -343,7 +355,26 @@ export const EmployeesManager: React.FC = () => {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!createName.trim() || !createEmail.trim() || !createPassword) return;
+    const normalizedEmail = normalizeLoginEmail(createEmail);
+    if (!createName.trim() || !normalizedEmail || !createPassword) return;
+
+    const passCheck = validatePasswordConfirmation(createPassword, createConfirmPassword, 6);
+    if (!passCheck.valid) {
+      setCreateError(
+        passCheck.reason === 'mismatch'
+          ? tr(
+              'كلمتا المرور غير متطابقتين. يرجى التأكد من تطابق كلمة المرور وتأكيدها.',
+              'Passwords do not match. Please verify both password fields.',
+              'پاس ورڈ اور تصدیقی پاس ورڈ آپس میں مطابقت نہیں رکھتے۔'
+            )
+          : tr(
+              'يجب أن تتكون كلمة المرور من 6 أحرف على الأقل.',
+              'Password must be at least 6 characters long.',
+              'پاس ورڈ کم از کم 6 حروف پر مشتمل ہونا چاہیے۔'
+            )
+      );
+      return;
+    }
 
     setCreateLoading(true);
     setCreateError(null);
@@ -356,7 +387,7 @@ export const EmployeesManager: React.FC = () => {
 
     try {
       const created = await createEmployeeAccount({
-        email: createEmail.trim(),
+        email: normalizedEmail,
         password: createPassword,
         displayName: createName.trim(),
         role: createRole,
@@ -393,7 +424,6 @@ export const EmployeesManager: React.FC = () => {
       await updateEmployeeAccount({
         employeeUid: selectedEmployee.uid,
         displayName: editName,
-        email: editEmail,
         phone: editPhone,
         role: editRole,
         branchId: editRole === 'supervisor' ? undefined : editBranchId,
@@ -987,7 +1017,7 @@ export const EmployeesManager: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div className="space-y-3.5">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     {tr('البريد الإلكتروني لتسجيل الدخول *', 'Sign-In Email *', 'لاگ ان ای میل *')}
@@ -996,31 +1026,79 @@ export const EmployeesManager: React.FC = () => {
                     <input
                       type="email"
                       required
+                      dir="ltr"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      autoComplete="email"
                       value={createEmail}
                       onChange={(e) => setCreateEmail(e.target.value)}
                       placeholder="staff@company.com"
-                      dir="ltr"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
+                      className="w-full ps-3.5 pe-10 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
                     />
                     <Mail className="w-4 h-4 text-slate-400 absolute end-3 top-3 pointer-events-none" />
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    {tr('كلمة المرور الأولية (6 خانات فأكثر) *', 'Initial Password (6+ chars) *', 'ابتدائی پاس ورڈ (کم از کم 6 حروف) *')}
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="password"
-                      required
-                      minLength={6}
-                      value={createPassword}
-                      onChange={(e) => setCreatePassword(e.target.value)}
-                      placeholder="••••••••"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
-                    />
-                    <KeyRound className="w-4 h-4 text-slate-400 absolute end-3 top-3 pointer-events-none" />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      {tr('كلمة المرور الأولية (6 خانات فأكثر) *', 'Initial Password (6+ chars) *', 'ابتدائی پاس ورڈ (کم از کم 6 حروف) *')}
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showCreatePassword ? 'text' : 'password'}
+                        required
+                        minLength={6}
+                        dir="ltr"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        autoComplete="new-password"
+                        value={createPassword}
+                        onChange={(e) => setCreatePassword(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full ps-3.5 pe-10 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowCreatePassword((prev) => !prev)}
+                        aria-label={showCreatePassword ? t('authHidePassword') : t('authShowPassword')}
+                        className="absolute end-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-400 hover:text-[#0B1B32] dark:hover:text-white"
+                      >
+                        {showCreatePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      {tr('تأكيد كلمة المرور *', 'Confirm Password *', 'پاس ورڈ کی تصدیق *')}
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showCreateConfirmPassword ? 'text' : 'password'}
+                        required
+                        minLength={6}
+                        dir="ltr"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        autoComplete="new-password"
+                        value={createConfirmPassword}
+                        onChange={(e) => setCreateConfirmPassword(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full ps-3.5 pe-10 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-sm text-[#0B1B32] dark:text-white focus:border-[#1764FF] outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowCreateConfirmPassword((prev) => !prev)}
+                        aria-label={showCreateConfirmPassword ? t('authHidePassword') : t('authShowPassword')}
+                        className="absolute end-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-400 hover:text-[#0B1B32] dark:hover:text-white"
+                      >
+                        {showCreateConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1149,12 +1227,21 @@ export const EmployeesManager: React.FC = () => {
                 </div>
               )}
 
-              <div className="p-3 rounded-xl bg-[#1764FF]/8 border border-[#1764FF]/20 text-[11px] text-[#0B1B32] dark:text-slate-200">
-                {tr(
-                  'ملاحظة أمنية: يتم إنشاء الحساب عبر جلسة معزولة دون تسجيل خروجك، ولا تُحفظ كلمة المرور الأولية في قاعدة البيانات أو السجلات.',
-                  'Security note: Accounts are provisioned in an isolated auth session without signing you out, and initial passwords are never stored in Firestore or logs.',
-                  'سکیورٹی نوٹ: اکاؤنٹ آپ کو لاگ آؤٹ کیے بغیر ایک الگ سیشن میں بنایا جاتا ہے، اور ابتدائی پاس ورڈ کبھی ڈیٹابیس یا لاگز میں محفوظ نہیں ہوتا۔'
-                )}
+              <div className="p-3 rounded-xl bg-[#1764FF]/8 border border-[#1764FF]/20 text-[11px] text-[#0B1B32] dark:text-slate-200 space-y-1.5 leading-relaxed">
+                <p>
+                  {tr(
+                    'ملاحظة أمنية: يتم إنشاء الحساب عبر جلسة معزولة دون تسجيل خروجك، ولا تُحفظ كلمة المرور الأولية في قاعدة البيانات أو السجلات.',
+                    'Security note: Accounts are provisioned in an isolated auth session without signing you out, and initial passwords are never stored in Firestore or logs.',
+                    'سکیورٹی نوٹ: اکاؤنٹ آپ کو لاگ آؤٹ کیے بغیر ایک الگ سیشن میں بنایا جاتا ہے، اور ابتدائی پاس ورڈ کبھی ڈیٹابیس یا لاگز میں محفوظ نہیں ہوتا۔'
+                  )}
+                </p>
+                <p className="text-slate-600 dark:text-slate-300">
+                  {tr(
+                    'تنبيه مهم حول طريقة الدخول: نوع مزوّد الدخول الفعلي للحساب (البريد وكلمة المرور هنا) هو الذي يحدد طريقة تسجيل دخول الموظف، وليس مجرد كون البريد من Gmail أو غيره. يسجّل الموظف دخوله من تبويب «تسجيل دخول» باستخدام البريد وكلمة المرور هذه.',
+                    'Sign-in method note: The actual authentication provider configured for the account (Email/Password here) determines how the employee signs in—not merely whether the email is a Gmail address. The employee signs in via the Sign In (Email/Password) tab.',
+                    'لاگ ان طریقہ نوٹ: اکاؤنٹ کا اصل تصدیقی فراہم کنندہ (یہاں ای میل اور پاس ورڈ) طے کرتا ہے کہ ملازم کیسے لاگ ان ہوگا، نہ کہ صرف یہ کہ ای میل Gmail ہے۔ ملازم ای میل اور پاس ورڈ ٹیب سے لاگ ان کرے گا۔'
+                  )}
+                </p>
               </div>
 
               <button
@@ -1225,17 +1312,27 @@ export const EmployeesManager: React.FC = () => {
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      {tr('البريد الإلكتروني في ملف المؤسسة *', 'Organization Profile Email *', 'ادارے کی پروفائل ای میل *')}
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1 flex items-center gap-1">
+                      <Lock className="w-3 h-3 text-slate-400" />
+                      <span>
+                        {tr('بريد تسجيل الدخول (للقراءة فقط)', 'Sign-In Email (Read-Only)', 'لاگ ان ای میل (صرف پڑھنے کے لیے)')}
+                      </span>
                     </label>
                     <input
                       type="email"
-                      required
+                      readOnly
+                      disabled
                       value={editEmail}
-                      onChange={(e) => setEditEmail(e.target.value)}
                       dir="ltr"
-                      className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white font-mono"
+                      className="w-full px-3 py-2 rounded-xl text-xs bg-slate-100 dark:bg-[#0A182D] border border-[#DCE6FA] dark:border-[#1F3B66] text-slate-500 dark:text-slate-400 font-mono cursor-not-allowed"
                     />
+                    <p className="mt-1 text-[10px] leading-snug text-slate-500 dark:text-slate-400">
+                      {tr(
+                        'لا يمكن تعديل البريد من هنا؛ يتطلب تغييره إجراءً مخصصاً يحدّث Firebase Authentication وFirestore معاً.',
+                        'Cannot be edited here; changing the login email requires a dedicated procedure that updates Firebase Authentication and Firestore together.',
+                        'ای میل یہاں سے تبدیل نہیں کیا جا سکتا؛ تبدیلی کے لیے مخصوص کارروائی درکار ہے جو Firebase Authentication اور Firestore دونوں کو ایک ساتھ اپ ڈیٹ کرے۔'
+                      )}
+                    </p>
                   </div>
 
                   <div>

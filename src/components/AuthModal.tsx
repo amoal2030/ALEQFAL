@@ -5,11 +5,17 @@ import { BrandLogo } from './common/BrandLogo';
 import {
   X,
   Mail,
-  KeyRound,
   ShieldCheck,
   AlertCircle,
   CheckCircle2,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
+import {
+  classifyAuthSignInError,
+  normalizeLoginEmail,
+  prepareLoginCredentials,
+} from '../utils/authCredentials';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -30,15 +36,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [activeTab, setActiveTab] = useState<'manager' | 'employee' | 'register'>(initialTab);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [showCredentialGuidance, setShowCredentialGuidance] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isForgotPassword, setIsForgotPassword] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
       setActiveTab(initialTab);
+      setShowPassword(false);
       setErrorMsg(null);
+      setShowCredentialGuidance(false);
       setSuccessMsg(null);
       setIsForgotPassword(false);
     }
@@ -46,48 +56,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   if (!isOpen) return null;
 
-  const getFirebaseErrorMessage = (err: any): string => {
-    const code = err?.code || '';
-    switch (code) {
-      case 'auth/unauthorized-domain':
-        return t('authErrUnauthorizedDomain');
-      case 'auth/popup-blocked':
-        return t('authErrPopupBlocked');
-      case 'auth/operation-not-allowed':
-        return t('authErrOperationNotAllowed');
-      case 'auth/too-many-requests':
-        return t('authErrTooManyRequests');
-      case 'auth/user-disabled':
-        return t('authErrUserDisabled');
-      case 'auth/user-not-found':
-      case 'auth/wrong-password':
-      case 'auth/invalid-credential':
-        return t('authErrInvalidCredentials');
-      case 'auth/email-already-in-use':
-        return t('authErrEmailInUse');
-      case 'auth/invalid-email':
-        return t('authErrInvalidEmail');
-      case 'auth/weak-password':
-        return t('authErrWeakPassword');
-      case 'auth/popup-closed-by-user':
-        return t('authErrPopupClosed');
-      case 'auth/network-request-failed':
-        return t('authErrNetwork');
-      default:
-        return err?.message || t('authErrGeneric');
+  const applyFirebaseError = (err: any) => {
+    const classified = classifyAuthSignInError(err);
+    setShowCredentialGuidance(classified.showCredentialGuidance);
+    if (classified.translationKey === 'authErrGeneric' && classified.rawMessage) {
+      setErrorMsg(classified.rawMessage);
+    } else {
+      setErrorMsg(t(classified.translationKey));
     }
   };
 
   const handleGoogleManagerSignIn = async () => {
     setLoading(true);
     setErrorMsg(null);
+    setShowCredentialGuidance(false);
     setSuccessMsg(null);
     try {
       await loginWithGoogle();
       if (onSuccess) onSuccess('manager');
       onClose();
     } catch (err: any) {
-      setErrorMsg(getFirebaseErrorMessage(err));
+      applyFirebaseError(err);
     } finally {
       setLoading(false);
     }
@@ -95,16 +84,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const handleEmployeeLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) return;
+    const creds = prepareLoginCredentials(email, password);
+    if (!creds.email || !creds.password) return;
     setLoading(true);
     setErrorMsg(null);
+    setShowCredentialGuidance(false);
     setSuccessMsg(null);
     try {
-      await loginWithEmailPassword(email, password);
+      await loginWithEmailPassword(creds.email, creds.password);
       if (onSuccess) onSuccess('employee');
       onClose();
     } catch (err: any) {
-      setErrorMsg(getFirebaseErrorMessage(err));
+      applyFirebaseError(err);
     } finally {
       setLoading(false);
     }
@@ -112,21 +103,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) {
+    const normalizedEmail = normalizeLoginEmail(email);
+    if (!normalizedEmail) {
       setErrorMsg(t('authEnterEmailFirst'));
+      setShowCredentialGuidance(false);
       return;
     }
     setLoading(true);
     setErrorMsg(null);
+    setShowCredentialGuidance(false);
     setSuccessMsg(null);
     try {
-      await resetPassword(email);
+      await resetPassword(normalizedEmail);
       setSuccessMsg(t('authResetSent'));
       setTimeout(() => {
         setIsForgotPassword(false);
       }, 4000);
     } catch (err: any) {
-      setErrorMsg(getFirebaseErrorMessage(err));
+      applyFirebaseError(err);
     } finally {
       setLoading(false);
     }
@@ -168,7 +162,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               type="button"
               onClick={() => {
                 setActiveTab('manager');
+                setShowPassword(false);
                 setErrorMsg(null);
+                setShowCredentialGuidance(false);
                 setSuccessMsg(null);
               }}
               className={`py-2.5 rounded-xl transition-all min-h-[38px] ${
@@ -183,7 +179,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               type="button"
               onClick={() => {
                 setActiveTab('employee');
+                setShowPassword(false);
                 setErrorMsg(null);
+                setShowCredentialGuidance(false);
                 setSuccessMsg(null);
               }}
               className={`py-2.5 rounded-xl transition-all min-h-[38px] ${
@@ -202,8 +200,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           {errorMsg && (
             <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-500/15 border border-rose-200 dark:border-rose-500/35 text-rose-700 dark:text-rose-200 text-xs flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <span>{errorMsg}</span>
+              <div className="space-y-2 flex-1">
+                <div className="font-semibold">{errorMsg}</div>
+                {showCredentialGuidance && (
+                  <div className="pt-2 border-t border-rose-500/20 space-y-2 text-[11px] leading-relaxed">
+                    <p>{t('authInvalidCredsGuidance')}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsForgotPassword(false);
+                          setActiveTab('manager');
+                          setErrorMsg(null);
+                          setShowCredentialGuidance(false);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#122543] border border-rose-200 dark:border-rose-500/40 text-[#0B1B32] dark:text-white font-bold hover:border-[#1764FF] transition-colors"
+                      >
+                        {t('authTryGoogleSignIn')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsForgotPassword(true);
+                          setErrorMsg(null);
+                          setShowCredentialGuidance(false);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#122543] border border-rose-200 dark:border-rose-500/40 text-[#1764FF] dark:text-[#7EB0FF] font-bold hover:border-[#1764FF] transition-colors"
+                      >
+                        {t('authTryPasswordReset')}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {errorMsg.includes('amoal2030.github.io') && (
                   <div className="pt-2 mt-2 border-t border-rose-500/20 text-[11px] font-mono-num">
                     {tr('النطاق المطلوب إضافته:', 'Required domain:', 'مطلوبہ ڈومین:')}{' '}
@@ -234,12 +262,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <input
                     type="email"
                     required
+                    dir="ltr"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    autoComplete="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="name@store.com"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] text-sm text-[#0B1B32] dark:text-white focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20"
+                    className="w-full ps-3.5 pe-10 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] text-sm text-[#0B1B32] dark:text-white focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20"
                   />
-                  <Mail className="w-4 h-4 text-[#647B9C] dark:text-slate-400 absolute end-3 top-3" />
+                  <Mail className="w-4 h-4 text-[#647B9C] dark:text-slate-400 absolute end-3 top-3 pointer-events-none" />
                 </div>
               </div>
 
@@ -253,7 +286,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setIsForgotPassword(false)}
+                  onClick={() => {
+                    setIsForgotPassword(false);
+                    setErrorMsg(null);
+                    setShowCredentialGuidance(false);
+                  }}
                   className="px-4 py-3 rounded-xl font-semibold text-xs text-[#0B1B32] dark:text-slate-200 bg-[#F5F8FF] dark:bg-[#162D50] border border-[#DCE6F8] dark:border-[#24426E] hover:bg-[#EAF1FF] dark:hover:bg-[#1D3963]"
                 >
                   {t('authCancel')}
@@ -313,12 +350,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <input
                     type="email"
                     required
+                    dir="ltr"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    autoComplete="username"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="cashier@store.com"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] text-sm text-[#0B1B32] dark:text-white focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20"
+                    className="w-full ps-3.5 pe-10 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] text-sm text-[#0B1B32] dark:text-white focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20"
                   />
-                  <Mail className="w-4 h-4 text-[#647B9C] dark:text-slate-400 absolute end-3 top-3" />
+                  <Mail className="w-4 h-4 text-[#647B9C] dark:text-slate-400 absolute end-3 top-3 pointer-events-none" />
                 </div>
               </div>
 
@@ -332,6 +374,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     onClick={() => {
                       setIsForgotPassword(true);
                       setErrorMsg(null);
+                      setShowCredentialGuidance(false);
                     }}
                     className="text-[11px] font-bold text-[#1764FF] dark:text-[#7EB0FF] hover:underline"
                   >
@@ -340,14 +383,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
                 <div className="relative">
                   <input
-                    type="password"
+                    type={showPassword ? 'text' : 'password'}
                     required
+                    dir="ltr"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    autoComplete="current-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] text-sm text-[#0B1B32] dark:text-white focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20"
+                    className="w-full ps-3.5 pe-10 py-2.5 rounded-xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6F8] dark:border-[#23416E] text-sm text-[#0B1B32] dark:text-white focus:outline-none focus:border-[#1764FF] focus:ring-2 focus:ring-[#1764FF]/20"
                   />
-                  <KeyRound className="w-4 h-4 text-[#647B9C] dark:text-slate-400 absolute end-3 top-3" />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? t('authHidePassword') : t('authShowPassword')}
+                    title={showPassword ? t('authHidePassword') : t('authShowPassword')}
+                    className="absolute end-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-[#647B9C] dark:text-slate-400 hover:text-[#0B1B32] dark:hover:text-white transition-colors"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 

@@ -136,7 +136,7 @@ export type ProfiledUserAccessResolution =
       status: 'access_error';
       errorReason: Extract<
         AccessErrorReason,
-        'account_disabled' | 'membership_released' | 'permission_denied'
+        'account_archived' | 'account_disabled' | 'membership_released' | 'permission_denied'
       >;
     };
 
@@ -146,12 +146,21 @@ export function resolveProfiledUserAccess(params: {
   now?: Date;
 }): ProfiledUserAccessResolution {
   const { profile, org, now = new Date() } = params;
+  const membershipStatus = resolveMemberMembershipStatus(profile);
 
   // Permanently released members have no active organization binding and see a dedicated notice
-  if (resolveMemberMembershipStatus(profile) === 'released') {
+  if (membershipStatus === 'released') {
     return {
       status: 'access_error',
       errorReason: 'membership_released',
+    };
+  }
+
+  // Temporarily archived members stay blocked from organization data with a dedicated archived notice
+  if (membershipStatus === 'archived') {
+    return {
+      status: 'access_error',
+      errorReason: 'account_archived',
     };
   }
 

@@ -480,12 +480,12 @@ function runTests() {
     assert.ok(exemptFnMatch, 'isOrgPermanentlyBillingExempt function must exist');
     assert.ok(!/(?<!\.)\b(get|exists|getAfter|existsAfter)\s*\(\/databases\//.test(exemptFnMatch[0]), 'isOrgPermanentlyBillingExempt must perform 0 Firestore reads');
 
-    // E. Exemption is wired into BOTH isOrgSubscriptionAllowed AND purchases hasActiveOrgSubFast
+    // E. Exemption is wired into BOTH isOrgSubscriptionAllowed AND purchases hasActiveOrgSubFastById
     const subAllowedMatch = rules.match(/function isOrgSubscriptionAllowed\(org\)\s*\{[\s\S]*?\n    \}/);
     assert.ok(subAllowedMatch && subAllowedMatch[0].includes('isOrgPermanentlyBillingExempt(org)'));
     assert.ok(subAllowedMatch[0].includes("org.get('isActive', true) == true && ("));
 
-    const fastSubMatch = rules.match(/function hasActiveOrgSubFast\(org\)\s*\{[\s\S]*?\n      \}/);
+    const fastSubMatch = rules.match(/function hasActiveOrgSubFastById\(targetOrgId\)\s*\{[\s\S]*?\n      \}/);
     assert.ok(fastSubMatch && fastSubMatch[0].includes('isOrgPermanentlyBillingExempt(org)'));
     assert.ok(fastSubMatch[0].includes("org.get('isActive', true) == true && ("));
 

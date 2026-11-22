@@ -37,7 +37,7 @@ service cloud.firestore {
     }
 
     function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.matches('^[a-zA-Z0-9_\\-]{1,128}$');
     }
 
     function isValidEmailDocId(val) {
@@ -95,31 +95,14 @@ service cloud.firestore {
 
     // Verifies single-branch assignment while preserving legacy scalar `branchId`, single-item `branchIds`, or empty/null `branchIds`
     function userHasSingleAssignedBranch(u, targetBranchId) {
-      let rawBranchId = u.get('branchId', '');
-      let scalarClean = rawBranchId is string ? rawBranchId.trim() : '';
-      let scalarMatch = scalarClean == targetBranchId;
-      let hasBranchIds = 'branchIds' in u && u.branchIds is list && u.branchIds.size() > 0;
-      return targetBranchId is string &&
-        targetBranchId.size() > 0 && (
-          (
-            scalarMatch && (
-              !('branchIds' in u) ||
-              u.branchIds == null ||
-              (
-                u.branchIds is list && (
-                  u.branchIds.size() == 0 ||
-                  (u.branchIds.size() == 1 && u.branchIds[0] is string && u.branchIds[0].trim() == targetBranchId)
-                )
-              )
-            )
-          ) || (
-            scalarClean.size() == 0 &&
-            hasBranchIds &&
-            u.branchIds.size() == 1 &&
-            u.branchIds[0] is string &&
-            u.branchIds[0].trim() == targetBranchId
-          )
-        );
+      let raw = u.get('branchId', '');
+      let sc = raw is string ? raw.trim() : '';
+      let bids = u.get('branchIds', null);
+      return targetBranchId is string && targetBranchId.size() > 0 && (
+        sc == targetBranchId
+          ? (bids == null || (bids is list && (bids.size() == 0 || (bids.size() == 1 && bids[0] is string && bids[0].trim() == targetBranchId))))
+          : (sc == '' && bids is list && bids.size() == 1 && bids[0] is string && bids[0].trim() == targetBranchId)
+      );
     }
 
     // Subscription enforcement helpers using Firestore server request.time
@@ -153,14 +136,10 @@ service cloud.firestore {
     function isOrgPermanentlyBillingExempt(org) {
       return org.get('billingExempt', false) == true &&
         org.get('billingExemptScope', '') == 'full_permanent' &&
-        'ownerId' in org && org.ownerId is string && org.ownerId.trim().size() > 0 &&
-        'billingExemptVerifiedOwnerId' in org &&
-        org.billingExemptVerifiedOwnerId is string &&
-        org.billingExemptVerifiedOwnerId == org.ownerId &&
-        'ownerEmail' in org && org.ownerEmail is string && org.ownerEmail.trim().size() >= 3 &&
-        'billingExemptVerifiedOwnerEmail' in org &&
-        org.billingExemptVerifiedOwnerEmail is string &&
-        org.billingExemptVerifiedOwnerEmail == org.ownerEmail.trim().lower();
+        org.get('ownerId', '') is string && org.ownerId.trim().size() > 0 &&
+        org.get('billingExemptVerifiedOwnerId', '') == org.ownerId &&
+        org.get('ownerEmail', '') is string && org.ownerEmail.trim().size() >= 3 &&
+        org.get('billingExemptVerifiedOwnerEmail', '') == org.ownerEmail.trim().lower();
     }
 
     // Preserves legacy organizations that have no subscription fields and are not suspended,
@@ -168,23 +147,31 @@ service cloud.firestore {
     // and fails closed on manual suspension (isActive == false) or invalid/expired subscriptions.
     function isOrgSubscriptionAllowed(org) {
       return org.get('isActive', true) == true && (
-        isOrgPermanentlyBillingExempt(org) ||
-        !hasAnySubscriptionField(org) ||
-        (hasValidActiveSubscriptionConfig(org) && isNotPastDeactivationDue(org))
+        (org.get('billingExempt', false) == true && isOrgPermanentlyBillingExempt(org)) ||
+        (
+          'subscriptionStatus' in org
+            ? (hasValidActiveSubscriptionConfig(org) && isNotPastDeactivationDue(org))
+            : !hasAnySubscriptionField(org)
+        )
       );
+    }
+
+    function isOrgSubscriptionAllowedById(targetOrgId) {
+      let org = get(/databases/$(database)/documents/organizations/$(targetOrgId)).data;
+      return isOrgSubscriptionAllowed(org);
     }
 
     function hasActiveOrgSubscription(targetOrgId) {
       return isValidId(targetOrgId) &&
         exists(/databases/$(database)/documents/organizations/$(targetOrgId)) &&
-        isOrgSubscriptionAllowed(get(/databases/$(database)/documents/organizations/$(targetOrgId)).data);
+        isOrgSubscriptionAllowedById(targetOrgId);
     }
 
     // Direct get() variant for &&-only create paths with no enclosing || fallback:
     // missing organization document aborts evaluation to DENY, identical to exists() && get().
     function hasActiveOrgSubscriptionDirect(targetOrgId) {
       return isValidId(targetOrgId) &&
-        isOrgSubscriptionAllowed(get(/databases/$(database)/documents/organizations/$(targetOrgId)).data);
+        isOrgSubscriptionAllowedById(targetOrgId);
     }
 
     // Validation helper for Super Admin organization subscription writes
@@ -569,7 +556,7 @@ service cloud.firestore {
     }
 
     function isValidCalendarDate(d) {
-      return d is string && d.size() == 10 && d.matches('^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$');
+      return d is string && d.matches('^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$');
     }
 
     function isValidDriveId(val) {
@@ -1411,10 +1398,13 @@ service cloud.firestore {
         next.get('isArchived', false) == false &&
         !('branchId' in next) &&
         !('branchIds' in next) &&
-        !('branchName' in next)
+        !('branchName' in next) &&
+        !('archivedAt' in next) &&
+        !('archivedBy' in next)
       ) ? (
         changed.hasOnly([
           'orgId', 'membershipStatus', 'isActive', 'isArchived',
+          'archivedAt', 'archivedBy',
           'branchId', 'branchIds', 'branchName', 'permissions',
           'releasedFromOrgId', 'releasedFromOrgName', 'releasedAt', 'releasedBy', 'releaseReason',
           'lastMemberOrgHistoryId', 'lastPlatformAuditLogId', 'updatedAt'
@@ -1455,11 +1445,20 @@ service cloud.firestore {
         next.role in ['supervisor', 'branch_manager', 'employee'] &&
         next.get('membershipStatus', '') == 'active' &&
         next.isActive == true &&
-        next.get('isArchived', false) == false
+        next.get('isArchived', false) == false &&
+        !('archivedAt' in next) &&
+        !('archivedBy' in next) &&
+        !('releasedFromOrgId' in next) &&
+        !('releasedFromOrgName' in next) &&
+        !('releasedAt' in next) &&
+        !('releasedBy' in next) &&
+        !('releaseReason' in next)
       ) ? (
         changed.hasOnly([
           'orgId', 'role', 'branchId', 'branchIds', 'branchName', 'permissions',
           'membershipStatus', 'isActive', 'isArchived',
+          'archivedAt', 'archivedBy',
+          'releasedFromOrgId', 'releasedFromOrgName', 'releasedAt', 'releasedBy', 'releaseReason',
           'reassignedAt', 'reassignedBy',
           'lastMemberOrgHistoryId', 'lastPlatformAuditLogId', 'updatedAt'
         ]) ? (
@@ -1700,30 +1699,33 @@ service cloud.firestore {
         )
       );
 
-      // Verified Super Admin cross-org member provisioning OR invite-based manager onboarding OR active manager provisioning org staff
-      allow create: if isSignedIn() && isValidId(userId) && (
-        isSuperAdmin() ? (
-          canSuperAdminCreateOrgMember(userId, incoming())
+      function canCreateUserDoc(userId) {
+        let data = incoming();
+        return isSuperAdmin() ? (
+          canSuperAdminCreateOrgMember(userId, data)
+        ) : data.get('role', '') == 'manager' ? (
+          isValidInvitedManagerUserCreate(userId, data)
         ) : (
-          isValidInvitedManagerUserCreate(userId, incoming()) ||
-          (
-            hasValidUserDoc() &&
-            isOrgManager(incoming().orgId) &&
-            hasActiveOrgSubscription(incoming().orgId) &&
-            incoming().role in ['supervisor', 'branch_manager', 'employee'] &&
-            incoming().uid == userId &&
-            isValidUserEmailString(incoming().email) &&
-            incoming().displayName is string &&
-            incoming().displayName.trim().size() >= 1 &&
-            incoming().displayName.size() <= 100 &&
-            (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 25)) &&
-            incoming().isActive is bool &&
-            (!('isArchived' in incoming()) || incoming().isArchived == false) &&
-            hasValidStaffBranchBinding(incoming()) &&
-            (!('permissions' in incoming()) || hasSafeNonManagerPermissions(incoming().role, incoming().permissions))
-          )
-        )
-      );
+          hasValidUserDoc() &&
+          isOrgManager(data.orgId) &&
+          hasActiveOrgSubscription(data.orgId) &&
+          data.role in ['supervisor', 'branch_manager', 'employee'] &&
+          data.uid == userId &&
+          isValidUserEmailString(data.email) &&
+          data.displayName is string &&
+          data.displayName.trim().size() >= 1 &&
+          data.displayName.size() <= 100 &&
+          (!('phone' in data) || (data.phone is string && data.phone.size() <= 25)) &&
+          data.isActive is bool &&
+          (!('isArchived' in data) || data.isArchived == false) &&
+          (!('membershipStatus' in data) || data.membershipStatus == 'active') &&
+          hasValidStaffBranchBinding(data) &&
+          (!('permissions' in data) || hasSafeNonManagerPermissions(data.role, data.permissions))
+        );
+      }
+
+      // Verified Super Admin cross-org member provisioning OR invite-based manager onboarding OR active manager provisioning org staff
+      allow create: if isSignedIn() && isValidId(userId) && canCreateUserDoc(userId);
 
       // Harden user updates: Super Admin cross-org staff governance, self profile update, or org manager staff update; blocks manager/super_admin escalation
       allow update: if isSignedIn() && isValidId(userId) && (
@@ -2300,30 +2302,32 @@ service cloud.firestore {
 
     // Purchases Collection (Phase 4.4 Security Hardened: explicit item/attachment validation up to proven 1,000-expr safe limits, exact Halala VAT & amount==subtotalAmount)
     match /purchases/{purchaseId} {
-      function hasActiveOrgSubFast(org) {
+      function hasActiveOrgSubFastById(targetOrgId) {
+        let org = get(/databases/$(database)/documents/organizations/$(targetOrgId)).data;
         return org.get('isActive', true) == true && (
-          isOrgPermanentlyBillingExempt(org) ||
+          (org.get('billingExempt', false) == true && isOrgPermanentlyBillingExempt(org)) ||
           (
-            org.get('subscriptionStatus', '') == 'active' &&
-            org.get('subscriptionPlan', '') in ['trial_7d', '1m', '3m', '6m', '1y'] &&
-            org.get('subscriptionStartAt', null) is timestamp &&
-            org.get('subscriptionEndAt', null) is timestamp &&
-            request.time >= org.subscriptionStartAt &&
-            request.time < org.subscriptionEndAt &&
-            (org.get('deactivationDueAt', null) == null || (org.deactivationDueAt is timestamp && request.time < org.deactivationDueAt))
-          ) ||
-          !hasAnySubscriptionField(org)
+            'subscriptionStatus' in org ? (
+              org.subscriptionStatus == 'active' &&
+              org.get('subscriptionPlan', '') in ['trial_7d', '1m', '3m', '6m', '1y'] &&
+              request.time >= org.subscriptionStartAt &&
+              request.time < org.subscriptionEndAt &&
+              (!('deactivationDueAt' in org) || org.deactivationDueAt == null || request.time < org.deactivationDueAt)
+            ) : !hasAnySubscriptionField(org)
+          )
         );
       }
 
-      function isOkItem(it) {
+      function isOkItem(it, amtH) {
         return it is map &&
           it.size() == 5 &&
           it.id is string && it.id.trim().size() > 0 && it.id.size() <= 128 &&
           it.name is string && it.name.trim().size() > 0 && it.name.size() <= 200 &&
           it.quantity is number && it.quantity > 0 &&
           it.unitPrice is number && it.unitPrice >= 0 && math.abs(it.unitPrice * 100 - math.round(it.unitPrice * 100)) < 0.001 &&
-          it.total is number && it.total >= 0 && math.abs(it.total * 100 - math.round(it.quantity * it.unitPrice * 100.0)) < 0.001;
+          it.total is number && it.total >= 0 &&
+          math.abs(it.total * 100 - math.round(it.quantity * it.unitPrice * 100.0)) < 0.001 &&
+          math.round(it.total * 100) == amtH;
       }
 
       function isOkAttDoc(aid, pOrg, pBr, pId) {
@@ -2336,6 +2340,47 @@ service cloud.firestore {
       function isOkAtt(aid, pOrg, pBr, pId) {
         return isValidId(aid) &&
           isOkAttDoc(aid, pOrg, pBr, pId);
+      }
+
+      function isValidVatRateCalc(vr, amtH, discH, vat) {
+        let vrH = math.round(vr * 100);
+        return vr is number && vr >= 0 && vr <= 100 &&
+          math.abs(vr * 100 - vrH) < 0.001 &&
+          math.abs(vat * 100 - math.floor(((amtH - discH) * vrH + 5000) / 10000)) < 0.001;
+      }
+
+      function checkPurchaseHalalaAndItems(amt, amtH, disc, discH, vat, vatH, data) {
+        return amt is number && amt >= 0 && amt <= 1000000000000 &&
+          math.abs(amt * 100 - amtH) < 0.001 &&
+          data.get('subtotalAmount', amt) == amt &&
+          disc is number && disc >= 0 && disc <= amt &&
+          math.abs(disc * 100 - discH) < 0.001 &&
+          vat is number && (
+            'vatRate' in data
+              ? isValidVatRateCalc(data.vatRate, amtH, discH, vat)
+              : (vat >= 0 && vat <= 1000000000000 && math.abs(vat * 100 - vatH) < 0.001)
+          ) &&
+          data.totalAmount is number && data.totalAmount <= 1000000000000 &&
+          math.abs(data.totalAmount * 100 - (amtH - discH + vatH)) < 0.001 &&
+          (!('items' in data) || (
+            data.items is list &&
+            data.items.size() <= 1 && (
+              data.items.size() == 0 ||
+              isOkItem(data.items[0], amtH)
+            )
+          ));
+      }
+
+      function hasValidPurchaseAmountsAndItems(data) {
+        let amt = data.amount;
+        let disc = data.get('discountAmount', 0);
+        let vat = data.get('vatAmount', 0);
+        return checkPurchaseHalalaAndItems(
+          amt, math.round(amt * 100),
+          disc, math.round(disc * 100),
+          vat, math.round(vat * 100),
+          data
+        );
       }
 
       function hasValidPurchaseFields(data) {
@@ -2355,31 +2400,8 @@ service cloud.firestore {
           (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000)) &&
           (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120)) &&
           (data.createdAt is timestamp || isValidIsoTimestamp(data.createdAt)) &&
-          (data.updatedAt is timestamp || isValidIsoTimestamp(data.updatedAt)) &&
-          data.amount >= 0 && data.amount <= 1000000000000 &&
-          math.abs(data.amount * 100 - math.round(data.amount * 100)) < 0.001 &&
-          (!('subtotalAmount' in data) || data.subtotalAmount == data.amount) &&
-          (!('discountAmount' in data) || (data.discountAmount >= 0 && data.discountAmount <= data.amount && math.abs(data.discountAmount * 100 - math.round(data.discountAmount * 100)) < 0.001)) &&
-          (
-            'vatRate' in data
-              ? (
-                  data.vatRate >= 0 && data.vatRate <= 100 &&
-                  math.abs(data.vatRate * 100 - math.round(data.vatRate * 100)) < 0.001 &&
-                  math.abs(data.get('vatAmount', 0) * 100 - math.floor((math.round((data.amount - data.get('discountAmount', 0)) * 100) * math.round(data.vatRate * 100) + 5000) / 10000)) < 0.001
-                )
-              : (!('vatAmount' in data) || (data.vatAmount >= 0 && data.vatAmount <= 1000000000000 && math.abs(data.vatAmount * 100 - math.round(data.vatAmount * 100)) < 0.001))
-          ) &&
-          data.totalAmount <= 1000000000000 &&
-          math.abs(data.totalAmount * 100 - (math.round(data.amount * 100) - math.round(data.get('discountAmount', 0) * 100) + math.round(data.get('vatAmount', 0) * 100))) < 0.001 &&
-          (!('items' in data) || (
-            data.items is list &&
-            data.items.size() <= 1 && (
-              data.items.size() == 0 || (
-                isOkItem(data.items[0]) &&
-                math.round(data.items[0].total * 100) == math.round(data.amount * 100)
-              )
-            )
-          )) &&
+          (data.updatedAt == data.createdAt || data.updatedAt is timestamp || isValidIsoTimestamp(data.updatedAt)) &&
+          hasValidPurchaseAmountsAndItems(data) &&
           (!('attachmentIds' in data) || (
             data.attachmentIds is list &&
             data.attachmentIds.size() <= 1 && (
@@ -2409,34 +2431,39 @@ service cloud.firestore {
           );
       }
 
-      function canCreatePurchase(u, purchaseId, data) {
-        return u.isActive == true &&
-          isValidId(data.orgId) &&
+      function canCreatePurchaseDoc(pId) {
+        let data = incoming();
+        let u = getUserData();
+        return data.id == pId &&
+          data.createdBy == request.auth.uid &&
+          u.isActive == true &&
+          data.orgId is string && data.orgId.size() > 0 &&
           u.orgId == data.orgId &&
-          data.id == purchaseId &&
           isValidId(data.branchId) &&
           isValidId(data.supplierId) &&
-          data.createdBy == request.auth.uid &&
           data.createdByRole == u.role && (
-            u.role == 'manager' ||
-            (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
+            u.role == 'manager' ? true :
+            u.role == 'supervisor' ? userHasPermission(u, 'canManagePurchases') :
             (
               u.role == 'branch_manager' &&
               branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
               userHasSingleAssignedBranch(u, data.branchId)
             )
           ) &&
-          hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(data.orgId)).data) &&
+          hasActiveOrgSubFastById(data.orgId) &&
           get(/databases/$(database)/documents/branches/$(data.branchId)).data.orgId == data.orgId &&
           supplierDocIsActiveInOrg(data.supplierId, data.orgId) &&
           hasValidPurchaseFields(data);
       }
 
-      function canUpdatePurchase(u, nextData, prevData) {
+      function canUpdatePurchaseDoc() {
+        let u = getUserData();
+        let nextData = incoming();
+        let prevData = existing();
         return u.isActive == true &&
           u.orgId == prevData.orgId &&
           u.role == 'manager' &&
-          hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(prevData.orgId)).data) &&
+          hasActiveOrgSubFastById(prevData.orgId) &&
           nextData.id == prevData.id &&
           nextData.orgId == prevData.orgId &&
           nextData.branchId == prevData.branchId &&
@@ -2469,12 +2496,10 @@ service cloud.firestore {
       );
 
       allow create: if isSignedIn() && isValidId(purchaseId) &&
-        incoming().id == purchaseId &&
-        incoming().createdBy == request.auth.uid &&
-        canCreatePurchase(getUserData(), purchaseId, incoming());
+        canCreatePurchaseDoc(purchaseId);
 
       allow update: if isSignedIn() && isValidId(purchaseId) &&
-        canUpdatePurchase(getUserData(), incoming(), existing());
+        canUpdatePurchaseDoc();
 
       allow delete: if isSuperAdmin() &&
         isValidId(purchaseId) &&
@@ -2517,9 +2542,11 @@ service cloud.firestore {
             pAfter.createdByRole == u.role;
         }
 
-        function canCreatePurchaseSubItem(u, pId, iId, data) {
-          return u.isActive == true &&
-            hasValidPurchaseSubItem(pId, iId, data) &&
+        function canCreatePurchaseSubItemDoc(pId, iId) {
+          let data = incoming();
+          let u = getUserData();
+          return hasValidPurchaseSubItem(pId, iId, data) &&
+            u.isActive == true &&
             u.orgId == data.orgId && (
               u.role == 'manager' ||
               (u.role == 'supervisor' && userHasPermission(u, 'canManagePurchases')) ||
@@ -2529,7 +2556,7 @@ service cloud.firestore {
                 userHasSingleAssignedBranch(u, data.branchId)
               )
             ) &&
-            hasActiveOrgSubFast(get(/databases/$(database)/documents/organizations/$(data.orgId)).data) &&
+            hasActiveOrgSubFastById(data.orgId) &&
             matchesPurchaseSubItemParent(u, pId, data);
         }
 
@@ -2557,8 +2584,7 @@ service cloud.firestore {
           );
 
         allow create: if isSignedIn() && isValidId(purchaseId) && isValidId(itemId) &&
-          hasValidPurchaseSubItem(purchaseId, itemId, incoming()) &&
-          canCreatePurchaseSubItem(getUserData(), purchaseId, itemId, incoming());
+          canCreatePurchaseSubItemDoc(purchaseId, itemId);
 
         allow update: if false;
 
@@ -2631,12 +2657,13 @@ service cloud.firestore {
           );
       }
 
-      function canCreateAttachment(attachmentId, data) {
+      function canCreateAttachmentDoc(attachmentId) {
+        let data = incoming();
         let u = getUserData();
-        return u.isActive == true &&
+        return hasValidAttachmentPayload(attachmentId, data) &&
+          u.isActive == true &&
           isValidId(data.orgId) &&
-          u.orgId == data.orgId &&
-          hasValidAttachmentPayload(attachmentId, data) && (
+          u.orgId == data.orgId && (
             'purchaseId' in data ? (
               (
                 u.role == 'manager' ||
@@ -2673,8 +2700,7 @@ service cloud.firestore {
       );
 
       allow create: if isSignedIn() && isValidId(attachmentId) &&
-        hasValidAttachmentPayload(attachmentId, incoming()) &&
-        canCreateAttachment(attachmentId, incoming());
+        canCreateAttachmentDoc(attachmentId);
 
       // Attachments are strictly immutable once uploaded
       allow update: if false;
@@ -3063,7 +3089,7 @@ service cloud.firestore {
         data.get('isRead', false) == false &&
         !('readAt' in data) &&
         isValidIsoTimestamp(data.get('createdAt', '')) &&
-        isValidIsoTimestamp(data.get('updatedAt', ''));
+        (data.get('updatedAt', '') == data.get('createdAt', '') || isValidIsoTimestamp(data.get('updatedAt', '')));
     }
 
     function isAllowedNotificationPerm(perm) {
@@ -3184,7 +3210,6 @@ service cloud.firestore {
       let cat = data.category;
       let t = data.type;
       return cat == 'closings' ? (
-          (t in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] && data.audienceScope == 'org_supervisor_permission' && hasClosingSubmittedAfter(data, orgId)) ||
           (t in ['CLOSING_APPROVED', 'CLOSING_REJECTED'] && data.audienceScope in ['user', 'branch_manager'] && hasClosingReviewedAfter(data, orgId)) ||
           (t == 'CLOSING_ADMIN_CORRECTED' && data.audienceScope in ['user', 'org_manager'] && hasClosingCorrectedAfter(data, orgId))
         ) : cat == 'employees' ? (
@@ -3205,10 +3230,8 @@ service cloud.firestore {
             ) && hasEmployeeTargetAfter(data, orgId)
           )
         ) : cat == 'purchases_suppliers' ? (
-          data.audienceScope == 'org_supervisor_permission' && (
-            (t in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] && data.get('targetType', '') == 'purchase') ||
-            (t == 'SUPPLIER_ADDED' && data.get('targetType', '') == 'supplier')
-          )
+          data.audienceScope == 'org_supervisor_permission' &&
+          t == 'SUPPLIER_ADDED' && data.get('targetType', '') == 'supplier'
         ) : cat == 'schedule_requests' && (
           t in [
             'SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE',
@@ -3223,13 +3246,10 @@ service cloud.firestore {
       let cat = data.category;
       let t = data.type;
       return cat == 'closings' ? (
-          (t in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] && userHasPermission(u, 'canCreateClosing') && data.audienceScope == 'org_supervisor_permission' && data.get('requiredPermission', '') in ['canApproveClosings', 'canViewAllClosings'] && hasClosingSubmittedAfter(data, orgId)) ||
-          (t in ['CLOSING_APPROVED', 'CLOSING_REJECTED'] && userHasPermission(u, 'canApproveClosings') && data.audienceScope in ['user', 'branch_manager'] && hasClosingReviewedAfter(data, orgId))
+          t in ['CLOSING_APPROVED', 'CLOSING_REJECTED'] && userHasPermission(u, 'canApproveClosings') && data.audienceScope in ['user', 'branch_manager'] && hasClosingReviewedAfter(data, orgId)
         ) : cat == 'purchases_suppliers' ? (
-          data.audienceScope == 'org_supervisor_permission' && (
-            (t in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] && userHasPermission(u, 'canManagePurchases') && data.get('targetType', '') == 'purchase' && 'branchId' in data && isBranchInOrg(data.branchId, orgId)) ||
-            (t == 'SUPPLIER_ADDED' && userHasPermission(u, 'canManageSuppliers') && data.get('targetType', '') == 'supplier')
-          )
+          data.audienceScope == 'org_supervisor_permission' &&
+          t == 'SUPPLIER_ADDED' && userHasPermission(u, 'canManageSuppliers') && data.get('targetType', '') == 'supplier'
         ) : cat == 'schedule_requests' ? (
           t in ['SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE'] &&
           data.audienceScope in ['branch_manager', 'user'] &&
@@ -3241,28 +3261,13 @@ service cloud.firestore {
 
     function canBranchStaffCreateTenantNotification(u, data, orgId, actorRole) {
       let cat = data.category;
-      let t = data.type;
       return cat == 'security_admin' ? isSecurityAccessDeniedAlert(data) : (
+        cat == 'schedule_requests' &&
         'branchId' in data &&
-        userHasSingleAssignedBranch(u, data.branchId) && (
-          cat == 'closings' ? (
-            t in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] &&
-            u.get('permissions', {}).get('canCreateClosing', true) == true &&
-            data.audienceScope == 'org_supervisor_permission' &&
-            hasClosingSubmittedAfter(data, orgId)
-          ) : cat == 'schedule_requests' ? (
-            t in ['SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE'] &&
-            data.audienceScope in ['branch_manager', 'user'] &&
-            data.get('targetType', '') == 'schedule_request'
-          ) : (
-            actorRole == 'branch_manager' &&
-            cat == 'purchases_suppliers' &&
-            t in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] &&
-            branchManagerHasDefaultPermission(u, 'canManagePurchases') &&
-            data.audienceScope == 'org_supervisor_permission' &&
-            data.get('targetType', '') == 'purchase'
-          )
-        )
+        userHasSingleAssignedBranch(u, data.branchId) &&
+        data.type in ['SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE'] &&
+        data.audienceScope in ['branch_manager', 'user'] &&
+        data.get('targetType', '') == 'schedule_request'
       );
     }
 
@@ -3294,6 +3299,8 @@ service cloud.firestore {
     function hasValidClosingSubmitNotificationFeeds(data) {
       let orgId = data.orgId;
       let feeds = data.feedKeys;
+      let mgrKey = 'org_mgr:' + orgId;
+      let reqKey = 'org_perm:' + orgId + ':' + data.requiredPermission;
       return feeds is list &&
         feeds.size() >= 1 &&
         feeds.size() <= 4 &&
@@ -3301,12 +3308,12 @@ service cloud.firestore {
         'requiredPermission' in data &&
         isAllowedNotificationPerm(data.requiredPermission) &&
         (!('secondaryPermission' in data) || isAllowedNotificationPerm(data.secondaryPermission)) &&
-        ('org_perm:' + orgId + ':' + data.requiredPermission) in feeds &&
+        reqKey in feeds &&
         feeds.hasOnly([
-          'org_perm:' + orgId + ':' + data.requiredPermission,
-          ('secondaryPermission' in data ? 'org_perm:' + orgId + ':' + data.secondaryPermission : 'org_mgr:' + orgId),
-          'org_mgr:' + orgId,
-          ('branchId' in data && ('branch_mgr:' + orgId + ':' + data.branchId) in feeds && isBranchInOrgDirect(data.branchId, orgId) ? 'branch_mgr:' + orgId + ':' + data.branchId : 'org_mgr:' + orgId)
+          reqKey,
+          ('secondaryPermission' in data ? 'org_perm:' + orgId + ':' + data.secondaryPermission : mgrKey),
+          mgrKey,
+          ('branchId' in data && ('branch_mgr:' + orgId + ':' + data.branchId) in feeds && isBranchInOrgDirect(data.branchId, orgId) ? 'branch_mgr:' + orgId + ':' + data.branchId : mgrKey)
         ]);
     }
 
@@ -3475,27 +3482,32 @@ service cloud.firestore {
       allow list: if isSignedIn() &&
         canListNotificationDoc(existing());
 
-      allow create: if isSignedIn() && isValidId(notificationId) &&
-        hasValidNotificationShape(notificationId, incoming()) && (
-        incoming().get('audienceScope', '') == 'super_admin' ? (
-          isSuperAdmin() &&
-          incoming().get('orgId', '') == 'platform' &&
-          incoming().get('feedKeys', []) == ['super_admin'] &&
-          incoming().get('actorRole', '') == 'super_admin' &&
-          (!('relatedOrgId' in incoming()) || isValidId(incoming().relatedOrgId))
-        ) : (
-          incoming().get('category', '') == 'closings' &&
-          incoming().get('type', '') in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] ? (
-            canActorCreateClosingSubmitNotification(incoming())
-          ) : incoming().get('category', '') == 'purchases_suppliers' &&
-          incoming().get('type', '') in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] ? (
-            canActorCreatePurchaseNotification(incoming())
+      function canCreateNotificationDoc(notificationId) {
+        let data = incoming();
+        return hasValidNotificationShape(notificationId, data) && (
+          data.get('audienceScope', '') == 'super_admin' ? (
+            isSuperAdmin() &&
+            data.get('orgId', '') == 'platform' &&
+            data.get('feedKeys', []) == ['super_admin'] &&
+            data.get('actorRole', '') == 'super_admin' &&
+            (!('relatedOrgId' in data) || isValidId(data.relatedOrgId))
           ) : (
-            hasValidUserDoc() &&
-            canActorCreateTenantNotification(incoming())
+            data.get('category', '') == 'closings' &&
+            data.get('type', '') in ['CLOSING_SUBMITTED', 'CLOSING_RESUBMITTED'] ? (
+              canActorCreateClosingSubmitNotification(data)
+            ) : data.get('category', '') == 'purchases_suppliers' &&
+            data.get('type', '') in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] ? (
+              canActorCreatePurchaseNotification(data)
+            ) : (
+              hasValidUserDoc() &&
+              canActorCreateTenantNotification(data)
+            )
           )
-        )
-      );
+        );
+      }
+
+      allow create: if isSignedIn() && isValidId(notificationId) &&
+        canCreateNotificationDoc(notificationId);
 
       allow update: if isSignedIn() && isValidId(notificationId) &&
         canReadNotificationDoc(existing(), true) &&

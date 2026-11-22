@@ -7,6 +7,8 @@ import { SUBSCRIPTION_WHATSAPP_BASE_URL } from '../utils/subscription';
 import { BrandLogo } from './common/BrandLogo';
 import {
   AlertCircle,
+  Archive,
+  CheckCircle2,
   ExternalLink,
   Globe,
   LogOut,
@@ -45,6 +47,9 @@ export const TenantAccessNoticeView: React.FC = () => {
   let title = t('subAccessDeniedTitle');
   let description = t('subAccessPermissionError');
   let isNetworkError = false;
+  let isArchivedNotice = false;
+  let isDisabledNotice = false;
+  let showAuthSucceededNotice = false;
 
   if (tenantStatus === 'invite_blocked' && inviteBlockInfo) {
     if (inviteBlockInfo.reason === 'cancelled') {
@@ -64,13 +69,24 @@ export const TenantAccessNoticeView: React.FC = () => {
         break;
       case 'missing_employee_profile':
         description = t('subAccessMissingEmployee');
+        showAuthSucceededNotice = true;
+        break;
+      case 'account_archived':
+        title = t('subAccessArchivedAccountTitle');
+        description = t('subAccessArchivedAccountDesc');
+        isArchivedNotice = true;
+        showAuthSucceededNotice = true;
         break;
       case 'account_disabled':
+        title = t('subAccessDisabledAccountTitle');
         description = t('subAccessDisabledAccount');
+        isDisabledNotice = true;
+        showAuthSucceededNotice = true;
         break;
       case 'membership_released':
         title = t('subAccessMembershipReleasedTitle');
         description = t('subAccessMembershipReleasedDesc');
+        showAuthSucceededNotice = true;
         break;
       case 'network_error':
         description = t('subAccessNetworkError');
@@ -93,7 +109,17 @@ export const TenantAccessNoticeView: React.FC = () => {
     { code: 'ur', label: 'اردو' },
   ];
 
-  const Icon = isNetworkError ? WifiOff : tenantStatus === 'invite_blocked' ? ShieldX : AlertCircle;
+  const Icon = isNetworkError
+    ? WifiOff
+    : isArchivedNotice
+    ? Archive
+    : isDisabledNotice || tenantStatus === 'invite_blocked'
+    ? ShieldX
+    : AlertCircle;
+
+  const iconContainerClass = isArchivedNotice
+    ? 'bg-amber-50 dark:bg-amber-500/15 border-amber-200 dark:border-amber-500/30 text-amber-600 dark:text-amber-400'
+    : 'bg-rose-50 dark:bg-rose-500/15 border-rose-200 dark:border-rose-500/30 text-rose-600 dark:text-rose-400';
 
   return (
     <div
@@ -170,7 +196,7 @@ export const TenantAccessNoticeView: React.FC = () => {
       <main className="flex-1 flex items-center justify-center p-4 sm:p-6">
         <div className="w-full max-w-lg bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66] rounded-2xl shadow-xs p-6 sm:p-8 space-y-6">
           <div className="flex items-start gap-3.5">
-            <div className="w-12 h-12 rounded-xl bg-rose-50 dark:bg-rose-500/15 border border-rose-200 dark:border-rose-500/30 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+            <div className={`w-12 h-12 rounded-xl border flex items-center justify-center shrink-0 ${iconContainerClass}`}>
               <Icon className="w-6 h-6" />
             </div>
             <div className="space-y-1.5">
@@ -178,6 +204,12 @@ export const TenantAccessNoticeView: React.FC = () => {
               <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
                 {description}
               </p>
+              {showAuthSucceededNotice && (
+                <div className="pt-1 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>{t('subAccessAuthVerifiedNotice')}</span>
+                </div>
+              )}
               {currentUser?.email && (
                 <div className="pt-1 text-xs font-mono text-slate-500 dark:text-slate-400" dir="ltr">
                   {currentUser.email}
