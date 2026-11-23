@@ -33,6 +33,7 @@ import {
   Eye,
   EyeOff,
   Lock,
+  Truck,
 } from 'lucide-react';
 import {
   normalizeLoginEmail,
@@ -189,6 +190,8 @@ export const EmployeesManager: React.FC = () => {
   const [createSupPerms, setCreateSupPerms] = useState<
     Record<SupervisorOptionalPermissionKey, boolean>
   >(createEmptySupervisorPermissions);
+  const [createBranchMgrCanCreateSuppliers, setCreateBranchMgrCanCreateSuppliers] =
+    useState<boolean>(false);
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createSuccess, setCreateSuccess] = useState<string | null>(null);
@@ -203,6 +206,8 @@ export const EmployeesManager: React.FC = () => {
   const [editSupPerms, setEditSupPerms] = useState<
     Record<SupervisorOptionalPermissionKey, boolean>
   >(createEmptySupervisorPermissions);
+  const [editBranchMgrCanCreateSuppliers, setEditBranchMgrCanCreateSuppliers] =
+    useState<boolean>(false);
   const [editSaving, setEditSaving] = useState(false);
   const [resetSending, setResetSending] = useState(false);
 
@@ -258,6 +263,9 @@ export const EmployeesManager: React.FC = () => {
       resolvePrimaryAssignedBranchId(selectedEmployee) || activeBranches[0]?.id || ''
     );
     setEditSupPerms(extractSupervisorPermissions(selectedEmployee));
+    setEditBranchMgrCanCreateSuppliers(
+      normalizedRole === 'branch_manager' && selectedEmployee.permissions?.canCreateSuppliers === true
+    );
   }, [selectedEmployee?.uid]);
 
   const stats = useMemo(() => {
@@ -349,6 +357,7 @@ export const EmployeesManager: React.FC = () => {
     setCreateRole('employee');
     setCreateBranchId(activeBranches[0]?.id || '');
     setCreateSupPerms(createEmptySupervisorPermissions());
+    setCreateBranchMgrCanCreateSuppliers(false);
     setCreateError(null);
     setCreateSuccess(null);
   };
@@ -395,6 +404,10 @@ export const EmployeesManager: React.FC = () => {
         branchName: targetBranch?.name,
         phone: createPhone.trim(),
         supervisorPermissions: createRole === 'supervisor' ? createSupPerms : undefined,
+        branchManagerPermissions:
+          createRole === 'branch_manager'
+            ? { canCreateSuppliers: createBranchMgrCanCreateSuppliers }
+            : undefined,
       });
 
       setCreateSuccess(
@@ -428,6 +441,10 @@ export const EmployeesManager: React.FC = () => {
         role: editRole,
         branchId: editRole === 'supervisor' ? undefined : editBranchId,
         supervisorPermissions: editRole === 'supervisor' ? editSupPerms : undefined,
+        branchManagerPermissions:
+          editRole === 'branch_manager'
+            ? { canCreateSuppliers: editBranchMgrCanCreateSuppliers }
+            : undefined,
       });
       setActionFeedback({
         type: 'success',
@@ -856,7 +873,19 @@ export const EmployeesManager: React.FC = () => {
                   <td className="p-4 font-mono text-xs text-slate-500 dark:text-slate-400" dir="ltr">
                     {emp.email}
                   </td>
-                  <td className="p-4">{renderRoleBadge(emp.role)}</td>
+                  <td className="p-4">
+                    <div className="flex flex-col items-start gap-1">
+                      {renderRoleBadge(emp.role)}
+                      {emp.role === 'branch_manager' && emp.permissions?.canCreateSuppliers === true && (
+                        <span className="text-[10px] font-semibold text-[#1764FF] dark:text-[#6CA2FF] flex items-center gap-1">
+                          <Truck className="w-3 h-3" />
+                          <span>
+                            {tr('إضافة موردين', 'Can add suppliers', 'سپلائر شامل کرنے کی اجازت')}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="p-4">
                     {emp.role === 'supervisor' ? (
                       <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-300">
@@ -1143,7 +1172,12 @@ export const EmployeesManager: React.FC = () => {
                     <button
                       key={item.role}
                       type="button"
-                      onClick={() => setCreateRole(item.role)}
+                      onClick={() => {
+                        setCreateRole(item.role);
+                        if (item.role !== 'branch_manager') {
+                          setCreateBranchMgrCanCreateSuppliers(false);
+                        }
+                      }}
                       className={`p-3 rounded-xl border text-start transition-all ${
                         createRole === item.role
                           ? 'bg-[#1764FF]/10 border-[#1764FF] text-[#0B1B32] dark:text-white'
@@ -1175,6 +1209,90 @@ export const EmployeesManager: React.FC = () => {
                       </option>
                     ))}
                   </select>
+                </div>
+              )}
+
+              {/* Independent Opt-In Supplier Creation Permission (ONLY for branch_manager; default: NO) */}
+              {createRole === 'branch_manager' && (
+                <div
+                  data-testid="create-branch-manager-suppliers-permission"
+                  className="p-4 rounded-2xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-3"
+                >
+                  <div className="text-xs font-bold text-[#0B1B32] dark:text-white flex items-center gap-1.5">
+                    <Truck className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF]" />
+                    <span>
+                      {tr(
+                        'السماح لمسؤول الفرع بإضافة موردين؟',
+                        'Allow this Branch Manager to add suppliers?',
+                        'کیا اس برانچ مینیجر کو سپلائرز شامل کرنے کی اجازت دی جائے؟'
+                      )}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <label
+                      className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 cursor-pointer transition-colors ${
+                        createBranchMgrCanCreateSuppliers === true
+                          ? 'bg-[#1764FF]/10 border-[#1764FF] text-[#0B1B32] dark:text-white'
+                          : 'bg-white dark:bg-[#122543] border-[#DCE6FA] dark:border-[#1F3B66] text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="createBranchMgrCanCreateSuppliers"
+                        checked={createBranchMgrCanCreateSuppliers === true}
+                        onChange={() => setCreateBranchMgrCanCreateSuppliers(true)}
+                        className="mt-0.5 text-[#1764FF] focus:ring-[#1764FF]"
+                      />
+                      <div>
+                        <div className="font-bold">
+                          {tr(
+                            'نعم، السماح بإضافة موردين',
+                            'Yes, allow adding suppliers',
+                            'ہاں، سپلائرز شامل کرنے کی اجازت دیں'
+                          )}
+                        </div>
+                        <div className="text-[11px] opacity-75 leading-snug mt-0.5">
+                          {tr(
+                            'إضافة مورد جديد واستخدامه في المشتريات فقط (دون صلاحية التعديل أو الإيقاف أو الحذف).',
+                            'Create new suppliers for purchase invoices only (cannot edit, deactivate, or delete).',
+                            'صرف نیا سپلائر شامل کرنے اور خریداری میں استعمال کرنے کے لیے (ترمیم یا حذف کی اجازت نہیں)۔'
+                          )}
+                        </div>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 cursor-pointer transition-colors ${
+                        createBranchMgrCanCreateSuppliers === false
+                          ? 'bg-[#1764FF]/10 border-[#1764FF] text-[#0B1B32] dark:text-white'
+                          : 'bg-white dark:bg-[#122543] border-[#DCE6FA] dark:border-[#1F3B66] text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="createBranchMgrCanCreateSuppliers"
+                        checked={createBranchMgrCanCreateSuppliers === false}
+                        onChange={() => setCreateBranchMgrCanCreateSuppliers(false)}
+                        className="mt-0.5 text-[#1764FF] focus:ring-[#1764FF]"
+                      />
+                      <div>
+                        <div className="font-bold">
+                          {tr(
+                            'لا، منع إضافة موردين',
+                            'No, disallow adding suppliers',
+                            'نہیں، سپلائرز شامل کرنے سے روکیں'
+                          )}
+                        </div>
+                        <div className="text-[11px] opacity-75 leading-snug mt-0.5">
+                          {tr(
+                            'الاختيار الافتراضي: يختار فقط من الموردين النشطين المسجلين مسبقاً.',
+                            'Default: can only select from pre-registered active suppliers.',
+                            'بائی ڈیفالٹ: صرف پہلے سے درج فعال سپلائرز کا انتخاب کر سکتا ہے۔'
+                          )}
+                        </div>
+                      </div>
+                    </label>
+                  </div>
                 </div>
               )}
 
@@ -1273,6 +1391,15 @@ export const EmployeesManager: React.FC = () => {
                 <div className="text-xs font-mono text-slate-300 mt-1" dir="ltr">
                   {selectedEmployee.email}
                 </div>
+                <div className="text-[11px] font-mono text-slate-400 mt-0.5 select-all" dir="ltr">
+                  UID: {selectedEmployee.uid}
+                  {selectedEmployee.firestoreDocId &&
+                    selectedEmployee.firestoreDocId !== selectedEmployee.uid && (
+                      <span className="ms-2 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-semibold">
+                        docId ≠ uid ({selectedEmployee.firestoreDocId})
+                      </span>
+                    )}
+                </div>
               </div>
               <button
                 type="button"
@@ -1356,7 +1483,13 @@ export const EmployeesManager: React.FC = () => {
                     </label>
                     <select
                       value={editRole}
-                      onChange={(e) => setEditRole(e.target.value as StaffAssignableRole)}
+                      onChange={(e) => {
+                        const nextRole = e.target.value as StaffAssignableRole;
+                        setEditRole(nextRole);
+                        if (nextRole !== 'branch_manager') {
+                          setEditBranchMgrCanCreateSuppliers(false);
+                        }
+                      }}
                       className="w-full px-3 py-2 rounded-xl text-xs bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[#0B1B32] dark:text-white"
                     >
                       <option value="employee">{getUserRoleLabel('employee', language)}</option>
@@ -1442,12 +1575,101 @@ export const EmployeesManager: React.FC = () => {
                 )}
 
                 {editRole === 'branch_manager' && (
-                  <div className="p-3 rounded-xl bg-[#08C99B]/10 border border-[#08C99B]/25 text-[11px] text-[#048264] dark:text-[#08C99B]">
-                    {tr(
-                      'صلاحيات مسؤول الفرع: تسجيل الإقفالات والمشتريات داخل الفرع المعين فقط، وعرض الموردين المسجلين (لا يمكنه إضافة أو تعديل أو حذف الموردين، ولا قراءة بيانات الفروع الأخرى).',
-                      'Branch Manager permissions: record closings and purchases for the assigned branch only, and view registered suppliers (cannot add/edit/delete suppliers or read other branches).',
-                      'برانچ مینیجر کے اختیارات: صرف مختص برانچ میں کلوزنگ اور خریداری درج کرنا، اور رجسٹرڈ سپلائرز دیکھنا (سپلائرز شامل/ترمیم/حذف نہیں کر سکتا)۔'
-                    )}
+                  <div className="space-y-3">
+                    <div
+                      data-testid="edit-branch-manager-suppliers-permission"
+                      className="p-4 rounded-2xl bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] space-y-3"
+                    >
+                      <div className="text-xs font-bold text-[#0B1B32] dark:text-white flex items-center gap-1.5">
+                        <Truck className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF]" />
+                        <span>
+                          {tr(
+                            'السماح لمسؤول الفرع بإضافة موردين؟',
+                            'Allow this Branch Manager to add suppliers?',
+                            'کیا اس برانچ مینیجر کو سپلائرز شامل کرنے کی اجازت دی جائے؟'
+                          )}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <label
+                          className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 cursor-pointer transition-colors ${
+                            editBranchMgrCanCreateSuppliers === true
+                              ? 'bg-[#1764FF]/10 border-[#1764FF] text-[#0B1B32] dark:text-white'
+                              : 'bg-white dark:bg-[#122543] border-[#DCE6FA] dark:border-[#1F3B66] text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="editBranchMgrCanCreateSuppliers"
+                            checked={editBranchMgrCanCreateSuppliers === true}
+                            onChange={() => setEditBranchMgrCanCreateSuppliers(true)}
+                            className="mt-0.5 text-[#1764FF] focus:ring-[#1764FF]"
+                          />
+                          <div>
+                            <div className="font-bold">
+                              {tr(
+                                'نعم، السماح بإضافة موردين',
+                                'Yes, allow adding suppliers',
+                                'ہاں، سپلائرز شامل کرنے کی اجازت دیں'
+                              )}
+                            </div>
+                            <div className="text-[11px] opacity-75 leading-snug mt-0.5">
+                              {tr(
+                                'إضافة مورد جديد واستخدامه في المشتريات فقط (لا يمكنه تعديل أو إيقاف أو حذف أي مورد، حتى المورد الذي أضافه بنفسه).',
+                                'Create new suppliers for purchases only (cannot edit, deactivate, or delete any supplier, including ones they created).',
+                                'صرف نیا سپلائر شامل کرنے کے لیے (کسی بھی سپلائر میں ترمیم یا حذف کی اجازت نہیں، خواہ خود ہی کیوں نہ بنایا ہو)۔'
+                              )}
+                            </div>
+                          </div>
+                        </label>
+
+                        <label
+                          className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 cursor-pointer transition-colors ${
+                            editBranchMgrCanCreateSuppliers === false
+                              ? 'bg-[#1764FF]/10 border-[#1764FF] text-[#0B1B32] dark:text-white'
+                              : 'bg-white dark:bg-[#122543] border-[#DCE6FA] dark:border-[#1F3B66] text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="editBranchMgrCanCreateSuppliers"
+                            checked={editBranchMgrCanCreateSuppliers === false}
+                            onChange={() => setEditBranchMgrCanCreateSuppliers(false)}
+                            className="mt-0.5 text-[#1764FF] focus:ring-[#1764FF]"
+                          />
+                          <div>
+                            <div className="font-bold">
+                              {tr(
+                                'لا، منع إضافة موردين',
+                                'No, disallow adding suppliers',
+                                'نہیں، سپلائرز شامل کرنے سے روکیں'
+                              )}
+                            </div>
+                            <div className="text-[11px] opacity-75 leading-snug mt-0.5">
+                              {tr(
+                                'الاختيار الافتراضي: يختار فقط من الموردين النشطين المسجلين مسبقاً.',
+                                'Default: can only select from pre-registered active suppliers.',
+                                'بائی ڈیفالٹ: صرف پہلے سے درج فعال سپلائرز کا انتخاب کر سکتا ہے۔'
+                              )}
+                            </div>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-[#08C99B]/10 border border-[#08C99B]/25 text-[11px] text-[#048264] dark:text-[#08C99B]">
+                      {editBranchMgrCanCreateSuppliers
+                        ? tr(
+                            'صلاحيات مسؤول الفرع: تسجيل الإقفالات والمشتريات داخل الفرع المعين فقط، واختيار الموردين النشطين أو إضافة مورد جديد (دون تعديل أو إيقاف أو حذف أي مورد، ودون قراءة بيانات الفروع الأخرى).',
+                            'Branch Manager permissions: record closings and purchases for the assigned branch only, select active suppliers, and add new suppliers (no edit, deactivate, or delete; no access to other branches).',
+                            'برانچ مینیجر کے اختیارات: صرف مختص برانچ میں کلوزنگ اور خریداری درج کرنا، فعال سپلائرز منتخب کرنا اور نیا سپلائر شامل کرنا (ترمیم یا حذف کی اجازت نہیں)۔'
+                          )
+                        : tr(
+                            'صلاحيات مسؤول الفرع: تسجيل الإقفالات والمشتريات داخل الفرع المعين فقط، وعرض الموردين المسجلين (لا يمكنه إضافة أو تعديل أو حذف الموردين، ولا قراءة بيانات الفروع الأخرى).',
+                            'Branch Manager permissions: record closings and purchases for the assigned branch only, and view registered suppliers (cannot add/edit/delete suppliers or read other branches).',
+                            'برانچ مینیجر کے اختیارات: صرف مختص برانچ میں کلوزنگ اور خریداری درج کرنا، اور رجسٹرڈ سپلائرز دیکھنا (سپلائرز شامل/ترمیم/حذف نہیں کر سکتا)۔'
+                          )}
+                    </div>
                   </div>
                 )}
 

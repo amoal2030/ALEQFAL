@@ -65,6 +65,19 @@ export function buildNotificationId(dedupKey: string, createdAtIso?: string): st
   return `ntf_${invBase36}_${buildNotificationHash(dedupKey)}`;
 }
 
+/**
+ * Produces the canonical, strictly 1-to-1 deterministic Firestore document ID for a
+ * `SUPPLIER_ADDED` notification, matching `expectedSupplierAddedNotificationId()` in `firestore.rules`.
+ * When `supplierId` uses the sortable format `sup_<invBase36>_<rand>`, stripping `sup_`
+ * produces `ntf_<invBase36>_<rand>_sup_add` so it sorts newest-first under `orderBy(documentId(), 'asc')`
+ * alongside all other `ntf_<invBase36>_...` notifications.
+ */
+export function buildSupplierAddedNotificationId(supplierId: string): string {
+  const cleanId = (supplierId || '').trim();
+  const suffix = cleanId.startsWith('sup_') && cleanId.length > 4 ? cleanId.slice(4) : cleanId;
+  return `ntf_${suffix}_sup_add`;
+}
+
 export function truncateText(value: string | undefined | null, maxLen: number, fallback = ''): string {
   const cleaned = (value || '').trim();
   if (!cleaned) return fallback;
@@ -146,11 +159,12 @@ export interface CreateNotificationPayloadParams {
   targetId?: string;
   navTarget?: NotificationNavTarget;
   createdAt?: string;
+  explicitId?: string;
 }
 
 export function createNotificationPayload(params: CreateNotificationPayloadParams): AppNotification {
   const createdAt = params.createdAt || new Date().toISOString();
-  const id = buildNotificationId(params.dedupKey, createdAt);
+  const id = params.explicitId ? params.explicitId.trim() : buildNotificationId(params.dedupKey, createdAt);
   const feedKeys =
     params.audienceScope === 'super_admin'
       ? ['super_admin']
@@ -1002,6 +1016,7 @@ export function buildSupplierAddedNotification(params: {
   createdAt?: string;
 }): AppNotification {
   return createNotificationPayload({
+    explicitId: buildSupplierAddedNotificationId(params.supplierId),
     dedupKey: `supplier_add:${params.supplierId}`,
     category: 'purchases_suppliers',
     type: 'SUPPLIER_ADDED',
@@ -1864,8 +1879,9 @@ export function resolveTenantNotificationRoute(params: {
   const canStaffManagePurchases =
     (userProfile.role === 'supervisor' || userProfile.role === 'branch_manager') &&
     effectivePerms.canManagePurchases;
-  const canSupervisorManageSuppliers =
-    userProfile.role === 'supervisor' && effectivePerms.canCreateSuppliers;
+  const canStaffCreateSuppliers =
+    (userProfile.role === 'supervisor' || userProfile.role === 'branch_manager') &&
+    effectivePerms.canCreateSuppliers;
   const canSupervisorReviewClosings =
     userProfile.role === 'supervisor' &&
     (effectivePerms.canApproveClosings || effectivePerms.canViewAllClosings);
@@ -1910,7 +1926,7 @@ export function resolveTenantNotificationRoute(params: {
   }
 
   // Non-purchase notifications for staff: preserve existing behavior strictly
-  if (target.tab === 'suppliers' && canSupervisorManageSuppliers) {
+  if (target.tab === 'suppliers' && canStaffCreateSuppliers) {
     return {
       roleGroup: 'staff',
       staffTab: 'suppliers',

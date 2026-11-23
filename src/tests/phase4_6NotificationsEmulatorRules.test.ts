@@ -554,7 +554,18 @@ async function runPhase46EmulatorTests() {
 
   await runCase('Manager, Purchaser Supervisor, and BM1 create valid scoped notifications cleanly', async () => {
     await assertSucceeds(bm1Ctx.firestore().doc(`notifications/${purchaseNotif.id}`).set(purchaseNotif));
-    await assertSucceeds(supPurCtx.firestore().doc(`notifications/${supplierNotif.id}`).set(supplierNotif));
+    const supBatch = supPurCtx.firestore().batch();
+    supBatch.set(supPurCtx.firestore().doc('suppliers/sup_1'), {
+      id: 'sup_1',
+      orgId: 'org_a',
+      name: 'مورد السلام',
+      isActive: true,
+      createdBy: 'uid_sup_pur',
+      createdAt: '2026-11-16T10:20:00.000Z',
+      updatedAt: '2026-11-16T10:20:00.000Z',
+    });
+    supBatch.set(supPurCtx.firestore().doc(`notifications/${supplierNotif.id}`), supplierNotif);
+    await assertSucceeds(supBatch.commit());
     for (const n of empLifecycleNotifs) {
       await assertSucceeds(mgrACtx.firestore().doc(`notifications/${n.id}`).set(n));
     }

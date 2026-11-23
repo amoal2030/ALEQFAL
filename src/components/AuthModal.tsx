@@ -116,9 +116,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     try {
       await resetPassword(normalizedEmail);
       setSuccessMsg(t('authResetSent'));
-      setTimeout(() => {
-        setIsForgotPassword(false);
-      }, 4000);
     } catch (err: any) {
       applyFirebaseError(err);
     } finally {
@@ -252,6 +249,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <form onSubmit={handleResetPassword} className="space-y-4">
               <div className="text-xs text-[#526785] dark:text-slate-300 leading-relaxed">
                 {t('authForgotDesc')}
+              </div>
+
+              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-500/12 border border-amber-200 dark:border-amber-500/30 text-[11px] text-amber-900 dark:text-amber-200 leading-relaxed flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <span>{t('authResetSingleUseNote')}</span>
               </div>
 
               <div>

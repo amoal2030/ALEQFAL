@@ -197,6 +197,7 @@ export type InviteBlockReason =
 export type AccessErrorReason =
   | 'email_not_verified'
   | 'missing_employee_profile'
+  | 'profile_uid_mismatch'
   | 'account_archived'
   | 'account_disabled'
   | 'membership_released'
@@ -344,6 +345,7 @@ export interface UserPermissions {
   canExportReports: boolean;
   canManagePurchases?: boolean;
   canManageSuppliers?: boolean;
+  canCreateSuppliers?: boolean;
   canViewSuppliers?: boolean;
   canViewFinancialReports?: boolean;
 }
@@ -375,6 +377,11 @@ export interface UserProfile {
   permissions: UserPermissions;
   createdAt: string;
   updatedAt?: string;
+  /**
+   * Runtime-only diagnostic populated from Firestore `docSnap.id` during reads.
+   * Never persisted to Firestore; used exclusively to detect docId vs `uid` mismatches read-only.
+   */
+  firestoreDocId?: string;
 }
 
 export interface Supplier {

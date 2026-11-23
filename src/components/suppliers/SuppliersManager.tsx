@@ -419,9 +419,9 @@ export const SuppliersManager: React.FC = () => {
         </h2>
         <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
           {tr(
-            'إدارة الموردين مقتصرة على مدير المؤسسة، وللمسؤول المخول بصلاحية إضافة الموردين فقط. يمكن لمسؤول الفرع اختيار الموردين المسجلين مسبقاً من شاشة إدخال المشتريات.',
-            'Supplier management is restricted to the Organization Manager and supervisors authorized to add suppliers. Branch Managers can select existing suppliers directly from the Purchase Entry screen.',
-            'سپلائرز کا انتظام صرف ادارے کے مینیجر اور مجاز سپروائزرز تک محدود ہے۔ برانچ مینیجرز خریداری اندراج اسکرین سے پہلے سے درج سپلائرز منتخب کر سکتے ہیں۔'
+            'إدارة الموردين مقتصرة على مدير المؤسسة، وتُتاح شاشة إضافة الموردين فقط للمسؤول أو لمسؤول الفرع الذي مُنح صلاحية إضافة الموردين. يمكنك اختيار الموردين النشطين المسجلين مسبقاً من شاشة إدخال المشتريات.',
+            'Supplier management is restricted to the Organization Manager, and adding suppliers is available only to authorized supervisors or branch managers explicitly granted supplier creation permission. You can select existing active suppliers directly from the Purchase Entry screen.',
+            'سپلائرز کا انتظام صرف ادارے کے مینیجر تک محدود ہے، اور نیا سپلائر شامل کرنے کی اجازت صرف مجاز سپروائزر یا اس برانچ مینیجر کو ہے جسے یہ اختیار دیا گیا ہو۔ آپ خریداری اندراج اسکرین سے پہلے سے درج فعال سپلائرز منتخب کر سکتے ہیں۔'
           )}
         </p>
       </div>

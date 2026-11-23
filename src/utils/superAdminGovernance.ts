@@ -38,6 +38,7 @@ import {
   verifyOrganizationExemptionEligibility,
 } from './exemptionVerification';
 import {
+  BranchManagerOptionalPermissions,
   buildDefaultPermissionsForRole,
   SupervisorOptionalPermissionKey,
 } from './permissions';
@@ -774,6 +775,7 @@ export function buildSuperAdminMemberUpdateBundle(params: {
   role: string;
   branchId?: string;
   supervisorPermissions?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+  branchManagerPermissions?: BranchManagerOptionalPermissions;
   targetOrgIdAttempt?: string;
   reason?: string;
   now?: Date;
@@ -860,9 +862,20 @@ export function buildSuperAdminMemberUpdateBundle(params: {
 
   const now = params.now || new Date();
   const nowIso = now.toISOString();
+  const resolvedBranchManagerPermissions: BranchManagerOptionalPermissions | undefined =
+    params.role === 'branch_manager'
+      ? {
+          canCreateSuppliers:
+            params.branchManagerPermissions?.canCreateSuppliers !== undefined
+              ? params.branchManagerPermissions.canCreateSuppliers === true
+              : params.existingMember.role === 'branch_manager' &&
+                params.existingMember.permissions?.canCreateSuppliers === true,
+        }
+      : undefined;
   const permissions = buildDefaultPermissionsForRole(
     params.role,
-    params.role === 'supervisor' ? params.supervisorPermissions : undefined
+    params.role === 'supervisor' ? params.supervisorPermissions : undefined,
+    resolvedBranchManagerPermissions
   );
   const cleanReason = (params.reason || '').trim().slice(0, 500);
 
@@ -1079,6 +1092,7 @@ export function buildReleasedMemberZeroPermissions(): UserPermissions {
     canExportReports: false,
     canManagePurchases: false,
     canManageSuppliers: false,
+    canCreateSuppliers: false,
     canViewSuppliers: false,
     canViewFinancialReports: false,
   };

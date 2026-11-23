@@ -55,10 +55,12 @@ import {
 import { resolveMemberMembershipStatus } from '../../utils/tenantAccess';
 import {
   detectProfileEmailDiagnostics,
+  detectProfileUidBindingDiagnostics,
   normalizeLoginEmail,
   validatePasswordConfirmation,
 } from '../../utils/authCredentials';
-import { SUPER_ADMIN_EMAIL } from '../../utils/superAdmin';
+import { EmployeeUidDiagnosticReport } from '../../utils/employeeUidRebind';
+import { isVerifiedSuperAdmin, SUPER_ADMIN_EMAIL } from '../../utils/superAdmin';
 import {
   Building2,
   GitBranch,
@@ -154,6 +156,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     releaseSuperAdminOrgMember,
     assignReleasedMemberToOrganization,
     sendSuperAdminMemberPasswordReset,
+    inspectEmployeeUidBindingDiagnostic,
     upsertSuperAdminManagerInvite,
     cancelSuperAdminManagerInvite,
     createSuperAdminBranch,
@@ -183,6 +186,42 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const inFlightUiRef = useRef<boolean>(false);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Strictly Read-Only Super Admin UID Binding Diagnostic Inspector state (NO writes)
+  const [showUidDiagPanel, setShowUidDiagPanel] = useState(false);
+  const [uidDiagTargetAuthUid, setUidDiagTargetAuthUid] = useState('');
+  const [uidDiagLegacyDocId, setUidDiagLegacyDocId] = useState('');
+  const [uidDiagEmail, setUidDiagEmail] = useState('');
+  const [uidDiagLoading, setUidDiagLoading] = useState(false);
+  const [uidDiagError, setUidDiagError] = useState<string | null>(null);
+  const [uidDiagReport, setUidDiagReport] = useState<EmployeeUidDiagnosticReport | null>(null);
+
+  const handleRunReadOnlyUidDiagnostic = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isVerifiedSuperAdmin(currentUser)) return;
+    setUidDiagError(null);
+    setUidDiagLoading(true);
+    try {
+      const report = await inspectEmployeeUidBindingDiagnostic({
+        targetAuthUid: uidDiagTargetAuthUid.trim(),
+        legacyDocId: uidDiagLegacyDocId.trim(),
+        email: uidDiagEmail.trim(),
+      });
+      setUidDiagReport(report);
+    } catch (err: any) {
+      setUidDiagReport(null);
+      setUidDiagError(
+        err?.message ||
+          tr(
+            'تعذر تنفيذ الفحص التشخيصي للقراءة فقط.',
+            'Failed to run read-only UID binding diagnostic.',
+            'صرف مطالعہ UID تشخیص چلانے میں ناکامی۔'
+          )
+      );
+    } finally {
+      setUidDiagLoading(false);
+    }
+  };
 
   // Create Org + Invite Modal state
   const [showCreateOrgModal, setShowCreateOrgModal] = useState(false);
@@ -2481,16 +2520,31 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
 
             {(() => {
               const emailDiagnostics = detectProfileEmailDiagnostics(allUsers);
-              if (!authEmailMismatch && emailDiagnostics.length === 0) return null;
+              const uidBindingDiagnostics = detectProfileUidBindingDiagnostics(
+                allUsers.map((u) => ({
+                  docId: u.firestoreDocId || u.uid,
+                  uid: u.uid,
+                  displayName: u.displayName,
+                  email: u.email,
+                  orgId: u.orgId,
+                }))
+              );
+              if (
+                !authEmailMismatch &&
+                emailDiagnostics.length === 0 &&
+                uidBindingDiagnostics.length === 0
+              ) {
+                return null;
+              }
               return (
                 <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 p-3.5 text-xs text-amber-900 dark:text-amber-200 space-y-2">
                   <div className="font-bold flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
                     <span>
                       {tr(
-                        'تنبيه تشخيصي لعدم تطابق أو تنسيق البريد الإلكتروني (لم تُجرَ أي مزامنة تلقائية)',
-                        'Email Mismatch / Normalization Diagnostic Alert (No Auto-Sync Performed)',
-                        'ای میل عدم مطابقت / فارمیٹنگ تشخیصی تنبیہ (کوئی خودکار ہم آہنگی نہیں کی گئی)'
+                        'تنبيه تشخيصي لعدم تطابق البريد أو ربط المعرّف UID (لم تُجرَ أي مزامنة تلقائية)',
+                        'Email / UID Binding Diagnostic Alert (No Auto-Sync Performed)',
+                        'ای میل / UID ربط تشخیصی تنبیہ (کوئی خودکار ہم آہنگی نہیں کی گئی)'
                       )}
                     </span>
                   </div>
@@ -2498,6 +2552,24 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                     <div className="text-[11px] font-mono bg-white/70 dark:bg-[#0E203A] rounded-lg p-2 border border-amber-500/20" dir="ltr">
                       UID: {authEmailMismatch.uid} | Auth: {authEmailMismatch.authEmail} | Firestore:{' '}
                       {authEmailMismatch.profileEmail}
+                    </div>
+                  )}
+                  {uidBindingDiagnostics.length > 0 && (
+                    <div className="text-[11px] space-y-1">
+                      <p className="font-semibold">
+                        {tr(
+                          `تم رصد ${uidBindingDiagnostics.length} سجل في users يختلف فيه معرّف الوثيقة (docId) عن حقل uid أو ينقصه حقل uid:`,
+                          `Detected ${uidBindingDiagnostics.length} user document(s) with docId/uid mismatch or missing uid:`,
+                          `users میں ${uidBindingDiagnostics.length} ریکارڈز ملے ہیں جہاں docId اور uid مختلف یا نامکمل ہیں:`
+                        )}
+                      </p>
+                      <ul className="space-y-1 max-h-24 overflow-y-auto">
+                        {uidBindingDiagnostics.slice(0, 8).map((item, idx) => (
+                          <li key={`uid_bind_${item.docId}_${idx}`} className="font-mono text-[10px]" dir="ltr">
+                            [{item.issueType}] {item.displayName} ({item.email}): docId={item.docId} vs uid={item.storedUid || '(missing)'}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                   {emailDiagnostics.length > 0 && (
@@ -2521,6 +2593,244 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 </div>
               );
             })()}
+
+            {isVerifiedSuperAdmin(currentUser) && (
+              <div className="rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-white dark:bg-[#122543] shadow-sm overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowUidDiagPanel((prev) => !prev)}
+                  className="w-full px-4 py-3 flex items-center justify-between text-xs font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-[#162C4F] transition-colors"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-[#1764FF] dark:text-[#6CA2FF]" />
+                    <span>
+                      {tr(
+                        'فحص تشخيصي للقراءة فقط لربط UID الموظف (حصري للمدير الرئيسي — بدون أي تعديل على البيانات)',
+                        'Read-Only Employee UID Binding Diagnostic (Super Admin Only — Zero Writes)',
+                        'ملازم UID ربط صرف مطالعہ تشخیص (صرف سپر ایڈمن — کوئی تبدیلی نہیں)'
+                      )}
+                    </span>
+                  </span>
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-400 transition-transform ${
+                      showUidDiagPanel ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+
+                {showUidDiagPanel && (
+                  <div className="px-4 pb-4 pt-2 border-t border-[#DCE6FA] dark:border-[#1F3B66] space-y-3">
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                      {tr(
+                        'تقرأ هذه الأداة المستندات المستهدفة فقط داخل قاعدة البيانات دون عرض بيانات موظفين آخرين ودون تنفيذ أي إنشاء أو تعديل أو أرشفة أو حذف.',
+                        'Inspects only the targeted Firestore documents without exposing unrelated employees and without performing any create, update, archive, or delete.',
+                        'یہ ٹول صرف مطلوبہ دستاویزات کو پڑھتا ہے، کسی دوسرے ملازم کا ڈیٹا ظاہر نہیں کرتا اور کوئی تبدیلی نہیں کرتا۔'
+                      )}
+                    </p>
+
+                    <form
+                      onSubmit={handleRunReadOnlyUidDiagnostic}
+                      className="grid grid-cols-1 md:grid-cols-4 gap-2.5 items-end"
+                    >
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                          {tr('Auth UID الحالي', 'Current Auth UID', 'موجودہ Auth UID')}
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          dir="ltr"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          value={uidDiagTargetAuthUid}
+                          onChange={(e) => setUidDiagTargetAuthUid(e.target.value)}
+                          placeholder="e.g. UnadIrNfoNeBdzTjfVMJJjTJIMR2"
+                          className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-slate-50 dark:bg-[#0D1E38] text-xs font-mono text-slate-800 dark:text-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                          {tr('معرّف وثيقة الموظف (Doc ID / UID القديم)', 'Employee Doc ID / Legacy UID', 'ملازم Doc ID / پرانا UID')}
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          dir="ltr"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          value={uidDiagLegacyDocId}
+                          onChange={(e) => setUidDiagLegacyDocId(e.target.value)}
+                          placeholder="e.g. 7aXYPLvRaCeuML8kf7XKal8sVOp2"
+                          className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-slate-50 dark:bg-[#0D1E38] text-xs font-mono text-slate-800 dark:text-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                          {tr('البريد الإلكتروني (اختياري)', 'Email (Optional)', 'ای میل (اختیاری)')}
+                        </label>
+                        <input
+                          type="email"
+                          dir="ltr"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          value={uidDiagEmail}
+                          onChange={(e) => setUidDiagEmail(e.target.value)}
+                          placeholder="employee@example.com"
+                          className="w-full px-3 py-2 rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-slate-50 dark:bg-[#0D1E38] text-xs font-mono text-slate-800 dark:text-slate-100"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={uidDiagLoading}
+                        className="px-3.5 py-2 rounded-xl text-xs font-bold bg-[#1764FF] hover:bg-[#1052D8] disabled:opacity-60 text-white transition-colors inline-flex items-center justify-center gap-1.5"
+                      >
+                        <Search className="w-3.5 h-3.5" />
+                        <span>
+                          {uidDiagLoading
+                            ? tr('جارٍ الفحص...', 'Inspecting...', 'جانچ جاری ہے...')
+                            : tr('فحص للقراءة فقط', 'Run Read-Only Check', 'صرف مطالعہ جانچ')}
+                        </span>
+                      </button>
+                    </form>
+
+                    {uidDiagError && (
+                      <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-300">
+                        {uidDiagError}
+                      </div>
+                    )}
+
+                    {uidDiagReport && (
+                      <div className="space-y-3 pt-2 border-t border-[#DCE6FA] dark:border-[#1F3B66] text-xs">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                          <div className="rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-slate-50/70 dark:bg-[#0D1E38] p-3 space-y-1">
+                            <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                              {tr('Auth UID الحالي', 'Current Auth UID', 'موجودہ Auth UID')}
+                            </div>
+                            <div className="font-mono text-[11px] break-all text-slate-800 dark:text-slate-100" dir="ltr">
+                              {uidDiagReport.requestedTargetAuthUid}
+                            </div>
+                            <div className="text-[11px] font-semibold">
+                              {uidDiagReport.targetAuthUidDocExists
+                                ? tr(
+                                    '⚠️ توجد وثيقة قائمة تحت Auth UID الحالي',
+                                    '⚠️ Document already exists under Current Auth UID',
+                                    '⚠️ موجودہ Auth UID کے تحت دستاویز پہلے سے موجود ہے'
+                                  )
+                                : tr(
+                                    '✓ لا توجد وثيقة أخرى تحت Auth UID الحالي',
+                                    '✓ No document exists under Current Auth UID',
+                                    '✓ موجودہ Auth UID کے تحت کوئی اور دستاویز نہیں ہے'
+                                  )}
+                            </div>
+                          </div>
+
+                          <div className="rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-slate-50/70 dark:bg-[#0D1E38] p-3 space-y-1">
+                            <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                              {tr('معرّف وثيقة Firestore (Document ID)', 'Firestore Document ID', 'Firestore Document ID')}
+                            </div>
+                            <div className="font-mono text-[11px] break-all text-slate-800 dark:text-slate-100" dir="ltr">
+                              {uidDiagReport.legacyDoc ? uidDiagReport.legacyDoc.docId : tr('غير موجودة', 'Not found', 'نہیں ملا')}
+                            </div>
+                            <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                              {tr('حقل uid المخزّن:', 'Stored uid field:', 'محفوظ شدہ uid فیلڈ:')}{' '}
+                              <span className="font-mono" dir="ltr">
+                                {uidDiagReport.legacyDoc ? uidDiagReport.legacyDoc.storedUid || '(missing)' : '—'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-slate-50/70 dark:bg-[#0D1E38] p-3 space-y-1">
+                            <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                              {tr('المؤسسة والفرع والدور والحالة', 'Org / Branch / Role / Status', 'ادارہ / برانچ / کردار / حیثیت')}
+                            </div>
+                            {uidDiagReport.legacyDoc ? (
+                              <div className="space-y-0.5 text-[11px] text-slate-700 dark:text-slate-200">
+                                <div>
+                                  orgId: <span className="font-mono" dir="ltr">{uidDiagReport.legacyDoc.orgId}</span>
+                                  {uidDiagReport.organization ? ` (${uidDiagReport.organization.orgName})` : ''}
+                                </div>
+                                <div>
+                                  branchId: <span className="font-mono" dir="ltr">{uidDiagReport.legacyDoc.branchId || '—'}</span>
+                                  {uidDiagReport.legacyDoc.branchName ? ` — ${uidDiagReport.legacyDoc.branchName}` : ''}
+                                </div>
+                                <div>
+                                  branchIds: <span className="font-mono" dir="ltr">[{uidDiagReport.legacyDoc.branchIds.join(', ')}]</span>
+                                </div>
+                                <div>
+                                  role: <span className="font-mono" dir="ltr">{uidDiagReport.legacyDoc.role}</span> | isActive:{' '}
+                                  <span className="font-mono" dir="ltr">{String(uidDiagReport.legacyDoc.isActive)}</span> | isArchived:{' '}
+                                  <span className="font-mono" dir="ltr">{String(uidDiagReport.legacyDoc.isArchived)}</span> | status:{' '}
+                                  <span className="font-mono" dir="ltr">{uidDiagReport.legacyDoc.membershipStatus}</span>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-[11px] text-slate-500">—</div>
+                            )}
+                          </div>
+                        </div>
+
+                        {uidDiagReport.legacyDoc?.permissions && (
+                          <div className="rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-slate-50/70 dark:bg-[#0D1E38] p-3">
+                            <div className="text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                              {tr('الصلاحيات الحالية (permissions)', 'Current Permissions', 'موجودہ اجازتیں')}
+                            </div>
+                            <pre className="text-[10px] font-mono overflow-x-auto text-slate-700 dark:text-slate-200" dir="ltr">
+                              {JSON.stringify(uidDiagReport.legacyDoc.permissions, null, 2)}
+                            </pre>
+                          </div>
+                        )}
+
+                        <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 p-3 space-y-1.5 text-[11px] text-amber-900 dark:text-amber-200">
+                          <div className="font-bold">
+                            {tr(
+                              'التحقق من استخدام المعرّف القديم في Firebase Authentication (يتطلب فحصاً مباشراً في Firebase Console)',
+                              'Legacy UID Firebase Authentication Check (Requires Direct Firebase Console Check)',
+                              'پرانے UID کی Firebase Authentication جانچ (Firebase Console درکار ہے)'
+                            )}
+                          </div>
+                          <p>{uidDiagReport.legacyUidAuthAccountCheck.explanationAr}</p>
+                          <ol className="list-decimal list-inside space-y-0.5">
+                            {uidDiagReport.legacyUidAuthAccountCheck.consoleStepsAr.map((step, i) => (
+                              <li key={`auth_step_${i}`}>{step}</li>
+                            ))}
+                          </ol>
+                        </div>
+
+                        {uidDiagReport.historicalCollectionProbes.length > 0 && (
+                          <div className="rounded-xl border border-[#DCE6FA] dark:border-[#1F3B66] bg-slate-50/70 dark:bg-[#0D1E38] p-3 space-y-1">
+                            <div className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                              {tr('فحص السجلات التاريخية (للقراءة فقط)', 'Historical Collections Probe (Read-Only)', 'تاریخی ریکارڈز جانچ (صرف مطالعہ)')}
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 text-[11px]">
+                              {uidDiagReport.historicalCollectionProbes.map((probe) => (
+                                <div key={probe.collection} className="flex items-start justify-between gap-2 rounded-lg bg-white/70 dark:bg-[#122543] px-2.5 py-1.5 border border-[#DCE6FA]/70 dark:border-[#1F3B66]">
+                                  <span className="font-mono font-bold" dir="ltr">{probe.collection}</span>
+                                  <span className="text-slate-600 dark:text-slate-300 text-[10px]">{probe.note}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {uidDiagReport.readinessAssessment.blockingReasons.length > 0 && (
+                          <div className="rounded-xl border border-rose-500/35 bg-rose-500/10 p-3 text-[11px] text-rose-800 dark:text-rose-200 space-y-1">
+                            <div className="font-bold">{tr('أسباب تمنع المضي قدماً حالياً:', 'Blocking Reasons:', 'رکاوٹیں:')}</div>
+                            <ul className="list-disc list-inside space-y-0.5">
+                              {uidDiagReport.readinessAssessment.blockingReasons.map((r, i) => (
+                                <li key={`block_${i}`}>{r}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="bg-white dark:bg-[#122543] rounded-2xl border border-[#DCE6FA] dark:border-[#1F3B66] overflow-hidden shadow-sm">
               {filteredMembers.length === 0 ? (

@@ -130,10 +130,20 @@ import {
   assertProfileEmailImmutableOnEmployeeUpdate,
   AuthProfileEmailMismatchRecord,
   detectAuthProfileEmailMismatch,
+  fetchFirestoreDocWithFreshServerCheck,
   normalizeLoginEmail,
   prepareLoginCredentials,
+  syncAuthLanguageCode,
+  validateLoadedUserProfileBinding,
 } from '../utils/authCredentials';
 import {
+  buildEmployeeUidDiagnosticReport,
+  DiagnosticCollectionProbe,
+  EmployeeUidDiagnosticReport,
+  RawDiagnosticUserDoc,
+} from '../utils/employeeUidRebind';
+import {
+  BranchManagerOptionalPermissions,
   buildDefaultPermissionsForRole,
   canUserAccessBranch,
   resolveEffectivePermissions,
@@ -225,6 +235,7 @@ interface AuthContextType {
     branchName?: string;
     phone?: string;
     supervisorPermissions?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+    branchManagerPermissions?: BranchManagerOptionalPermissions;
   }) => Promise<UserProfile>;
   updateEmployeeAccount: (data: {
     employeeUid: string;
@@ -234,6 +245,7 @@ interface AuthContextType {
     role: 'employee' | 'branch_manager' | 'supervisor';
     branchId?: string;
     supervisorPermissions?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+    branchManagerPermissions?: BranchManagerOptionalPermissions;
   }) => Promise<void>;
   archiveEmployeeAccount: (employeeUid: string, reason?: string) => Promise<void>;
   sendEmployeePasswordReset: (employeeUid: string) => Promise<string>;
@@ -420,6 +432,11 @@ interface AuthContextType {
   sendSuperAdminMemberPasswordReset: (memberUid: string) => Promise<{ email: string }>;
   loadSuperAdminReleasedMembers: () => Promise<UserProfile[]>;
   loadSuperAdminMemberOrgHistory: (memberUid?: string) => Promise<MemberOrgHistoryRecord[]>;
+  inspectEmployeeUidBindingDiagnostic: (input: {
+    targetAuthUid: string;
+    legacyDocId: string;
+    email?: string;
+  }) => Promise<EmployeeUidDiagnosticReport>;
   upsertSuperAdminManagerInvite: (input: {
     email: string;
     orgId: string;
@@ -938,7 +955,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         (snapshot) => {
           const loaded: UserProfile[] = [];
           snapshot.forEach((d) => {
-            loaded.push(d.data() as UserProfile);
+            const raw = d.data() as UserProfile;
+            if (raw.uid && raw.uid !== d.id) {
+              console.warn(
+                '[AL EQFAL Auth Diagnostic] Firestore users docId differs from stored uid (read-only):',
+                { docId: d.id, storedUid: raw.uid, email: raw.email }
+              );
+            }
+            loaded.push({
+              ...raw,
+              uid: raw.uid || d.id,
+              firestoreDocId: d.id,
+            });
           });
           setEmployees(loaded);
         },
@@ -1445,13 +1473,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLoading(true);
     setNeedsOnboarding(false);
     try {
+      // Ensure the Firebase Auth ID token is ready right after sign-in or password reset
+      await fbUser.getIdToken().catch(() => undefined);
+      if (activeUserUidRef.current !== fbUser.uid) return;
+
       const userDocRef = doc(db, 'users', fbUser.uid);
-      const userDocSnap = await getDoc(userDocRef);
+      const userDocSnap = await fetchFirestoreDocWithFreshServerCheck(
+        () => getDocFromServer(userDocRef),
+        () => getDoc(userDocRef)
+      );
 
       if (activeUserUidRef.current !== fbUser.uid) return;
 
-      if (userDocSnap.exists()) {
-        const profile: UserProfile = { ...(userDocSnap.data() as UserProfile), uid: fbUser.uid };
+      const bindingResult = validateLoadedUserProfileBinding({
+        authUid: fbUser.uid,
+        docId: userDocSnap.id,
+        docExists: userDocSnap.exists(),
+        rawProfile: userDocSnap.exists() ? (userDocSnap.data() as UserProfile) : null,
+      });
+
+      if (bindingResult.status === 'uid_mismatch') {
+        const rawUserData = userDocSnap.exists() ? (userDocSnap.data() as UserProfile) : null;
+        console.warn(
+          '[AL EQFAL Auth Diagnostic] Strict Auth UID binding mismatch on users/{uid} (not auto-repaired):',
+          {
+            authUid: fbUser.uid,
+            docId: userDocSnap.id,
+            storedUid: rawUserData?.uid,
+            reason: bindingResult.reason,
+          }
+        );
+        clearDriveSession();
+        clearOperationalState();
+        setUserProfile(null);
+        setCurrentOrg(null);
+        setSubscriptionEvaluation(null);
+        setSubscriptionBlockReason(null);
+        setInviteBlockInfo(null);
+        setAccessErrorInfo({ reason: bindingResult.reason });
+        setTenantStatus('access_error');
+        setLoading(false);
+        return;
+      }
+
+      if (bindingResult.status === 'valid') {
+        const profile: UserProfile = bindingResult.profile;
 
         // Read-only email mismatch diagnostic (never auto-syncs Firestore)
         const detectedMismatch = detectAuthProfileEmailMismatch({
@@ -1522,14 +1588,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         let orgData: Organization | null = null;
         if (profile.orgId) {
           const orgDocRef = doc(db, 'organizations', profile.orgId);
-          const orgSnap = await getDoc(orgDocRef);
+          const orgSnap = await fetchFirestoreDocWithFreshServerCheck(
+            () => getDocFromServer(orgDocRef),
+            () => getDoc(orgDocRef)
+          );
           if (activeUserUidRef.current !== fbUser.uid) return;
           if (orgSnap.exists()) {
             orgData = { ...(orgSnap.data() as Organization), id: orgSnap.id };
           }
         }
 
-        const resolved = resolveProfiledUserAccess({ profile, org: orgData });
+        const resolved = resolveProfiledUserAccess({
+          profile,
+          org: orgData,
+          authUid: fbUser.uid,
+        });
 
         if (resolved.status === 'access_error') {
           clearDriveSession();
@@ -1807,8 +1880,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const applyPreferredAuthLanguage = () => {
+    const docLang =
+      typeof document !== 'undefined' ? document.documentElement?.lang?.toLowerCase() : null;
+    syncAuthLanguageCode(auth, docLang);
+  };
+
   const resetPassword = async (email: string) => {
     try {
+      applyPreferredAuthLanguage();
       await sendPasswordResetEmail(auth, normalizeLoginEmail(email));
     } catch (error: any) {
       console.error('Reset password error:', error);
@@ -1842,6 +1922,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     branchName?: string;
     phone?: string;
     supervisorPermissions?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>;
+    branchManagerPermissions?: BranchManagerOptionalPermissions;
   }): Promise<UserProfile> => {
     if (!currentOrg || !userProfile || userProfile.role !== 'manager' || !userProfile.isActive) {
       throw new Error('إدارة حسابات الموظفين والأدوار مقتصرة على مدير المؤسسة النشط فقط.');
@@ -1887,7 +1968,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const canonicalPermissions = buildDefaultPermissionsForRole(
       targetRole,
-      targetRole === 'supervisor' ? data.supervisorPermissions : undefined
+      targetRole === 'supervisor' ? data.supervisorPermissions : undefined,
+      targetRole === 'branch_manager' ? data.branchManagerPermissions : undefined
     );
 
     const secondaryAuth = getSecondaryAuth();
@@ -2178,7 +2260,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const nextPermissions = buildDefaultPermissionsForRole(
       data.role,
-      data.role === 'supervisor' ? data.supervisorPermissions : undefined
+      data.role === 'supervisor' ? data.supervisorPermissions : undefined,
+      data.role === 'branch_manager' ? data.branchManagerPermissions : undefined
     );
 
     const safeActorName =
@@ -2357,11 +2440,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (targetEmployee.role === 'manager') {
       throw new Error('لا يمكن إرسال رابط استعادة لمدير المؤسسة من قائمة الموظفين.');
     }
-    const cleanEmail = (targetEmployee.email || '').trim();
+    const cleanEmail = normalizeLoginEmail(targetEmployee.email);
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       throw new Error('لا يملك هذا الموظف بريداً إلكترونياً صالحاً لاستلام الرابط.');
     }
 
+    applyPreferredAuthLanguage();
     await sendPasswordResetEmail(auth, cleanEmail);
 
     const safeActorName =
@@ -3695,7 +3779,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
           const items: T[] = [];
           snap.forEach((docSnap) => {
-            items.push(docSnap.data() as T);
+            if (colName === 'users') {
+              const rawUser = docSnap.data() as UserProfile;
+              items.push({
+                ...rawUser,
+                uid: rawUser.uid || docSnap.id,
+                firestoreDocId: docSnap.id,
+              } as unknown as T);
+            } else {
+              items.push(docSnap.data() as T);
+            }
           });
           return items;
         },
@@ -5807,7 +5900,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           let passwordResetSent = false;
           if (input.sendOptionalPasswordReset && existingMember.email) {
             try {
-              await sendPasswordResetEmail(auth, existingMember.email.trim());
+              applyPreferredAuthLanguage();
+              await sendPasswordResetEmail(auth, normalizeLoginEmail(existingMember.email));
               passwordResetSent = true;
             } catch (resetErr) {
               console.warn('Optional password reset email failed after member assignment:', resetErr);
@@ -5838,10 +5932,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             throw new Error('العضو المطلوب غير موجود.');
           }
           const member = memberSnap.data() as UserProfile;
-          const cleanEmail = (member.email || '').trim();
+          const cleanEmail = normalizeLoginEmail(member.email);
           if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
             throw new Error('لا يملك هذا العضو بريداً إلكترونياً صالحاً لاستلام رابط إعادة التعيين.');
           }
+          applyPreferredAuthLanguage();
           await sendPasswordResetEmail(auth, cleanEmail);
           return { email: cleanEmail };
         }
@@ -5877,6 +5972,152 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           new Date(a.effectiveAt || a.createdAt).getTime()
       );
       return records;
+    };
+
+  /**
+   * Strictly READ-ONLY Super Admin UID Binding Diagnostic Inspector.
+   * Exclusive to verified `amoal2030@gmail.com`. Queries only targeted documents
+   * (never exposes unrelated employees and never performs any Firestore or Auth write).
+   */
+  const inspectEmployeeUidBindingDiagnostic: AuthContextType['inspectEmployeeUidBindingDiagnostic'] =
+    async (input) => {
+      const actor = assertAuthorizedSuperAdmin();
+      await actor.getIdToken();
+
+      const cleanTargetAuthUid = (input.targetAuthUid || '').trim();
+      const cleanLegacyDocId = (input.legacyDocId || '').trim();
+      const cleanEmailInput = normalizeEmail(input.email);
+
+      const readUserDoc = async (uid: string): Promise<RawDiagnosticUserDoc | null> => {
+        if (!uid) return null;
+        const ref = doc(db, 'users', uid);
+        const snap = await getDocFromServer(ref).catch(() => getDoc(ref));
+        if (!snap.exists()) return null;
+        return {
+          docId: snap.id,
+          data: snap.data() as UserProfile,
+        };
+      };
+
+      const [targetAuthUidDoc, legacyDoc] = await Promise.all([
+        readUserDoc(cleanTargetAuthUid),
+        readUserDoc(cleanLegacyDocId),
+      ]);
+
+      const resolvedEmail = normalizeEmail(
+        cleanEmailInput || legacyDoc?.data.email || targetAuthUidDoc?.data.email || ''
+      );
+
+      // Targeted read-only email & uid field queries (strictly filtered to the target identity)
+      const emailMatchedDocs: RawDiagnosticUserDoc[] = [];
+      if (resolvedEmail) {
+        const emailQ = query(collection(db, 'users'), where('email', '==', resolvedEmail));
+        const emailSnap = await getDocsFromServer(emailQ).catch(() => getDocs(emailQ));
+        emailSnap.forEach((d) => {
+          emailMatchedDocs.push({ docId: d.id, data: d.data() as UserProfile });
+        });
+      }
+
+      const uidFieldMatchedDocs: RawDiagnosticUserDoc[] = [];
+      const seenUidDocIds = new Set<string>();
+      for (const candidateUid of Array.from(new Set([cleanTargetAuthUid, cleanLegacyDocId])).filter(Boolean)) {
+        const uidQ = query(collection(db, 'users'), where('uid', '==', candidateUid));
+        const uidSnap = await getDocsFromServer(uidQ).catch(() => getDocs(uidQ));
+        uidSnap.forEach((d) => {
+          if (!seenUidDocIds.has(d.id)) {
+            seenUidDocIds.add(d.id);
+            uidFieldMatchedDocs.push({ docId: d.id, data: d.data() as UserProfile });
+          }
+        });
+      }
+
+      const targetOrgId = legacyDoc?.data.orgId || targetAuthUidDoc?.data.orgId || '';
+      let orgData: Organization | null = null;
+      const orgBranches: Branch[] = [];
+      if (targetOrgId) {
+        const orgRef = doc(db, 'organizations', targetOrgId);
+        const orgSnap = await getDocFromServer(orgRef).catch(() => getDoc(orgRef));
+        if (orgSnap.exists()) {
+          orgData = { ...(orgSnap.data() as Organization), id: orgSnap.id };
+        }
+        const branchQ = query(collection(db, 'branches'), where('orgId', '==', targetOrgId));
+        const branchSnap = await getDocsFromServer(branchQ).catch(() => getDocs(branchQ));
+        branchSnap.forEach((b) => orgBranches.push({ ...(b.data() as Branch), id: b.id }));
+      }
+
+      // Safe read-only probes for historical collections (gracefully records rule-restricted collections)
+      const probeCollection = async (
+        colName: DiagnosticCollectionProbe['collection'],
+        qBuilder: () => ReturnType<typeof query>
+      ): Promise<DiagnosticCollectionProbe> => {
+        try {
+          const snap = await getDocsFromServer(qBuilder()).catch((err) => {
+            if (isPermissionDeniedError(err)) throw err;
+            return getDocs(qBuilder());
+          });
+          return {
+            collection: colName,
+            status: 'readable',
+            matchedCount: snap.size,
+            note: `تم الفحص للقراءة فقط: ${snap.size} سجل مرتبط بالمعرّف القديم (${cleanLegacyDocId}).`,
+          };
+        } catch (err: any) {
+          if (isPermissionDeniedError(err)) {
+            return {
+              collection: colName,
+              status: 'restricted_by_rules_in_client_sdk',
+              matchedCount: null,
+              note: 'القراءة مقيّدة بـ firestore.rules لحساب المتصفح (عزل بيانات المؤسسة) — السجلات التاريخية تبقى محفوظة ولن تُمس.',
+            };
+          }
+          return {
+            collection: colName,
+            status: 'error',
+            matchedCount: null,
+            note: `تعذر الفحص للقراءة فقط: ${err?.message || 'خطأ غير متوقع'}`,
+          };
+        }
+      };
+
+      const historicalCollectionProbes: DiagnosticCollectionProbe[] = await Promise.all([
+        probeCollection('platformAuditLogs', () =>
+          query(collection(db, 'platformAuditLogs'), where('targetId', '==', cleanLegacyDocId))
+        ),
+        probeCollection('memberOrgHistory', () =>
+          query(collection(db, 'memberOrgHistory'), where('uid', '==', cleanLegacyDocId))
+        ),
+        probeCollection('auditLogs', () =>
+          query(collection(db, 'auditLogs'), where('actorId', '==', cleanLegacyDocId))
+        ),
+        probeCollection('notifications', () =>
+          query(collection(db, 'notifications'), where('actorUid', '==', cleanLegacyDocId))
+        ),
+        probeCollection('closings', () =>
+          query(collection(db, 'closings'), where('employeeId', '==', cleanLegacyDocId))
+        ),
+        probeCollection('purchases', () =>
+          query(collection(db, 'purchases'), where('createdBy', '==', cleanLegacyDocId))
+        ),
+      ]);
+
+      return buildEmployeeUidDiagnosticReport({
+        actor: {
+          uid: actor.uid,
+          email: actor.email,
+          emailVerified: actor.emailVerified,
+          displayName: actor.displayName,
+        },
+        targetAuthUid: cleanTargetAuthUid,
+        legacyDocId: cleanLegacyDocId,
+        email: resolvedEmail,
+        targetAuthUidDoc,
+        legacyDoc,
+        emailMatchedDocs,
+        uidFieldMatchedDocs,
+        org: orgData,
+        branches: orgBranches,
+        historicalCollectionProbes,
+      });
     };
 
   const logout = async () => {
@@ -5987,6 +6228,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         sendSuperAdminMemberPasswordReset,
         loadSuperAdminReleasedMembers,
         loadSuperAdminMemberOrgHistory,
+        inspectEmployeeUidBindingDiagnostic,
         upsertSuperAdminManagerInvite,
         cancelSuperAdminManagerInvite,
         createSuperAdminBranch,

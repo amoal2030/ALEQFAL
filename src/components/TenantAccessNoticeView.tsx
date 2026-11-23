@@ -68,7 +68,13 @@ export const TenantAccessNoticeView: React.FC = () => {
         description = t('subAccessEmailUnverified');
         break;
       case 'missing_employee_profile':
+        title = t('subAccessMissingEmployeeTitle');
         description = t('subAccessMissingEmployee');
+        showAuthSucceededNotice = true;
+        break;
+      case 'profile_uid_mismatch':
+        title = t('subAccessProfileUidMismatchTitle');
+        description = t('subAccessProfileUidMismatchDesc');
         showAuthSucceededNotice = true;
         break;
       case 'account_archived':
@@ -99,7 +105,9 @@ export const TenantAccessNoticeView: React.FC = () => {
   }
 
   const supportMessage = encodeURIComponent(
-    `${title}\nEmail: ${currentUser?.email || inviteBlockInfo?.email || '—'}`
+    `${title}\nEmail: ${currentUser?.email || inviteBlockInfo?.email || '—'}${
+      currentUser?.uid ? `\nUID: ${currentUser.uid}` : ''
+    }`
   );
   const supportUrl = `${SUBSCRIPTION_WHATSAPP_BASE_URL}?text=${supportMessage}`;
 
@@ -213,6 +221,21 @@ export const TenantAccessNoticeView: React.FC = () => {
               {currentUser?.email && (
                 <div className="pt-1 text-xs font-mono text-slate-500 dark:text-slate-400" dir="ltr">
                   {currentUser.email}
+                </div>
+              )}
+              {(accessErrorInfo?.reason === 'missing_employee_profile' ||
+                accessErrorInfo?.reason === 'profile_uid_mismatch') &&
+                currentUser?.uid && (
+                <div className="pt-2 space-y-1">
+                  <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                    {t('subAccessMissingEmployeeUidHint')}
+                  </div>
+                  <div
+                    className="px-2.5 py-1.5 rounded-lg bg-[#F5F8FF] dark:bg-[#0E203A] border border-[#DCE6FA] dark:border-[#1F3B66] text-[11px] font-mono text-[#0B1B32] dark:text-slate-200 select-all break-all"
+                    dir="ltr"
+                  >
+                    {currentUser.uid}
+                  </div>
                 </div>
               )}
             </div>

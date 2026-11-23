@@ -79,13 +79,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
     !isManager &&
     (userProfile?.role === 'supervisor' || userProfile?.role === 'branch_manager') &&
     effectivePerms.canManagePurchases;
-  const canSupervisorManageSuppliers =
+  const canStaffCreateSuppliers =
     !isManager &&
-    userProfile?.role === 'supervisor' &&
+    (userProfile?.role === 'supervisor' || userProfile?.role === 'branch_manager') &&
     effectivePerms.canCreateSuppliers;
   const hasStaffExtraTabs =
     canStaffManagePurchases ||
-    canSupervisorManageSuppliers ||
+    canStaffCreateSuppliers ||
     canSupervisorReviewClosings ||
     canSupervisorViewReports;
 
@@ -105,7 +105,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
   useEffect(() => {
     if (staffTab === 'purchases' && !canStaffManagePurchases) {
       setStaffTab('workspace');
-    } else if (staffTab === 'suppliers' && !canSupervisorManageSuppliers) {
+    } else if (staffTab === 'suppliers' && !canStaffCreateSuppliers) {
       setStaffTab('workspace');
     } else if (staffTab === 'closings' && !canSupervisorReviewClosings) {
       setStaffTab('workspace');
@@ -115,7 +115,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
   }, [
     staffTab,
     canStaffManagePurchases,
-    canSupervisorManageSuppliers,
+    canStaffCreateSuppliers,
     canSupervisorReviewClosings,
     canSupervisorViewReports,
   ]);
@@ -487,7 +487,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
                 </button>
               )}
 
-              {canSupervisorManageSuppliers && (
+              {canStaffCreateSuppliers && (
                 <button
                   type="button"
                   onClick={() => setStaffTab('suppliers')}
@@ -606,10 +606,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
               <PurchaseEntryView
                 initialBranchId={purchaseNavFocus?.branchId}
                 onOpenSuppliers={
-                  canSupervisorManageSuppliers ? () => setStaffTab('suppliers') : undefined
+                  canStaffCreateSuppliers ? () => setStaffTab('suppliers') : undefined
                 }
               />
-            ) : staffTab === 'suppliers' && canSupervisorManageSuppliers ? (
+            ) : staffTab === 'suppliers' && canStaffCreateSuppliers ? (
               <SuppliersManager />
             ) : staffTab === 'closings' && canSupervisorReviewClosings ? (
               <ClosingsReview />

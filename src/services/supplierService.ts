@@ -79,6 +79,7 @@ export interface PreparedDeleteSupplier {
 }
 
 const MAX_OPENING_BALANCE = 1_000_000_000_000;
+const INVERTED_TIME_MAX_MS = 9_999_999_999_999;
 
 function generateSafeFirestoreId(prefix: string): string {
   const ts = Date.now().toString(36);
@@ -87,6 +88,35 @@ function generateSafeFirestoreId(prefix: string): string {
       ? crypto.randomUUID().replace(/-/g, '').slice(0, 10)
       : Math.random().toString(36).slice(2, 12);
   return `${prefix}_${ts}_${rand}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
+}
+
+/**
+ * Generates a Firestore-safe supplier ID embedding the inverted base36 timestamp
+ * (`sup_<invBase36>_<rand>`) so its deterministic `SUPPLIER_ADDED` notification ID
+ * (`ntf_<invBase36>_<rand>_sup_add`) sorts newest-first under `orderBy(documentId(), 'asc')`.
+ */
+export function generateSortableSupplierId(nowIso?: string): string {
+  const parsedMs = nowIso ? Date.parse(nowIso) : Date.now();
+  const safeMs =
+    Number.isFinite(parsedMs) && parsedMs > 0 && parsedMs < INVERTED_TIME_MAX_MS
+      ? parsedMs
+      : Date.now();
+  const invBase36 = Math.max(0, INVERTED_TIME_MAX_MS - Math.floor(safeMs))
+    .toString(36)
+    .padStart(9, '0');
+  const rand =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 10)
+      : Math.random().toString(36).slice(2, 12);
+  return `sup_${invBase36}_${rand}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 100);
+}
+
+/**
+ * Produces the canonical, strictly 1-to-1 deterministic Firestore document ID for a
+ * `SUPPLIER_CREATED` audit log, matching `expectedSupplierCreatedAuditLogId()` in `firestore.rules`.
+ */
+export function buildSupplierCreatedAuditLogId(supplierId: string): string {
+  return `log_sup_created_${(supplierId || '').trim()}`;
 }
 
 /**
@@ -324,7 +354,8 @@ export function prepareCreateSupplier(params: {
     return {
       ok: false,
       code: 'permission_denied',
-      error: 'لا تملك صلاحية إضافة مورد جديد. هذه الصلاحية متاحة لمدير المؤسسة أو المسؤول المخول فقط.',
+      error:
+        'لا تملك صلاحية إضافة مورد جديد. هذه الصلاحية متاحة لمدير المؤسسة أو المسؤول أو مسؤول الفرع المخوّل بإضافة الموردين فقط.',
     };
   }
 
@@ -347,7 +378,14 @@ export function prepareCreateSupplier(params: {
   }
 
   const nowIso = params.nowIso || new Date().toISOString();
-  const supplierId = params.supplierId || generateSafeFirestoreId('sup');
+  const supplierId = (params.supplierId || generateSortableSupplierId(nowIso)).trim();
+  if (!/^[a-zA-Z0-9_-]{1,100}$/.test(supplierId)) {
+    return {
+      ok: false,
+      code: 'invalid_supplier_id',
+      error: 'معرّف المورد غير صالح.',
+    };
+  }
   const actorName = resolveActorName(userProfile);
 
   const supplier: Supplier = {
@@ -371,7 +409,7 @@ export function prepareCreateSupplier(params: {
   };
 
   const auditLog: AuditLog = {
-    id: generateSafeFirestoreId('log_sup_add'),
+    id: buildSupplierCreatedAuditLogId(supplierId),
     orgId,
     actorId: userProfile.uid,
     actorName,
@@ -726,9 +764,9 @@ function mapSupplierFirestoreError(err: unknown, operation: OperationType, path:
 }
 
 /**
- * Fetches all organization suppliers for the Supplier Management directory.
- * Allowed ONLY for active Organization Manager OR Supervisor granted `canManageSuppliers`.
- * Branch Managers and Employees are strictly denied from supplier management views.
+ * Fetches organization suppliers for the Supplier Management / Creation directory.
+ * Allowed ONLY for active Organization Manager, Supervisor granted `canManageSuppliers`,
+ * OR Branch Manager explicitly granted `canCreateSuppliers`.
  */
 export async function fetchOrgSuppliersForManagement(
   userProfile: UserProfile | null | undefined,
@@ -740,7 +778,9 @@ export async function fetchOrgSuppliersForManagement(
 
   const effective = resolveEffectivePermissions(userProfile);
   if (!effective.canCreateSuppliers) {
-    throw new Error('إدارة الموردين متاحة لمدير المؤسسة أو المسؤول المخول بصلاحية الموردين فقط.');
+    throw new Error(
+      'الوصول إلى شاشة إضافة الموردين متاح لمدير المؤسسة أو المسؤول أو مسؤول الفرع المخوّل بصلاحية إضافة الموردين فقط.'
+    );
   }
 
   try {

@@ -1021,10 +1021,11 @@ async function runPhase44Step2EmulatorTests() {
       actorRole: 'branch_manager',
       createdAt: '2026-11-16T11:35:00Z',
     });
+    const supNotifSupplierId = 'sup_by_sup_yes_notif';
     const supNotif = buildSupplierAddedNotification({
       orgId: 'org_a',
-      supplierId: 'sup_by_sup_yes',
-      supplierName: 'مورد المسؤول المخول',
+      supplierId: supNotifSupplierId,
+      supplierName: 'مورد المسؤول المخول للإشعار',
       actorUid: 'uid_sup_with_sup_perm',
       actorName: 'مسؤول بصلاحية موردين ومشتريات',
       actorRole: 'supervisor',
@@ -1032,7 +1033,18 @@ async function runPhase44Step2EmulatorTests() {
     });
 
     await assertSucceeds(bmA1Db.doc(`notifications/${purNotif.id}`).set(purNotif));
-    await assertSucceeds(supYesDb.doc(`notifications/${supNotif.id}`).set(supNotif));
+    const supNotifBatch = supYesDb.batch();
+    supNotifBatch.set(supYesDb.doc(`suppliers/${supNotifSupplierId}`), {
+      id: supNotifSupplierId,
+      orgId: 'org_a',
+      name: 'مورد المسؤول المخول للإشعار',
+      isActive: true,
+      createdBy: 'uid_sup_with_sup_perm',
+      createdAt: '2026-11-16T11:36:00Z',
+      updatedAt: '2026-11-16T11:36:00Z',
+    });
+    supNotifBatch.set(supYesDb.doc(`notifications/${supNotif.id}`), supNotif);
+    await assertSucceeds(supNotifBatch.commit());
     await assertSucceeds(
       supYesDb
         .collection('notifications')

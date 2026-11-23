@@ -17,18 +17,30 @@ import {
   classifyAuthSignInError,
   detectAuthProfileEmailMismatch,
   detectProfileEmailDiagnostics,
+  detectProfileUidBindingDiagnostics,
+  evaluatePasswordResetCooldown,
   normalizeLoginEmail,
+  PASSWORD_RESET_COOLDOWN_MS,
   prepareLoginCredentials,
+  syncAuthLanguageCode,
+  validateLoadedUserProfileBinding,
   validatePasswordConfirmation,
 } from '../utils/authCredentials';
 import {
   canRenderTenantDashboard,
+  evaluateFirestoreErrorCategory,
   resolveProfiledUserAccess,
+  resolveUnprofiledUserAccess,
 } from '../utils/tenantAccess';
 import {
+  buildSuperAdminAssignReleasedMemberBundle,
   buildSuperAdminMemberCreateBundle,
   validateSuperAdminMemberCreateInput,
 } from '../utils/superAdminGovernance';
+import {
+  canUserAccessBranch,
+  resolvePrimaryAssignedBranchId,
+} from '../utils/permissions';
 import { isVerifiedSuperAdmin, SUPER_ADMIN_EMAIL } from '../utils/superAdmin';
 import { translations } from '../i18n/translations';
 import { Branch, Organization, UserProfile } from '../types';
@@ -408,6 +420,7 @@ test('13. Super Admin (amoal2030@gmail.com) and existing active manager access r
   const mgrRes = resolveProfiledUserAccess({
     profile: activeManagerProfile,
     org: activeOrg,
+    authUid: activeManagerProfile.uid,
     now: NOW,
   });
   assert.equal(mgrRes.status, 'active_tenant');
@@ -423,6 +436,402 @@ test('13. Super Admin (amoal2030@gmail.com) and existing active manager access r
       true
     );
   }
+});
+
+// ============================================================================
+// Phase 3 Mandatory Scenarios (Employee UID Binding, Error Separation, Reset UX)
+// ============================================================================
+
+const orgB: Organization = {
+  ...activeOrg,
+  id: 'org_other_tenant_b',
+  name: 'مؤسسة أخرى مستقلة',
+  ownerId: 'mgr_uid_b',
+  ownerEmail: 'owner.b@example.com',
+};
+
+const sahabBranch: Branch = {
+  id: 'br_sahab_1_3',
+  orgId: activeOrg.id,
+  name: 'سحاب 1 (3)',
+  code: 'SHB-1',
+  isActive: true,
+  paymentStatus: 'paid',
+  lifecycleStatus: 'active',
+  createdAt: '2026-01-01T00:00:00.000Z',
+};
+
+const otherBranchSameOrg: Branch = {
+  id: 'br_other_2',
+  orgId: activeOrg.id,
+  name: 'فرع الشمال',
+  code: 'NRT-2',
+  isActive: true,
+  paymentStatus: 'paid',
+  lifecycleStatus: 'active',
+  createdAt: '2026-01-01T00:00:00.000Z',
+};
+
+const orgBBranch: Branch = {
+  id: 'br_org_b_1',
+  orgId: orgB.id,
+  name: 'فرع المؤسسة ب',
+  code: 'OB-1',
+  isActive: true,
+  paymentStatus: 'paid',
+  lifecycleStatus: 'active',
+  createdAt: '2026-01-01T00:00:00.000Z',
+};
+
+// Local safe mock fixture replicating the structure of mo100100050@gmail.com (NO real password)
+const localMoBranchManagerFixture: UserProfile = {
+  uid: 'mock_uid_mo100100050',
+  orgId: activeOrg.id,
+  email: 'mo100100050@gmail.com',
+  displayName: 'محمد فيصل',
+  role: 'branch_manager',
+  branchId: sahabBranch.id,
+  branchIds: [sahabBranch.id],
+  branchName: sahabBranch.name,
+  isActive: true,
+  isArchived: false,
+  membershipStatus: 'active',
+  permissions: {
+    canCreateClosing: true,
+    canViewAllClosings: false,
+    canApproveClosings: false,
+    canManageBranches: false,
+    canManageEmployees: false,
+    canExportReports: false,
+  },
+  createdAt: '2026-02-01T00:00:00.000Z',
+};
+
+test('14. Safe local fixture (mo100100050@gmail.com): matching Auth UID & users/{uid} doc resolves active_tenant with exact role & branch', () => {
+  const binding = validateLoadedUserProfileBinding({
+    authUid: localMoBranchManagerFixture.uid,
+    docId: localMoBranchManagerFixture.uid,
+    docExists: true,
+    rawProfile: localMoBranchManagerFixture,
+  });
+  assert.equal(binding.status, 'valid');
+  if (binding.status !== 'valid') return;
+
+  const access = resolveProfiledUserAccess({
+    profile: binding.profile,
+    org: activeOrg,
+    authUid: localMoBranchManagerFixture.uid,
+    now: NOW,
+  });
+  assert.equal(access.status, 'active_tenant');
+  if (access.status === 'active_tenant') {
+    assert.equal(access.profile.role, 'branch_manager');
+    assert.equal(access.profile.isActive, true);
+    assert.equal(resolvePrimaryAssignedBranchId(access.profile), sahabBranch.id);
+    assert.equal(canUserAccessBranch(access.profile, sahabBranch.id), true);
+    assert.equal(canUserAccessBranch(access.profile, otherBranchSameOrg.id), false);
+    assert.equal(
+      canRenderTenantDashboard({
+        tenantStatus: 'active_tenant',
+        hasAuthUser: true,
+        userProfile: access.profile,
+        currentOrg: access.org,
+        subscriptionEvaluation: access.subscriptionEvaluation,
+      }),
+      true
+    );
+  }
+});
+
+test('15. Existing employee record with mismatched Auth UID / docId is strictly blocked and NEVER auto-linked by email', () => {
+  // Case A: Auth signed in as a different UID whose users/{authUid} doc does not exist (even though an active doc exists under another UID for the same email)
+  const missingForNewUid = validateLoadedUserProfileBinding({
+    authUid: 'mock_uid_recreated_auth',
+    docId: 'mock_uid_recreated_auth',
+    docExists: false,
+    rawProfile: null,
+  });
+  assert.deepEqual(missingForNewUid, {
+    status: 'missing_profile',
+    reason: 'missing_employee_profile',
+  });
+
+  const unprofiled = resolveUnprofiledUserAccess({
+    uid: 'mock_uid_recreated_auth',
+    isGoogleUser: false,
+    isVerifiedEmail: false,
+    emailLower: 'mo100100050@gmail.com',
+    invite: null,
+    inviteOrg: null,
+    now: NOW,
+  });
+  assert.deepEqual(unprofiled, {
+    status: 'access_error',
+    errorReason: 'missing_employee_profile',
+  });
+
+  // Case B: Document under users/{authUid} contains a different stored uid field
+  const corruptedPayload = validateLoadedUserProfileBinding({
+    authUid: 'mock_uid_recreated_auth',
+    docId: 'mock_uid_recreated_auth',
+    docExists: true,
+    rawProfile: {
+      ...localMoBranchManagerFixture,
+      uid: 'mock_uid_mo100100050',
+    },
+  });
+  assert.equal(corruptedPayload.status, 'uid_mismatch');
+  if (corruptedPayload.status === 'uid_mismatch') {
+    assert.equal(corruptedPayload.reason, 'profile_uid_mismatch');
+  }
+
+  // Case C: resolveProfiledUserAccess also independently rejects authUid !== profile.uid
+  const directAccess = resolveProfiledUserAccess({
+    profile: localMoBranchManagerFixture,
+    org: activeOrg,
+    authUid: 'mock_uid_recreated_auth',
+    now: NOW,
+  });
+  assert.deepEqual(directAccess, {
+    status: 'access_error',
+    errorReason: 'profile_uid_mismatch',
+  });
+
+  // Case D: Read-only diagnostic detects docId !== stored uid without mutating records
+  const rawDocs = [
+    {
+      docId: 'legacy_doc_id_xyz',
+      uid: 'mock_uid_mo100100050',
+      displayName: 'محمد فيصل',
+      email: 'mo100100050@gmail.com',
+      orgId: activeOrg.id,
+    },
+    {
+      docId: 'missing_uid_doc',
+      uid: '',
+      displayName: 'موظف قديم',
+      email: 'old@example.com',
+      orgId: activeOrg.id,
+    },
+    {
+      docId: localMoBranchManagerFixture.uid,
+      uid: localMoBranchManagerFixture.uid,
+      displayName: localMoBranchManagerFixture.displayName,
+      email: localMoBranchManagerFixture.email,
+      orgId: activeOrg.id,
+    },
+  ];
+  const diag = detectProfileUidBindingDiagnostics(rawDocs);
+  assert.equal(diag.length, 2);
+  assert.equal(diag[0].issueType, 'doc_id_uid_mismatch');
+  assert.equal(diag[0].docId, 'legacy_doc_id_xyz');
+  assert.equal(diag[0].storedUid, 'mock_uid_mo100100050');
+  assert.equal(diag[1].issueType, 'missing_uid_field');
+  // Confirm zero mutation
+  assert.equal(rawDocs[0].docId, 'legacy_doc_id_xyz');
+  assert.equal(rawDocs[0].uid, 'mock_uid_mo100100050');
+});
+
+test('16. Sign-in and password reset normalize uppercase & whitespace-padded email while preserving password verbatim', () => {
+  const creds = prepareLoginCredentials('  MO100100050@GMAIL.COM  ', '  Test#Pass 99  ');
+  assert.equal(creds.email, 'mo100100050@gmail.com');
+  assert.equal(creds.password, '  Test#Pass 99  ');
+  assert.equal(normalizeLoginEmail('\tMO100100050@Gmail.Com \n'), 'mo100100050@gmail.com');
+});
+
+test('17. Firestore permission-denied NEVER masquerades as missing_employee_profile', () => {
+  const permErr = { code: 'permission-denied', message: 'Missing or insufficient permissions.' };
+  assert.equal(evaluateFirestoreErrorCategory(permErr), 'permission_denied');
+
+  const bindingRes = validateLoadedUserProfileBinding({
+    authUid: localMoBranchManagerFixture.uid,
+    docId: localMoBranchManagerFixture.uid,
+    docExists: false,
+    rawProfile: null,
+    readError: permErr,
+  });
+  assert.deepEqual(bindingRes, {
+    status: 'read_error',
+    reason: 'permission_denied',
+  });
+  assert.notEqual(bindingRes.reason, 'missing_employee_profile');
+});
+
+test('18. Network / offline Firestore failure NEVER masquerades as missing_employee_profile', () => {
+  const offlineErrors = [
+    { code: 'unavailable', message: 'Failed to get document because the client is offline.' },
+    { code: 'deadline-exceeded', message: 'Could not reach Cloud Firestore backend.' },
+    new Error('Network request failed'),
+  ];
+  for (const err of offlineErrors) {
+    assert.equal(evaluateFirestoreErrorCategory(err), 'network_error');
+    const bindingRes = validateLoadedUserProfileBinding({
+      authUid: localMoBranchManagerFixture.uid,
+      docId: localMoBranchManagerFixture.uid,
+      docExists: false,
+      rawProfile: null,
+      readError: err,
+    });
+    assert.deepEqual(bindingRes, {
+      status: 'read_error',
+      reason: 'network_error',
+    });
+    assert.notEqual(bindingRes.reason, 'missing_employee_profile');
+  }
+});
+
+test('19. Released employee re-assigned to Org B keeps same Auth UID and has zero access to Org A', () => {
+  const releasedMember: UserProfile = {
+    ...localMoBranchManagerFixture,
+    orgId: '',
+    branchId: undefined,
+    branchIds: undefined,
+    branchName: undefined,
+    isActive: false,
+    isArchived: false,
+    membershipStatus: 'released',
+    releasedAt: NOW.toISOString(),
+    releasedFromOrgId: activeOrg.id,
+    releasedFromOrgName: activeOrg.name,
+  };
+
+  // While released -> blocked with membership_released
+  const whileReleased = resolveProfiledUserAccess({
+    profile: releasedMember,
+    org: activeOrg,
+    authUid: releasedMember.uid,
+    now: NOW,
+  });
+  assert.deepEqual(whileReleased, {
+    status: 'access_error',
+    errorReason: 'membership_released',
+  });
+
+  // After Super Admin re-assigns same UID to Org B
+  const { userPatch } = buildSuperAdminAssignReleasedMemberBundle({
+    actor: {
+      uid: 'sa_uid',
+      email: SUPER_ADMIN_EMAIL,
+      emailVerified: true,
+      displayName: 'Super Admin',
+    },
+    existingMember: releasedMember,
+    targetOrg: orgB,
+    targetOrgBranches: [orgBBranch],
+    role: 'branch_manager',
+    branchId: orgBBranch.id,
+    reason: 'إعادة ربط الموظف بمؤسسة جديدة بعد التحرير النهائي',
+    now: NOW,
+    deleteFieldSentinel: '__DELETE__',
+  });
+
+  const reassignedProfile: UserProfile = {
+    ...releasedMember,
+    orgId: userPatch.orgId as string,
+    role: userPatch.role as UserProfile['role'],
+    branchId: userPatch.branchId as string | undefined,
+    branchIds: userPatch.branchIds as string[] | undefined,
+    branchName: userPatch.branchName as string | undefined,
+    isActive: userPatch.isActive as boolean,
+    isArchived: userPatch.isArchived as boolean | undefined,
+    membershipStatus: userPatch.membershipStatus as UserProfile['membershipStatus'],
+    permissions: userPatch.permissions as UserProfile['permissions'],
+  };
+
+  // Same UID must NOT access previous Org A
+  const attemptOrgA = resolveProfiledUserAccess({
+    profile: reassignedProfile,
+    org: activeOrg,
+    authUid: releasedMember.uid,
+    now: NOW,
+  });
+  assert.deepEqual(attemptOrgA, {
+    status: 'access_error',
+    errorReason: 'permission_denied',
+  });
+
+  // Same UID succeeds on new Org B with assigned Org B branch only
+  const attemptOrgB = resolveProfiledUserAccess({
+    profile: reassignedProfile,
+    org: orgB,
+    authUid: releasedMember.uid,
+    now: NOW,
+  });
+  assert.equal(attemptOrgB.status, 'active_tenant');
+  if (attemptOrgB.status === 'active_tenant') {
+    assert.equal(attemptOrgB.org.id, orgB.id);
+    assert.equal(resolvePrimaryAssignedBranchId(attemptOrgB.profile), orgBBranch.id);
+    assert.equal(canUserAccessBranch(attemptOrgB.profile, orgBBranch.id), true);
+    assert.equal(canUserAccessBranch(attemptOrgB.profile, sahabBranch.id), false);
+  }
+});
+
+test('20. Password reset syncs Firebase Auth languageCode (ar/en/ur) and enforces duplicate-request cooldown', () => {
+  const mockAuth: { languageCode?: string | null } = { languageCode: null };
+  assert.equal(syncAuthLanguageCode(mockAuth, 'ar'), 'ar');
+  assert.equal(mockAuth.languageCode, 'ar');
+  assert.equal(syncAuthLanguageCode(mockAuth, 'en'), 'en');
+  assert.equal(mockAuth.languageCode, 'en');
+  assert.equal(syncAuthLanguageCode(mockAuth, 'ur'), 'ur');
+  assert.equal(mockAuth.languageCode, 'ur');
+
+  const t0 = 1_700_000_000_000;
+  assert.deepEqual(evaluatePasswordResetCooldown(null, t0), { canSend: true, remainingSeconds: 0 });
+  const blocked = evaluatePasswordResetCooldown(t0, t0 + 10_000);
+  assert.equal(blocked.canSend, false);
+  assert.equal(blocked.remainingSeconds, 35);
+  const allowedAgain = evaluatePasswordResetCooldown(t0, t0 + PASSWORD_RESET_COOLDOWN_MS);
+  assert.deepEqual(allowedAgain, { canSend: true, remainingSeconds: 0 });
+});
+
+test('21. Expired and already-used password reset action codes map to clear trilingual messages', () => {
+  const expired = classifyAuthSignInError({ code: 'auth/expired-action-code' });
+  const invalid = classifyAuthSignInError({ code: 'auth/invalid-action-code' });
+  assert.equal(expired.translationKey, 'authErrExpiredActionCode');
+  assert.equal(expired.isResetLinkExpiredOrUsed, true);
+  assert.equal(invalid.translationKey, 'authErrInvalidActionCode');
+  assert.equal(invalid.isResetLinkExpiredOrUsed, true);
+
+  const resetKeys = [
+    'authErrExpiredActionCode',
+    'authErrInvalidActionCode',
+    'authForgotLinkGuidance',
+    'authResetCooldownHint',
+    'authResetBackToLogin',
+    'subAccessProfileUidMismatchTitle',
+    'subAccessProfileUidMismatchDesc',
+  ] as const;
+
+  for (const lang of ['ar', 'en', 'ur'] as const) {
+    for (const key of resetKeys) {
+      const val = (translations[lang] as Record<string, unknown>)[key];
+      assert.equal(typeof val, 'string', `Missing ${lang}.${key}`);
+      assert.ok((val as string).trim().length > 5, `Empty ${lang}.${key}`);
+    }
+  }
+});
+
+test('22. Cross-organization isolation: active employee of Org A is strictly denied access to Org B', () => {
+  const crossOrgAttempt = resolveProfiledUserAccess({
+    profile: localMoBranchManagerFixture,
+    org: orgB,
+    authUid: localMoBranchManagerFixture.uid,
+    now: NOW,
+  });
+  assert.deepEqual(crossOrgAttempt, {
+    status: 'access_error',
+    errorReason: 'permission_denied',
+  });
+  assert.equal(
+    canRenderTenantDashboard({
+      tenantStatus: 'active_tenant',
+      hasAuthUser: true,
+      userProfile: localMoBranchManagerFixture,
+      currentOrg: orgB,
+      subscriptionEvaluation: null,
+    }),
+    false
+  );
 });
 
 console.log(`\n📊 Results: ${passed} passed, ${failed} failed\n`);

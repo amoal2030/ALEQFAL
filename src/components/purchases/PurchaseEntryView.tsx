@@ -826,7 +826,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
               {!suppliersLoading && suppliers.length === 0 && !suppliersError && (
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
                   <p className="text-[11px] text-amber-700 dark:text-amber-400">
-                    {userProfile?.role === 'branch_manager'
+                    {userProfile?.role === 'branch_manager' && !canCreateSuppliers
                       ? tr(
                           'لا يوجد موردون نشطون مسجلون. يرجى طلب تسجيل الموردين من مدير المؤسسة أو المسؤول المخول.',
                           'No active suppliers found. Please ask the Organization Manager or an authorized supervisor to register suppliers.',
@@ -849,14 +849,33 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                   )}
                 </div>
               )}
-              {userProfile?.role === 'branch_manager' && suppliers.length > 0 && (
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  {tr(
-                    'يقتصر الاختيار على الموردين النشطين المسجلين مسبقاً في المؤسسة.',
-                    'Selection is restricted to active pre-registered suppliers in your organization.',
-                    'انتخاب صرف ادارے میں پہلے سے درج فعال سپلائرز تک محدود ہے۔'
+              {suppliers.length > 0 && (userProfile?.role === 'branch_manager' || (canCreateSuppliers && onOpenSuppliers)) && (
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                  {userProfile?.role === 'branch_manager' && (
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {canCreateSuppliers
+                        ? tr(
+                            'يمكنك اختيار مورد نشط مسجل مسبقاً أو إضافة مورد جديد لاستخدامه في فواتير المشتريات (دون صلاحية التعديل أو الحذف).',
+                            'You can select an active registered supplier or add a new supplier for purchase invoices (create-only; no edit or delete).',
+                            'آپ پہلے سے درج فعال سپلائر منتخب کر سکتے ہیں یا خریداری انوائس کے لیے نیا سپلائر شامل کر سکتے ہیں (ترمیم یا حذف کی اجازت نہیں)۔'
+                          )
+                        : tr(
+                            'يقتصر الاختيار على الموردين النشطين المسجلين مسبقاً في المؤسسة.',
+                            'Selection is restricted to active pre-registered suppliers in your organization.',
+                            'انتخاب صرف ادارے میں پہلے سے درج فعال سپلائرز تک محدود ہے۔'
+                          )}
+                    </p>
                   )}
-                </p>
+                  {canCreateSuppliers && onOpenSuppliers && (
+                    <button
+                      type="button"
+                      onClick={onOpenSuppliers}
+                      className="text-[11px] font-bold text-[#1764FF] dark:text-[#6CA2FF] hover:underline whitespace-nowrap shrink-0"
+                    >
+                      {tr('+ إضافة مورد جديد', '+ Add New Supplier', '+ نیا سپلائر شامل کریں')}
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 

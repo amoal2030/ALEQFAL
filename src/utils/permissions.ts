@@ -27,6 +27,10 @@ export const SUPERVISOR_OPTIONAL_PERMISSION_KEYS = [
 export type SupervisorOptionalPermissionKey =
   (typeof SUPERVISOR_OPTIONAL_PERMISSION_KEYS)[number];
 
+export interface BranchManagerOptionalPermissions {
+  canCreateSuppliers?: boolean;
+}
+
 export interface EffectivePermissions extends Required<UserPermissions> {
   canAdminCorrectClosings: boolean;
   canManageOrgDrive: boolean;
@@ -139,13 +143,14 @@ export function canUserAccessBranch(
 /**
  * Builds canonical default permission map per role.
  * - manager: full org permissions
- * - supervisor: zero optional permissions enabled by default (strictly opt-in by manager)
- * - branch_manager: shift closing + purchase entry + reading pre-registered suppliers in their branch ONLY
+ * - supervisor: zero optional permissions enabled by default (strictly opt-in by manager); `canCreateSuppliers` is always cleared to `false` (supervisors use `canManageSuppliers`)
+ * - branch_manager: shift closing + purchase entry + reading pre-registered suppliers in their branch ONLY, plus independent opt-in `canCreateSuppliers` (strictly `false` by default)
  * - employee: standard shift closing creation in their assigned branch ONLY
  */
 export function buildDefaultPermissionsForRole(
   role: UserRole,
-  optionalOverrides?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>
+  optionalOverrides?: Partial<Record<SupervisorOptionalPermissionKey, boolean>>,
+  branchManagerOverrides?: BranchManagerOptionalPermissions
 ): Required<UserPermissions> {
   if (role === 'manager') {
     return {
@@ -157,6 +162,7 @@ export function buildDefaultPermissionsForRole(
       canExportReports: true,
       canManagePurchases: true,
       canManageSuppliers: true,
+      canCreateSuppliers: true,
       canViewSuppliers: true,
       canViewFinancialReports: true,
     };
@@ -174,6 +180,7 @@ export function buildDefaultPermissionsForRole(
       canExportReports: optionalOverrides?.canExportReports === true || canViewFinancialReports,
       canManagePurchases: optionalOverrides?.canManagePurchases === true,
       canManageSuppliers,
+      canCreateSuppliers: false,
       canViewSuppliers: optionalOverrides?.canViewSuppliers === true || canManageSuppliers,
       canViewFinancialReports,
     };
@@ -189,6 +196,7 @@ export function buildDefaultPermissionsForRole(
       canExportReports: false,
       canManagePurchases: true,
       canManageSuppliers: false,
+      canCreateSuppliers: branchManagerOverrides?.canCreateSuppliers === true,
       canViewSuppliers: true,
       canViewFinancialReports: false,
     };
@@ -204,6 +212,7 @@ export function buildDefaultPermissionsForRole(
     canExportReports: false,
     canManagePurchases: false,
     canManageSuppliers: false,
+    canCreateSuppliers: false,
     canViewSuppliers: false,
     canViewFinancialReports: false,
   };
@@ -304,6 +313,9 @@ export function resolveEffectivePermissions(
     if (assigned.length !== 1) {
       return denied;
     }
+    // Independent opt-in supplier creation permission ONLY; legacy/omitted defaults strictly to false.
+    // Never uses canManageSuppliers and never unlocks edit, status toggle, or delete.
+    const canBranchManagerCreateSuppliers = rawPerms.canCreateSuppliers === true;
     return {
       canCreateClosing: rawPerms.canCreateClosing !== false,
       canViewAllClosings: false,
@@ -320,8 +332,7 @@ export function resolveEffectivePermissions(
       canManageUsersAndRoles: false,
       hasOrgWideBranchScope: false,
       hasSingleBranchRestriction: true,
-      // Branch Manager selects from registered active suppliers only; cannot create, edit, toggle, or delete
-      canCreateSuppliers: false,
+      canCreateSuppliers: canBranchManagerCreateSuppliers,
       canEditSuppliers: false,
       canToggleSuppliersStatus: false,
       canDeleteSuppliers: false,

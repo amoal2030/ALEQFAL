@@ -1,4 +1,7 @@
-import { UserProfile } from '../types';
+import { SupportedLanguage, UserProfile } from '../types';
+import { evaluateFirestoreErrorCategory } from './tenantAccess';
+
+export const PASSWORD_RESET_COOLDOWN_MS = 45_000;
 
 export type AuthErrorTranslationKey =
   | 'authErrUnauthorizedDomain'
@@ -12,11 +15,14 @@ export type AuthErrorTranslationKey =
   | 'authErrWeakPassword'
   | 'authErrPopupClosed'
   | 'authErrNetwork'
+  | 'authErrExpiredActionCode'
+  | 'authErrInvalidActionCode'
   | 'authErrGeneric';
 
 export interface AuthErrorClassification {
   translationKey: AuthErrorTranslationKey;
   showCredentialGuidance: boolean;
+  isResetLinkExpiredOrUsed?: boolean;
   rawMessage?: string;
 }
 
@@ -34,6 +40,19 @@ export interface ProfileEmailDiagnosticIssue {
   storedEmail: string;
   normalizedEmail: string;
   issueType: 'non_normalized_email' | 'duplicate_normalized_email';
+}
+
+export interface ProfileDocIdUidMismatchIssue {
+  docId: string;
+  storedUid: string;
+  displayName: string;
+  email: string;
+  orgId: string;
+}
+
+export interface StrictAuthUidProfileBindingResult {
+  valid: boolean;
+  reason?: 'doc_id_mismatch' | 'stored_uid_mismatch';
 }
 
 export interface PasswordConfirmationResult {
@@ -98,6 +117,95 @@ export function assertProfileEmailImmutableOnEmployeeUpdate(
     throw new Error(
       'لا يمكن تعديل بريد تسجيل دخول الموظف في قاعدة البيانات بشكل منفصل عن Firebase Authentication؛ يتطلب تغيير البريد إجراءً مخصصاً يحدّث مصدر المصادقة وFirestore معاً.'
     );
+  }
+}
+
+/**
+ * Verifies strict binding between Firebase Auth UID and the fetched `users/{docId}` document.
+ * Never links or authorizes a user profile by email alone.
+ */
+export function validateStrictAuthUidProfileBinding(params: {
+  authUid: string;
+  docId: string;
+  storedProfileUid?: string | null;
+}): StrictAuthUidProfileBindingResult {
+  const cleanAuthUid = (params.authUid || '').trim();
+  const cleanDocId = (params.docId || '').trim();
+  const cleanStoredUid =
+    typeof params.storedProfileUid === 'string' ? params.storedProfileUid.trim() : '';
+
+  if (!cleanAuthUid || cleanDocId !== cleanAuthUid) {
+    return { valid: false, reason: 'doc_id_mismatch' };
+  }
+  if (cleanStoredUid && cleanStoredUid !== cleanAuthUid) {
+    return { valid: false, reason: 'stored_uid_mismatch' };
+  }
+  return { valid: true };
+}
+
+/**
+ * Determines whether a Firestore server read failure is a transient offline/unavailable network
+ * error where reading a populated local cache snapshot may be attempted.
+ *
+ * Security rule: permission-denied and unauthenticated errors are NEVER eligible for fallback.
+ */
+export function isRetryableServerCacheFallbackError(error: any): boolean {
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+
+  if (
+    code === 'permission-denied' ||
+    code.endsWith('/permission-denied') ||
+    code === 'unauthenticated' ||
+    code.endsWith('/unauthenticated') ||
+    message.includes('insufficient permissions') ||
+    message.includes('permission_denied') ||
+    message.includes('permission-denied')
+  ) {
+    return false;
+  }
+
+  return (
+    code === 'unavailable' ||
+    code.endsWith('/unavailable') ||
+    code === 'deadline-exceeded' ||
+    code.endsWith('/deadline-exceeded') ||
+    message.includes('client is offline') ||
+    message.includes('failed to get document because the client is offline') ||
+    message.includes('network')
+  );
+}
+
+/**
+ * Fetches a Firestore document from the server first to avoid stale cache misses
+ * (e.g., right after password reset or account switching).
+ *
+ * - On `permission-denied` / `unauthenticated`: immediately rethrows (never masks as missing doc).
+ * - On offline/unavailable server error: checks local cache only if an existing snapshot is cached;
+ *   if cache also misses, rethrows the original network error so the UI reports `network_error`
+ *   instead of falsely reporting `missing_employee_profile`.
+ */
+export async function fetchFirestoreDocWithFreshServerCheck<
+  TSnap extends { exists: () => boolean },
+>(
+  readFromServer: () => Promise<TSnap>,
+  readFallback: () => Promise<TSnap>
+): Promise<TSnap> {
+  try {
+    return await readFromServer();
+  } catch (serverErr: any) {
+    if (!isRetryableServerCacheFallbackError(serverErr)) {
+      throw serverErr;
+    }
+    try {
+      const cachedSnap = await readFallback();
+      if (cachedSnap.exists()) {
+        return cachedSnap;
+      }
+    } catch {
+      // Fall through and surface the original network/unavailable error
+    }
+    throw serverErr;
   }
 }
 
@@ -177,6 +285,174 @@ export function detectProfileEmailDiagnostics(
 }
 
 /**
+ * Read-only diagnostic scan detecting Firestore `users/{docId}` documents whose document ID
+ * does not match the stored `uid` field (which causes Auth UID lookups to miss the profile).
+ * Never mutates Firestore or Firebase Authentication.
+ */
+export function detectProfileDocIdUidMismatches(
+  users: Pick<UserProfile, 'uid' | 'firestoreDocId' | 'displayName' | 'orgId' | 'email'>[]
+): ProfileDocIdUidMismatchIssue[] {
+  const diagnostics = detectProfileUidBindingDiagnostics(
+    users.map((user) => ({
+      docId: typeof user.firestoreDocId === 'string' ? user.firestoreDocId : '',
+      uid: user.uid,
+      displayName: user.displayName,
+      email: user.email,
+      orgId: user.orgId,
+    }))
+  );
+  return diagnostics.map((item) => ({
+    docId: item.docId,
+    storedUid: item.storedUid || '(missing)',
+    displayName: item.displayName,
+    email: item.email,
+    orgId: item.orgId,
+  }));
+}
+
+export interface ProfileUidBindingDiagnosticIssue {
+  docId: string;
+  storedUid: string;
+  displayName: string;
+  email: string;
+  orgId: string;
+  issueType: 'doc_id_uid_mismatch' | 'missing_uid_field';
+}
+
+export type LoadedUserProfileBindingResult =
+  | { status: 'valid'; profile: UserProfile }
+  | { status: 'missing_profile'; reason: 'missing_employee_profile' }
+  | { status: 'uid_mismatch'; reason: 'profile_uid_mismatch' }
+  | { status: 'read_error'; reason: 'permission_denied' | 'network_error' };
+
+/**
+ * Synchronizes Firebase Auth's `languageCode` with the active UI language (`ar` | `en` | `ur`).
+ */
+export function syncAuthLanguageCode(
+  authInstance: { languageCode?: string | null } | null | undefined,
+  language: SupportedLanguage | string | null | undefined
+): SupportedLanguage {
+  const normalized: SupportedLanguage =
+    language === 'en' || language === 'ur' || language === 'ar' ? language : 'ar';
+  if (authInstance) {
+    try {
+      authInstance.languageCode = normalized;
+    } catch {
+      // Ignore read-only auth wrappers
+    }
+  }
+  return normalized;
+}
+
+/**
+ * Evaluates duplicate password-reset cooldown so users do not accidentally invalidate
+ * just-sent reset links by clicking multiple times rapidly.
+ */
+export function evaluatePasswordResetCooldown(
+  lastSentAtMs: number | null | undefined,
+  nowMs: number = Date.now()
+): { canSend: boolean; remainingSeconds: number } {
+  if (typeof lastSentAtMs !== 'number' || !Number.isFinite(lastSentAtMs)) {
+    return { canSend: true, remainingSeconds: 0 };
+  }
+  const elapsed = nowMs - lastSentAtMs;
+  if (elapsed >= PASSWORD_RESET_COOLDOWN_MS) {
+    return { canSend: true, remainingSeconds: 0 };
+  }
+  const remainingMs = Math.max(0, PASSWORD_RESET_COOLDOWN_MS - elapsed);
+  return {
+    canSend: false,
+    remainingSeconds: Math.ceil(remainingMs / 1000),
+  };
+}
+
+/**
+ * Strictly validates a loaded `users/{authUid}` lookup result.
+ * Separates Firestore read errors (`permission_denied` / `network_error`) from genuinely missing
+ * profiles (`missing_employee_profile`) and UID mismatches (`profile_uid_mismatch`).
+ */
+export function validateLoadedUserProfileBinding(params: {
+  authUid: string;
+  docId: string;
+  docExists: boolean;
+  rawProfile: UserProfile | null | undefined;
+  readError?: unknown;
+}): LoadedUserProfileBindingResult {
+  if (params.readError) {
+    return {
+      status: 'read_error',
+      reason: evaluateFirestoreErrorCategory(params.readError),
+    };
+  }
+  if (!params.docExists || !params.rawProfile) {
+    return {
+      status: 'missing_profile',
+      reason: 'missing_employee_profile',
+    };
+  }
+  const check = validateStrictAuthUidProfileBinding({
+    authUid: params.authUid,
+    docId: params.docId,
+    storedProfileUid: params.rawProfile.uid,
+  });
+  if (!check.valid) {
+    return {
+      status: 'uid_mismatch',
+      reason: 'profile_uid_mismatch',
+    };
+  }
+  return {
+    status: 'valid',
+    profile: {
+      ...params.rawProfile,
+      uid: params.authUid,
+      firestoreDocId: params.docId,
+    },
+  };
+}
+
+/**
+ * Read-only diagnostic scan over raw `users` documents detecting missing `uid` fields
+ * or mismatches between Firestore `docId` and stored `uid`.
+ */
+export function detectProfileUidBindingDiagnostics(
+  rawDocs: Array<{
+    docId: string;
+    uid?: string | null;
+    displayName?: string | null;
+    email?: string | null;
+    orgId?: string | null;
+  }>
+): ProfileUidBindingDiagnosticIssue[] {
+  const issues: ProfileUidBindingDiagnosticIssue[] = [];
+  for (const item of rawDocs) {
+    const docId = (item.docId || '').trim();
+    const storedUid = typeof item.uid === 'string' ? item.uid.trim() : '';
+    if (!docId) continue;
+    if (!storedUid) {
+      issues.push({
+        docId,
+        storedUid: '',
+        displayName: item.displayName || docId,
+        email: item.email || '',
+        orgId: item.orgId || '',
+        issueType: 'missing_uid_field',
+      });
+    } else if (storedUid !== docId) {
+      issues.push({
+        docId,
+        storedUid,
+        displayName: item.displayName || docId,
+        email: item.email || '',
+        orgId: item.orgId || '',
+        issueType: 'doc_id_uid_mismatch',
+      });
+    }
+  }
+  return issues;
+}
+
+/**
  * Classifies Firebase Auth errors into safe, non-enumerating translation keys.
  * Never reveals whether an account exists and never assumes Gmail accounts use Google sign-in.
  */
@@ -207,6 +483,18 @@ export function classifyAuthSignInError(err: any): AuthErrorClassification {
       return { translationKey: 'authErrPopupClosed', showCredentialGuidance: false };
     case 'auth/network-request-failed':
       return { translationKey: 'authErrNetwork', showCredentialGuidance: false };
+    case 'auth/expired-action-code':
+      return {
+        translationKey: 'authErrExpiredActionCode',
+        showCredentialGuidance: false,
+        isResetLinkExpiredOrUsed: true,
+      };
+    case 'auth/invalid-action-code':
+      return {
+        translationKey: 'authErrInvalidActionCode',
+        showCredentialGuidance: false,
+        isResetLinkExpiredOrUsed: true,
+      };
     default:
       return {
         translationKey: 'authErrGeneric',

@@ -262,8 +262,9 @@ runTest('6. Supervisor can only create suppliers when granted canManageSuppliers
     }),
   };
 
-  // Canonical stored UserPermissions key count remains strictly 10 (compatible with firestore.rules)
-  assert.equal(Object.keys(optedInSup.permissions).length, 10);
+  // Canonical stored UserPermissions key count is strictly 11 (including independent `canCreateSuppliers`, compatible with firestore.rules)
+  assert.equal(Object.keys(optedInSup.permissions).length, 11);
+  assert.equal(optedInSup.permissions.canCreateSuppliers, false);
 
   const effOptedIn = resolveEffectivePermissions(optedInSup);
   assert.equal(effOptedIn.canCreateSuppliers, true);

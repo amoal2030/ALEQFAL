@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { SupportedLanguage } from '../types';
 import { translations } from '../i18n/translations';
+import { auth } from '../lib/firebase';
+import { syncAuthLanguageCode } from '../utils/authCredentials';
 
 type TranslationsShape = typeof translations.ar;
 
@@ -36,6 +38,7 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => {
     document.documentElement.lang = language;
     document.documentElement.dir = direction;
+    syncAuthLanguageCode(auth, language);
     try {
       localStorage.setItem(STORAGE_KEY, language);
     } catch {

@@ -105,6 +105,24 @@ service cloud.firestore {
       );
     }
 
+    // Verifies a branch_manager has exactly one active, non-suspended, non-purged assigned branch belonging to their organization
+    function hasValidSingleAssignedBranchInOrg(u) {
+      let raw = u.get('branchId', '');
+      let sc = raw is string ? raw.trim() : '';
+      let bids = u.get('branchIds', null);
+      return sc != ''
+        ? (
+          isActiveBranchInOrg(sc, u.orgId) &&
+          (bids == null || (bids is list && (bids.size() == 0 || (bids.size() == 1 && bids[0] is string && bids[0].trim() == sc))))
+        )
+        : (
+          bids is list &&
+          bids.size() == 1 &&
+          bids[0] is string &&
+          isActiveBranchInOrg(bids[0].trim(), u.orgId)
+        );
+    }
+
     // Subscription enforcement helpers using Firestore server request.time
     function hasAnySubscriptionField(org) {
       return org.keys().hasAny([
@@ -503,6 +521,20 @@ service cloud.firestore {
         get(/databases/$(database)/documents/branches/$(branchId)).data.orgId == targetOrgId;
     }
 
+    function branchDocIsActiveInOrg(branchId, targetOrgId) {
+      let b = get(/databases/$(database)/documents/branches/$(branchId)).data;
+      return b.orgId == targetOrgId &&
+        b.get('isActive', true) == true &&
+        b.get('lifecycleStatus', 'active') == 'active';
+    }
+
+    // Verifies a branch document exists, belongs to targetOrgId, is active, and is not suspended/purged
+    function isActiveBranchInOrg(branchId, targetOrgId) {
+      return isValidId(branchId) &&
+        exists(/databases/$(database)/documents/branches/$(branchId)) &&
+        branchDocIsActiveInOrg(branchId, targetOrgId);
+    }
+
     // Verifies a supplier document exists and belongs to the target organization
     function isSupplierInOrg(supplierId, targetOrgId) {
       return isValidId(supplierId) &&
@@ -520,6 +552,33 @@ service cloud.firestore {
       return isValidId(supplierId) &&
         exists(/databases/$(database)/documents/suppliers/$(supplierId)) &&
         supplierDocIsActiveInOrg(supplierId, targetOrgId);
+    }
+
+    function supplierAfterMatchesActorInOrg(supplierId, targetOrgId) {
+      let s = getAfter(/databases/$(database)/documents/suppliers/$(supplierId)).data;
+      return s.orgId == targetOrgId && s.createdBy == request.auth.uid;
+    }
+
+    // Verifies `supplierId` did NOT exist before this atomic batch and IS newly created
+    // in this batch by the authenticated caller (`request.auth.uid`) within `targetOrgId`.
+    function isSupplierCreatedInBatchByActor(supplierId, targetOrgId) {
+      return isValidId(supplierId) &&
+        !exists(/databases/$(database)/documents/suppliers/$(supplierId)) &&
+        existsAfter(/databases/$(database)/documents/suppliers/$(supplierId)) &&
+        supplierAfterMatchesActorInOrg(supplierId, targetOrgId);
+    }
+
+    // Canonical 1-to-1 deterministic document IDs bound to `supplierId`, making duplicate
+    // SUPPLIER_CREATED audit logs or SUPPLIER_ADDED notifications mathematically impossible
+    // even inside the exact same initial atomic writeBatch.
+    function expectedSupplierCreatedAuditLogId(supplierId) {
+      return 'log_sup_created_' + supplierId;
+    }
+
+    function expectedSupplierAddedNotificationId(supplierId) {
+      return supplierId.size() > 4 && supplierId[0:4] == 'sup_'
+        ? ('ntf_' + supplierId[4:supplierId.size()] + '_sup_add')
+        : ('ntf_' + supplierId + '_sup_add');
     }
 
     function isValidCurrencyAmount(val) {
@@ -1076,8 +1135,8 @@ service cloud.firestore {
         perms.keys().hasOnly([
           'canCreateClosing', 'canViewAllClosings', 'canApproveClosings',
           'canManageBranches', 'canManageEmployees', 'canExportReports',
-          'canManagePurchases', 'canManageSuppliers', 'canViewSuppliers',
-          'canViewFinancialReports'
+          'canManagePurchases', 'canManageSuppliers', 'canCreateSuppliers',
+          'canViewSuppliers', 'canViewFinancialReports'
         ]) &&
         perms.canCreateClosing == true &&
         perms.canViewAllClosings == true &&
@@ -1087,6 +1146,7 @@ service cloud.firestore {
         perms.canExportReports == true &&
         (!('canManagePurchases' in perms) || perms.canManagePurchases == true) &&
         (!('canManageSuppliers' in perms) || perms.canManageSuppliers == true) &&
+        (!('canCreateSuppliers' in perms) || perms.canCreateSuppliers == true) &&
         (!('canViewSuppliers' in perms) || perms.canViewSuppliers == true) &&
         (!('canViewFinancialReports' in perms) || perms.canViewFinancialReports == true);
     }
@@ -1096,8 +1156,8 @@ service cloud.firestore {
         perms.keys().hasOnly([
           'canCreateClosing', 'canViewAllClosings', 'canApproveClosings',
           'canManageBranches', 'canManageEmployees', 'canExportReports',
-          'canManagePurchases', 'canManageSuppliers', 'canViewSuppliers',
-          'canViewFinancialReports'
+          'canManagePurchases', 'canManageSuppliers', 'canCreateSuppliers',
+          'canViewSuppliers', 'canViewFinancialReports'
         ]) &&
         perms.get('canCreateClosing', false) is bool &&
         perms.get('canViewAllClosings', false) is bool &&
@@ -1107,6 +1167,7 @@ service cloud.firestore {
         perms.get('canExportReports', false) is bool &&
         perms.get('canManagePurchases', false) is bool &&
         perms.get('canManageSuppliers', false) is bool &&
+        perms.get('canCreateSuppliers', false) is bool &&
         perms.get('canViewSuppliers', false) is bool &&
         perms.get('canViewFinancialReports', false) is bool;
     }
@@ -1115,7 +1176,10 @@ service cloud.firestore {
       return hasValidOptionalPermissionTypes(perms) &&
         perms.get('canManageBranches', false) == false &&
         perms.get('canManageEmployees', false) == false && (
-          role == 'supervisor' || (
+          (
+            role == 'supervisor' &&
+            perms.get('canCreateSuppliers', false) == false
+          ) || (
             perms.get('canViewAllClosings', false) == false &&
             perms.get('canApproveClosings', false) == false &&
             perms.get('canExportReports', false) == false &&
@@ -1123,6 +1187,7 @@ service cloud.firestore {
             perms.get('canViewFinancialReports', false) == false && (
               role == 'branch_manager' || (
                 perms.get('canManagePurchases', false) == false &&
+                perms.get('canCreateSuppliers', false) == false &&
                 perms.get('canViewSuppliers', false) == false
               )
             )
@@ -1244,8 +1309,8 @@ service cloud.firestore {
         perms.keys().hasOnly([
           'canCreateClosing', 'canViewAllClosings', 'canApproveClosings',
           'canManageBranches', 'canManageEmployees', 'canExportReports',
-          'canManagePurchases', 'canManageSuppliers', 'canViewSuppliers',
-          'canViewFinancialReports'
+          'canManagePurchases', 'canManageSuppliers', 'canCreateSuppliers',
+          'canViewSuppliers', 'canViewFinancialReports'
         ]) &&
         perms.get('canCreateClosing', false) == false &&
         perms.get('canViewAllClosings', false) == false &&
@@ -1255,6 +1320,7 @@ service cloud.firestore {
         perms.get('canExportReports', false) == false &&
         perms.get('canManagePurchases', false) == false &&
         perms.get('canManageSuppliers', false) == false &&
+        perms.get('canCreateSuppliers', false) == false &&
         perms.get('canViewSuppliers', false) == false &&
         perms.get('canViewFinancialReports', false) == false;
     }
@@ -2254,7 +2320,13 @@ service cloud.firestore {
           data.createdBy == request.auth.uid &&
           hasValidSupplierFields(data) && (
             u.role == 'manager' ||
-            (u.role == 'supervisor' && userHasPermission(u, 'canManageSuppliers'))
+            (u.role == 'supervisor' && userHasPermission(u, 'canManageSuppliers')) ||
+            (
+              u.role == 'branch_manager' &&
+              userHasPermission(u, 'canCreateSuppliers') &&
+              data.isActive == true &&
+              hasValidSingleAssignedBranchInOrg(u)
+            )
           );
       }
 
@@ -2716,7 +2788,7 @@ service cloud.firestore {
       );
     }
 
-    function canCreateMemberAuditLog(data) {
+    function canCreateMemberAuditLog(logId, data) {
       let u = getUserData();
       return u.isActive == true &&
         u.orgId == data.orgId &&
@@ -2742,9 +2814,18 @@ service cloud.firestore {
           (
             data.action == 'SUPPLIER_CREATED' &&
             data.targetType == 'supplier' &&
-            (u.role == 'manager' || (u.role == 'supervisor' && userHasPermission(u, 'canManageSuppliers'))) &&
-            existsAfter(/databases/$(database)/documents/suppliers/$(data.targetId)) &&
-            getAfter(/databases/$(database)/documents/suppliers/$(data.targetId)).data.orgId == u.orgId
+            logId == expectedSupplierCreatedAuditLogId(data.targetId) &&
+            data.get('id', '') == logId &&
+            (
+              u.role == 'manager' ||
+              (u.role == 'supervisor' && userHasPermission(u, 'canManageSuppliers')) ||
+              (
+                u.role == 'branch_manager' &&
+                userHasPermission(u, 'canCreateSuppliers') &&
+                hasValidSingleAssignedBranchInOrg(u)
+              )
+            ) &&
+            isSupplierCreatedInBatchByActor(data.targetId, u.orgId)
           ) ||
           (
             u.role == 'manager' &&
@@ -2934,7 +3015,7 @@ service cloud.firestore {
               // Case 2: Established member operations
               (
                 hasValidUserDoc() &&
-                canCreateMemberAuditLog(incoming())
+                canCreateMemberAuditLog(logId, incoming())
               )
             )
           )
@@ -3229,9 +3310,6 @@ service cloud.firestore {
               (t == 'SECURITY_PASSWORD_RESET_SENT' && data.audienceScope == 'org_manager')
             ) && hasEmployeeTargetAfter(data, orgId)
           )
-        ) : cat == 'purchases_suppliers' ? (
-          data.audienceScope == 'org_supervisor_permission' &&
-          t == 'SUPPLIER_ADDED' && data.get('targetType', '') == 'supplier'
         ) : cat == 'schedule_requests' && (
           t in [
             'SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE',
@@ -3247,9 +3325,6 @@ service cloud.firestore {
       let t = data.type;
       return cat == 'closings' ? (
           t in ['CLOSING_APPROVED', 'CLOSING_REJECTED'] && userHasPermission(u, 'canApproveClosings') && data.audienceScope in ['user', 'branch_manager'] && hasClosingReviewedAfter(data, orgId)
-        ) : cat == 'purchases_suppliers' ? (
-          data.audienceScope == 'org_supervisor_permission' &&
-          t == 'SUPPLIER_ADDED' && userHasPermission(u, 'canManageSuppliers') && data.get('targetType', '') == 'supplier'
         ) : cat == 'schedule_requests' ? (
           t in ['SCHEDULE_DAY_OFF_REQUESTED', 'SCHEDULE_SWAP_REQUESTED', 'SCHEDULE_SWAP_PARTNER_INVITE'] &&
           data.audienceScope in ['branch_manager', 'user'] &&
@@ -3390,6 +3465,48 @@ service cloud.firestore {
         );
     }
 
+    // Direct supplier-added notification validators (exclusively for SUPPLIER_ADDED;
+    // invoked only inside &&-only ternary branch with no enclosing || fallback;
+    // enforces atomic !exists && existsAfter && createdBy == request.auth.uid across all 3 roles)
+    function hasValidSupplierAddedNotificationFeeds(data, orgId) {
+      let feeds = data.feedKeys;
+      return feeds is list &&
+        feeds.size() >= 1 &&
+        feeds.size() <= 3 &&
+        data.get('requiredPermission', '') == 'canManageSuppliers' &&
+        (!('secondaryPermission' in data) || data.secondaryPermission == 'canViewSuppliers') &&
+        ('org_perm:' + orgId + ':canManageSuppliers') in feeds &&
+        feeds.hasOnly([
+          'org_perm:' + orgId + ':canManageSuppliers',
+          ('secondaryPermission' in data ? 'org_perm:' + orgId + ':canViewSuppliers' : 'org_mgr:' + orgId),
+          'org_mgr:' + orgId
+        ]);
+    }
+
+    function canActorCreateSupplierAddedNotification(notificationId, data) {
+      let u = getUserData();
+      let orgId = data.get('orgId', '');
+      let actorRole = data.get('actorRole', '');
+      let targetId = data.get('targetId', '');
+      return u.isActive == true &&
+        isValidId(orgId) &&
+        u.orgId == orgId &&
+        actorRole in ['manager', 'supervisor', 'branch_manager'] &&
+        u.role == actorRole &&
+        data.audienceScope == 'org_supervisor_permission' &&
+        data.get('targetType', '') == 'supplier' &&
+        isValidId(targetId) &&
+        notificationId == expectedSupplierAddedNotificationId(targetId) &&
+        data.get('dedupKey', '') == 'supplier_add:' + targetId && (
+          actorRole == 'manager' ? true :
+          actorRole == 'supervisor' ? userHasPermission(u, 'canManageSuppliers') :
+          (userHasPermission(u, 'canCreateSuppliers') && hasValidSingleAssignedBranchInOrg(u))
+        ) &&
+        hasActiveOrgSubscriptionDirect(orgId) &&
+        isSupplierCreatedInBatchByActor(targetId, orgId) &&
+        hasValidSupplierAddedNotificationFeeds(data, orgId);
+    }
+
     function canTenantUserReadNotification(data, checkDataOrgSub) {
       let u = getUserData();
       let orgSubId = checkDataOrgSub ? data.orgId : u.orgId;
@@ -3498,6 +3615,9 @@ service cloud.firestore {
             ) : data.get('category', '') == 'purchases_suppliers' &&
             data.get('type', '') in ['PURCHASE_INVOICE_RECORDED', 'PURCHASE_REVIEW_NEEDED'] ? (
               canActorCreatePurchaseNotification(data)
+            ) : data.get('category', '') == 'purchases_suppliers' &&
+            data.get('type', '') == 'SUPPLIER_ADDED' ? (
+              canActorCreateSupplierAddedNotification(notificationId, data)
             ) : (
               hasValidUserDoc() &&
               canActorCreateTenantNotification(data)

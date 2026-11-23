@@ -69,9 +69,12 @@ export function evaluateFirestoreErrorCategory(
   if (
     code === 'permission-denied' ||
     code.endsWith('/permission-denied') ||
+    code === 'unauthenticated' ||
+    code.endsWith('/unauthenticated') ||
     message.includes('insufficient permissions') ||
     message.includes('permission_denied') ||
-    message.includes('permission-denied')
+    message.includes('permission-denied') ||
+    message.includes('unauthenticated')
   ) {
     return 'permission_denied';
   }
@@ -136,16 +139,29 @@ export type ProfiledUserAccessResolution =
       status: 'access_error';
       errorReason: Extract<
         AccessErrorReason,
-        'account_archived' | 'account_disabled' | 'membership_released' | 'permission_denied'
+        | 'account_archived'
+        | 'account_disabled'
+        | 'membership_released'
+        | 'profile_uid_mismatch'
+        | 'permission_denied'
       >;
     };
 
 export function resolveProfiledUserAccess(params: {
   profile: UserProfile;
   org: Organization | null;
+  authUid?: string;
   now?: Date;
 }): ProfiledUserAccessResolution {
-  const { profile, org, now = new Date() } = params;
+  const { profile, org, authUid, now = new Date() } = params;
+
+  if (authUid && profile.uid && profile.uid !== authUid) {
+    return {
+      status: 'access_error',
+      errorReason: 'profile_uid_mismatch',
+    };
+  }
+
   const membershipStatus = resolveMemberMembershipStatus(profile);
 
   // Permanently released members have no active organization binding and see a dedicated notice
