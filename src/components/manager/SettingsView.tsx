@@ -27,17 +27,20 @@ import {
 import {
   requestDriveAuthorization,
   getActiveDriveSession,
-  clearDriveSession,
   getDriveOAuthClientConfig,
   provisionOrganizationDriveHierarchy,
   verifyDriveWriteReadCapability,
   assertDriveSessionMatchesAccount,
   assertOrgDriveAuthorizationEligibility,
+  isBranchActiveForDriveLink,
   isOAuthCancellationOrConfigError,
   buildGoogleDriveFolderUrl,
   DriveTokenSession,
   OrgDriveProvisionResult,
 } from '../../services/driveService';
+import type { DriveMigrationPlan, LegacyPlatformRecordRef } from '../../types/unifiedDrive';
+import { listOrganizationDriveInventory } from '../../services/unifiedDriveService';
+import { buildLegacyDriveMigrationPlan } from '../../utils/driveMigrationPlanner';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -51,6 +54,8 @@ export const SettingsView: React.FC = () => {
     recordDriveHealthFailure,
     disconnectDriveConnection,
     driveReadiness,
+    closings,
+    closingArchives,
   } = useAuth();
   const { language, setLanguage, tr } = useLanguage();
   const { theme, setTheme } = useTheme();
@@ -69,6 +74,8 @@ export const SettingsView: React.FC = () => {
   const [driveError, setDriveError] = useState<string | null>(null);
   const [driveSuccess, setDriveSuccess] = useState<string | null>(null);
   const [remainingMinutes, setRemainingMinutes] = useState<number>(0);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [migrationPlanPreview, setMigrationPlanPreview] = useState<DriveMigrationPlan | null>(null);
 
   const activeOrgIdRef = useRef<string | null>(currentOrg?.id ?? null);
   activeOrgIdRef.current = currentOrg?.id ?? null;
@@ -131,6 +138,8 @@ export const SettingsView: React.FC = () => {
     setSyncLoading(false);
     setHealthCheckLoading(false);
     setDisconnectLoading(false);
+    setInventoryLoading(false);
+    setMigrationPlanPreview(null);
     const scopedSession = getActiveDriveSession(currentOrg?.id);
     setDriveSession(scopedSession);
     if (scopedSession) {
@@ -187,7 +196,9 @@ export const SettingsView: React.FC = () => {
     const targetOrg = currentOrg;
     const targetOrgId = currentOrg.id;
     const ownerEmail = googleProvider.email || currentUser?.email || targetOrg.ownerEmail || '';
-    const orgBranches = branches.filter((b) => b.orgId === targetOrgId);
+    const orgBranches = branches.filter(
+      (b) => b.orgId === targetOrgId && isBranchActiveForDriveLink(b)
+    );
 
     let eligibility;
     try {
@@ -302,7 +313,9 @@ export const SettingsView: React.FC = () => {
     const targetOrg = currentOrg;
     const targetOrgId = currentOrg.id;
     const ownerEmail = googleProvider.email || currentUser?.email || targetOrg.ownerEmail || '';
-    const orgBranches = branches.filter((b) => b.orgId === targetOrgId);
+    const orgBranches = branches.filter(
+      (b) => b.orgId === targetOrgId && isBranchActiveForDriveLink(b)
+    );
 
     let eligibility;
     try {
@@ -409,6 +422,93 @@ export const SettingsView: React.FC = () => {
   };
 
   /**
+   * Read-only non-destructive inventory & migration plan preview for the organization owner.
+   * NEVER moves, renames, or deletes any Drive files automatically.
+   */
+  const handleRunReadOnlyDriveInventory = async () => {
+    setDriveError(null);
+    setDriveSuccess(null);
+
+    if (!currentOrg || !isOrgOwner || !userProfile || !currentUser) {
+      setDriveError('جرد ملفات Google Drive مقتصر حصراً على مالك المؤسسة المعتمد.');
+      return;
+    }
+
+    const targetOrg = currentOrg;
+    const targetOrgId = currentOrg.id;
+    const session = getActiveDriveSession(targetOrgId);
+    if (!session) {
+      setDriveError(
+        'انتهت جلسة التفويض المؤقتة في الذاكرة. يرجى الضغط على «إعادة التفويض وفحص الجاهزية» أولاً ثم إعادة الجرد.'
+      );
+      return;
+    }
+
+    setInventoryLoading(true);
+    try {
+      const { folders, files } = await listOrganizationDriveInventory({
+        token: session.accessToken,
+        actor: {
+          uid: currentUser.uid,
+          orgId: targetOrgId,
+          role: userProfile.role,
+          isActive: userProfile.isActive,
+          displayName: userProfile.displayName,
+          email: session.email,
+          googleUid: session.sub,
+        },
+        org: targetOrg,
+      });
+
+      if (activeOrgIdRef.current !== targetOrgId) return;
+
+      const closingDateById = new Map<string, { date: string; period: 'morning' | 'evening' }>();
+      for (const c of closings) {
+        if (c.orgId === targetOrgId) {
+          closingDateById.set(c.id, { date: c.date, period: c.period });
+        }
+      }
+
+      const platformRecords: LegacyPlatformRecordRef[] = [];
+      for (const arch of closingArchives) {
+        if (arch.orgId !== targetOrgId || !arch.driveExcelFileId) continue;
+        const cInfo = closingDateById.get(arch.closingId);
+        platformRecords.push({
+          recordId: arch.closingId,
+          orgId: arch.orgId,
+          branchId: arch.branchId,
+          documentType: cInfo?.period === 'evening' ? 'closing_evening' : 'closing_morning',
+          documentDate: cInfo?.date,
+          fileId: arch.driveExcelFileId,
+          fileName: arch.driveExcelFileName,
+          revision: arch.driveRevision,
+          sourceCollection: 'closingArchives',
+        });
+      }
+
+      const plan = buildLegacyDriveMigrationPlan({
+        org: targetOrg,
+        branches: branches.filter((b) => b.orgId === targetOrgId),
+        driveFolders: folders,
+        driveFiles: files,
+        platformRecords,
+      });
+
+      setMigrationPlanPreview(plan);
+      setDriveSuccess(
+        `اكتمل الجرد القرائي الآمن (${plan.totalDriveFilesScanned} ملف في Drive): موحّد ${plan.counts.alreadyUnified} • جاهز للنقل لاحقاً ${plan.counts.readyToMove} • مكرر متروك ${plan.counts.skippedDuplicates} • غير مطابق متروك ${plan.counts.skippedUnmatched}. لم يتم نقل أو حذف أي ملف.`
+      );
+    } catch (err: any) {
+      if (activeOrgIdRef.current !== targetOrgId) return;
+      setDriveError(err?.message || 'تعذر إجراء جرد ملفات Google Drive.');
+    } finally {
+      if (activeOrgIdRef.current === targetOrgId) {
+        setInventoryLoading(false);
+      }
+    }
+  };
+
+  /**
    * Re-authorizes expired session if needed and executes full folder + write/read readiness verification.
    */
   const handleVerifyDriveHealth = async () => {
@@ -428,7 +528,9 @@ export const SettingsView: React.FC = () => {
     const targetOrg = currentOrg;
     const targetOrgId = currentOrg.id;
     const ownerEmail = googleProvider.email || currentUser?.email || targetOrg.ownerEmail || '';
-    const orgBranches = branches.filter((b) => b.orgId === targetOrgId);
+    const orgBranches = branches.filter(
+      (b) => b.orgId === targetOrgId && isBranchActiveForDriveLink(b)
+    );
 
     let eligibility;
     try {
@@ -545,7 +647,6 @@ export const SettingsView: React.FC = () => {
     setDisconnectLoading(true);
     try {
       await disconnectDriveConnection();
-      clearDriveSession(targetOrgId);
       if (activeOrgIdRef.current === targetOrgId) {
         setDriveSession(null);
         setRemainingMinutes(0);
@@ -1054,6 +1155,64 @@ export const SettingsView: React.FC = () => {
                         </div>
                       </div>
                     )}
+
+                    {/* Unified Google Drive Folder Structure Summary */}
+                    <div className="pt-2 border-t border-[#DCE6FA] dark:border-[#1F3B66] space-y-2">
+                      <div className="font-bold text-[#0B1B32] dark:text-slate-200 text-[11px]">
+                        {tr(
+                          'الهيكل الموحّد المعتمد لجميع الأقسام:',
+                          'Approved Unified Folder Hierarchy:',
+                          'تمام سیکشنز کے لیے منظور شدہ متحد ڈھانچہ:'
+                        )}
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                        <div className="p-2.5 rounded-lg bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66]">
+                          <div className="font-bold text-[#1764FF] dark:text-[#6CA2FF]">
+                            {tr('ملفات الفروع اليومية (مباشرة داخل اليوم):', 'Daily Branch Files (Directly in Day):', 'روزانہ برانچ فائلیں:')}
+                          </div>
+                          <div className="text-slate-600 dark:text-slate-300 mt-0.5 font-mono text-[10px]">
+                            الفروع / {'<الفرع>'} / YYYY / MM / DD
+                          </div>
+                        </div>
+                        <div className="p-2.5 rounded-lg bg-white dark:bg-[#122543] border border-[#DCE6FA] dark:border-[#1F3B66]">
+                          <div className="font-bold text-[#048264] dark:text-[#08C99B]">
+                            {tr('مستندات المؤسسة العامة:', 'Organization General Documents:', 'ادارے کی اہم دستاویزات:')}
+                          </div>
+                          <div className="text-slate-600 dark:text-slate-300 mt-0.5 font-mono text-[10px]">
+                            مستندات المؤسسة المهمة
+                          </div>
+                        </div>
+                      </div>
+
+                      {migrationPlanPreview && (
+                        <div className="p-2.5 rounded-lg bg-amber-500/5 border border-amber-500/25 text-[11px] space-y-1">
+                          <div className="font-bold text-amber-800 dark:text-amber-300">
+                            {tr(
+                              'معاينة خطة الجرد والترحيل (قراءة فقط — لم يُنقل أي ملف):',
+                              'Read-Only Inventory & Migration Plan Preview (No files moved):',
+                              'صرف مطالعہ انوینٹری اور مائیگریشن پلان (کوئی فائل منتقل نہیں کی گئی):'
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-3 text-slate-700 dark:text-slate-300">
+                            <span>
+                              {tr('ممسوح:', 'Scanned:', 'اسکین شدہ:')} <strong>{migrationPlanPreview.totalDriveFilesScanned}</strong>
+                            </span>
+                            <span>
+                              {tr('موحّد بالفعل:', 'Unified:', 'متحد:')} <strong>{migrationPlanPreview.counts.alreadyUnified}</strong>
+                            </span>
+                            <span>
+                              {tr('جاهز للنقل:', 'Ready:', 'تیار:')} <strong>{migrationPlanPreview.counts.readyToMove}</strong>
+                            </span>
+                            <span>
+                              {tr('مكرر (متروك):', 'Duplicates (Untouched):', 'ڈپلیکیٹ:')} <strong>{migrationPlanPreview.counts.skippedDuplicates}</strong>
+                            </span>
+                            <span>
+                              {tr('غير مطابق (متروك):', 'Unmatched (Untouched):', 'غیر مماثل:')} <strong>{migrationPlanPreview.counts.skippedUnmatched}</strong>
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -1090,6 +1249,20 @@ export const SettingsView: React.FC = () => {
                       {syncLoading
                         ? tr('جاري مزامنة المجلدات والفحص...', 'Syncing Folders & Testing...', 'فولڈرز ہم آہنگ ہو رہے ہیں...')
                         : tr('مزامنة مجلدات الفروع والشهر الحالي', 'Sync Branch & Monthly Folders', 'برانچ اور ماہانہ فولڈرز ہم آہنگ کریں')}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleRunReadOnlyDriveInventory}
+                    disabled={inventoryLoading || syncLoading || healthCheckLoading || driveLoading || disconnectLoading || !driveSession}
+                    className="px-3.5 py-2.5 rounded-xl text-xs font-bold text-[#0B1B32] dark:text-slate-200 bg-[#F5F8FF] dark:bg-[#0E203A] hover:border-[#1764FF]/50 border border-[#DCE6FA] dark:border-[#1F3B66] disabled:opacity-50 flex items-center gap-2 transition-colors"
+                  >
+                    <FolderTree className={`w-3.5 h-3.5 ${inventoryLoading ? 'animate-pulse' : ''}`} />
+                    <span>
+                      {inventoryLoading
+                        ? tr('جاري الجرد القرائي...', 'Scanning Inventory...', 'انوینٹری اسکین جاری ہے...')
+                        : tr('جرد الملفات وخطة الترحيل (معاينة)', 'Inventory & Migration Plan (Preview)', 'فائل انوینٹری اور پلان (معائنہ)')}
                     </span>
                   </button>
 

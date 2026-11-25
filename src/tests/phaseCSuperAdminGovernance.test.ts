@@ -23,13 +23,14 @@
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import {
-  initializeTestEnvironment,
   assertFails,
   assertSucceeds,
-  RulesTestEnvironment,
-} from '@firebase/rules-unit-testing';
-import firebase from 'firebase/compat/app';
-import 'firebase/compat/firestore';
+  FieldValue,
+  initializeNamedDbTestEnvironment,
+  NamedDbRulesTestEnvironment,
+  parseEmulatorHostAndPort,
+  Timestamp,
+} from './namedDbEmulatorHarness';
 import { Branch, Organization, UserProfile } from '../types';
 import { evaluateBranchBillingAndGrace, evaluateOrganizationBranchPricing } from '../utils/branchPricing';
 import { buildSuperAdminPlatformNotification } from '../utils/notifications';
@@ -53,9 +54,6 @@ import {
   validateSuperAdminMemberCreateInput,
 } from '../utils/superAdminGovernance';
 
-const Timestamp = firebase.firestore.Timestamp;
-const FieldValue = firebase.firestore.FieldValue;
-
 interface TestOutcome {
   name: string;
   passed: boolean;
@@ -76,14 +74,8 @@ async function assertGenuineFails<T>(promise: Promise<T>, label: string): Promis
 }
 
 function parseEmulatorConfig(): { host: string; port: number } | null {
-  const envHost = process.env.FIRESTORE_EMULATOR_HOST;
-  if (!envHost) return null;
-  const [rawHost, rawPort] = envHost.split(':');
-  const parsedPort = Number(rawPort);
-  if (rawHost && !Number.isNaN(parsedPort) && parsedPort > 0) {
-    return { host: rawHost, port: parsedPort };
-  }
-  return null;
+  if (!process.env.FIRESTORE_EMULATOR_HOST) return null;
+  return parseEmulatorHostAndPort();
 }
 
 const VERIFIED_SA: SuperAdminActorSnapshot = {
@@ -535,14 +527,9 @@ async function runPhaseCTests() {
   } else {
     console.log('\n--- Part B: Live Firestore Emulator Integration with Phase C Governance Bundles ---');
 
-    const rulesContent = fs.readFileSync('firestore.rules', 'utf8');
-    const testEnv: RulesTestEnvironment = await initializeTestEnvironment({
-      projectId: 'aleqfal-phasec-governance',
-      firestore: {
-        rules: rulesContent,
-        host: emulatorConfig.host,
-        port: emulatorConfig.port,
-      },
+    const testEnv: NamedDbRulesTestEnvironment = await initializeNamedDbTestEnvironment({
+      host: emulatorConfig.host,
+      port: emulatorConfig.port,
     });
 
     await testEnv.clearFirestore();

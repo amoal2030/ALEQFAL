@@ -56,6 +56,8 @@ export interface PurchaseAttachmentDescriptor {
   fileName: string;
   fileSize: number;
   mimeType: string;
+  driveFileId?: string;
+  driveWebViewLink?: string;
 }
 
 export interface PreparePurchaseSubmissionInput {
@@ -447,12 +449,33 @@ export function preparePurchaseSubmission(
 
   const attachmentDocs: AttachmentItem[] = [];
   for (let i = 0; i < rawAttachments.length; i += 1) {
-    const validated = isAllowedPurchaseAttachmentFile(rawAttachments[i]);
+    const rawAtt = rawAttachments[i];
+    const validated = isAllowedPurchaseAttachmentFile(rawAtt);
     if (!validated.valid) {
       return {
         ok: false,
         error: validated.error,
         errors: [`attachment_${i}_invalid`],
+      };
+    }
+    const cleanDriveFileId = rawAtt.driveFileId?.trim();
+    const cleanDriveLink = rawAtt.driveWebViewLink?.trim();
+    if (cleanDriveFileId && !/^[a-zA-Z0-9_-]{8,128}$/.test(cleanDriveFileId)) {
+      return {
+        ok: false,
+        error: `معرّف ملف Google Drive للمرفق "${validated.normalizedName}" غير صالح.`,
+        errors: [`attachment_${i}_invalid_drive_file_id`],
+      };
+    }
+    if (
+      cleanDriveLink &&
+      (cleanDriveLink.length > 512 ||
+        !/^https:\/\/(drive\.google\.com|docs\.google\.com)\/.*$/.test(cleanDriveLink))
+    ) {
+      return {
+        ok: false,
+        error: `رابط Google Drive للمرفق "${validated.normalizedName}" غير صالح.`,
+        errors: [`attachment_${i}_invalid_drive_link`],
       };
     }
     const attId = generateSafeFirestoreId(`att_pur_${i}`);
@@ -464,7 +487,9 @@ export function preparePurchaseSubmission(
       fileName: validated.normalizedName,
       fileSize: validated.size,
       mimeType: validated.normalizedMime,
-      fileUrl: '',
+      fileUrl: cleanDriveLink || '',
+      ...(cleanDriveFileId ? { driveFileId: cleanDriveFileId } : {}),
+      ...(cleanDriveLink ? { driveWebViewLink: cleanDriveLink } : {}),
       uploadedBy: userProfile.uid,
       uploadedByName: actorName.slice(0, 120),
       uploadedAt: nowIso,

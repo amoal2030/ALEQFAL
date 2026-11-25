@@ -12,11 +12,14 @@ import { EmployeeDashboard } from './employee/EmployeeDashboard';
 import { PurchaseEntryView } from './purchases/PurchaseEntryView';
 import { PurchaseReportsView } from './manager/PurchaseReportsView';
 import { SuppliersManager } from './suppliers/SuppliersManager';
+import { WorkersPayrollHub } from './workers/WorkersPayrollHub';
+import { BranchWorkerAdvancesView } from './workers/BranchWorkerAdvancesView';
 import { useTheme } from '../context/ThemeContext';
 import { AppNotification, NotificationNavTarget } from '../types';
 import { getActiveDriveSession } from '../services/driveService';
 import { AppPageRoute, buildLegalPath } from '../utils/legalRoutes';
 import { getUserRoleLabel, resolveEffectivePermissions } from '../utils/permissions';
+import { resolveWorkersPayrollAccess } from '../utils/workersPayrollEngine';
 import {
   ManagerDashboardTab,
   resolveTenantNotificationRoute,
@@ -43,6 +46,7 @@ import {
   ShoppingBag,
   Truck,
   BarChart3,
+  Wallet,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -83,9 +87,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
     !isManager &&
     (userProfile?.role === 'supervisor' || userProfile?.role === 'branch_manager') &&
     effectivePerms.canCreateSuppliers;
+  const workersPayrollAccess = resolveWorkersPayrollAccess(userProfile);
+  const canBranchManagerRecordWorkerAdvances =
+    !isManager &&
+    userProfile?.role === 'branch_manager' &&
+    workersPayrollAccess.canRecordBranchAdvance;
   const hasStaffExtraTabs =
     canStaffManagePurchases ||
     canStaffCreateSuppliers ||
+    canBranchManagerRecordWorkerAdvances ||
     canSupervisorReviewClosings ||
     canSupervisorViewReports;
 
@@ -107,6 +117,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
       setStaffTab('workspace');
     } else if (staffTab === 'suppliers' && !canStaffCreateSuppliers) {
       setStaffTab('workspace');
+    } else if (staffTab === 'worker_advances' && !canBranchManagerRecordWorkerAdvances) {
+      setStaffTab('workspace');
     } else if (staffTab === 'closings' && !canSupervisorReviewClosings) {
       setStaffTab('workspace');
     } else if (staffTab === 'reports' && !canSupervisorViewReports) {
@@ -116,6 +128,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
     staffTab,
     canStaffManagePurchases,
     canStaffCreateSuppliers,
+    canBranchManagerRecordWorkerAdvances,
     canSupervisorReviewClosings,
     canSupervisorViewReports,
   ]);
@@ -350,6 +363,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
                       <option value="purchase_reports">🧾 {t('tabPurchaseReports')}</option>
                     )}
                     <option value="suppliers">🚚 {t('tabSuppliers')}</option>
+                    <option value="workers_payroll">
+                      💼 {language === 'ar' ? 'العمال والرواتب' : 'Workers & Payroll'}
+                    </option>
                     <option value="reports">📈 {t('tabReports')}</option>
                     <option value="branches">
                       🏢 {t('tabBranches')} ({branches.length})
@@ -412,6 +428,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
                 >
                   <Truck className="w-3.5 h-3.5" />
                   <span>{t('tabSuppliers')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setManagerTab('workers_payroll')}
+                  className={tabClass(managerTab === 'workers_payroll')}
+                >
+                  <Wallet className="w-3.5 h-3.5" />
+                  <span>{language === 'ar' ? 'العمال والرواتب' : 'Workers & Payroll'}</span>
                 </button>
 
                 <button
@@ -495,6 +520,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
                 >
                   <Truck className="w-3.5 h-3.5" />
                   <span>{t('tabSuppliersShort')}</span>
+                </button>
+              )}
+
+              {canBranchManagerRecordWorkerAdvances && (
+                <button
+                  type="button"
+                  onClick={() => setStaffTab('worker_advances')}
+                  className={tabClass(staffTab === 'worker_advances')}
+                >
+                  <Wallet className="w-3.5 h-3.5" />
+                  <span>{language === 'ar' ? 'سُلف وسحبيات العمال' : 'Worker Advances'}</span>
                 </button>
               )}
 
@@ -593,6 +629,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
               <PurchaseReportsView navigationFocus={purchaseNavFocus} />
             )}
             {managerTab === 'suppliers' && <SuppliersManager />}
+            {managerTab === 'workers_payroll' && <WorkersPayrollHub />}
             {managerTab === 'reports' && <FinancialReports />}
             {managerTab === 'branches' && <BranchesManager />}
             {managerTab === 'employees' && <EmployeesManager />}
@@ -611,6 +648,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigatePage, onOpenSupe
               />
             ) : staffTab === 'suppliers' && canStaffCreateSuppliers ? (
               <SuppliersManager />
+            ) : staffTab === 'worker_advances' && canBranchManagerRecordWorkerAdvances ? (
+              <BranchWorkerAdvancesView />
             ) : staffTab === 'closings' && canSupervisorReviewClosings ? (
               <ClosingsReview />
             ) : staffTab === 'reports' && canSupervisorViewReports ? (

@@ -1,0 +1,12 @@
+{
+  "firestore": {
+    "database": "ai-studio-aleqfal-cf1d4528-a7af-44d6-b623-8a556a614788",
+    "rules": "firestore.rules"
+  },
+  "emulators": {
+    "firestore": {
+      "port": 8088,
+      "host": "127.0.0.1"
+    }
+  }
+}

@@ -1760,6 +1760,7 @@ export type ManagerDashboardTab =
   | 'closings'
   | 'purchase_reports'
   | 'suppliers'
+  | 'workers_payroll'
   | 'reports'
   | 'branches'
   | 'employees'
@@ -1770,6 +1771,7 @@ export type StaffDashboardTab =
   | 'workspace'
   | 'purchases'
   | 'suppliers'
+  | 'worker_advances'
   | 'closings'
   | 'reports';
 
@@ -1786,6 +1788,7 @@ const NON_PURCHASE_MANAGER_TABS: readonly ManagerDashboardTab[] = [
   'overview',
   'closings',
   'suppliers',
+  'workers_payroll',
   'reports',
   'branches',
   'employees',

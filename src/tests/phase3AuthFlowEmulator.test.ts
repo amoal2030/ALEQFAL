@@ -4,15 +4,14 @@
  * directly against `firestore.rules`.
  */
 import assert from 'node:assert/strict';
-import * as fs from 'node:fs';
 import {
-  initializeTestEnvironment,
   assertFails,
   assertSucceeds,
-  RulesTestEnvironment,
-} from '@firebase/rules-unit-testing';
-import firebase from 'firebase/compat/app';
-import 'firebase/compat/firestore';
+  FieldValue,
+  initializeNamedDbTestEnvironment,
+  NamedDbRulesTestEnvironment,
+  Timestamp,
+} from './namedDbEmulatorHarness';
 import { ManagerInvite, Organization, UserProfile } from '../types';
 import {
   buildAtomicInviteClaimPayloads,
@@ -20,8 +19,7 @@ import {
   resolveUnprofiledUserAccess,
 } from '../utils/tenantAccess';
 
-const Timestamp = firebase.firestore.Timestamp;
-const serverTimestamp = firebase.firestore.FieldValue.serverTimestamp;
+const serverTimestamp = FieldValue.serverTimestamp;
 
 interface TestOutcome {
   name: string;
@@ -29,34 +27,12 @@ interface TestOutcome {
   error?: string;
 }
 
-function parseEmulatorConfig(): { host: string; port: number } {
-  const envHost = process.env.FIRESTORE_EMULATOR_HOST;
-  if (envHost) {
-    const [rawHost, rawPort] = envHost.split(':');
-    const parsedPort = Number(rawPort);
-    if (rawHost && !Number.isNaN(parsedPort) && parsedPort > 0) {
-      return { host: rawHost, port: parsedPort };
-    }
-  }
-  return { host: '127.0.0.1', port: 8080 };
-}
-
 async function runPhase3EmulatorTests() {
   console.log('========================================================================');
   console.log('   PHASE 3: CLIENT AUTH & SUBSCRIPTION FLOW TESTS (FIRESTORE EMULATOR)  ');
   console.log('========================================================================\n');
 
-  const rulesContent = fs.readFileSync('firestore.rules', 'utf8');
-  const { host, port } = parseEmulatorConfig();
-
-  const testEnv: RulesTestEnvironment = await initializeTestEnvironment({
-    projectId: 'aleqfal-phase3-flow-tests',
-    firestore: {
-      rules: rulesContent,
-      host,
-      port,
-    },
-  });
+  const testEnv: NamedDbRulesTestEnvironment = await initializeNamedDbTestEnvironment();
 
   await testEnv.clearFirestore();
 

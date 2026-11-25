@@ -156,18 +156,30 @@ import {
   generateDeterministicClosingId,
 } from '../utils/accounting';
 import {
+  evaluateShiftClosingSlotPolicy,
+  executeAtomicReviewShiftClosing,
+  fetchSlotClosingsFromServer,
+  ShiftClosingBusinessError,
+} from '../utils/shiftClosingGuards';
+import {
   assertDriveSessionMatchesAccount,
   assertOrgDriveAuthorizationEligibility,
+  buildBranchDriveDisconnectPayload,
+  buildOrgDriveDisconnectPayload,
   clearDriveSession,
   downloadOriginalClosingExcelFromDrive,
   evaluateOrgDriveReadiness,
+  executeOrgDriveDisconnect,
   getActiveDriveSession,
+  isBranchActiveForDriveLink,
   isOAuthCancellationOrConfigError,
   OrgDriveReadinessResult,
   DRIVE_NOT_READY_MESSAGE,
   requestDriveAuthorization,
+  selectBranchesForDriveDisconnect,
   uploadAndVerifyClosingExcelToDrive,
 } from '../services/driveService';
+import { clearUnifiedDriveFolderCache } from '../services/unifiedDriveService';
 import {
   assertValidIsoCalendarDate,
   downloadXlsxBytes,
@@ -2569,59 +2581,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('يجب أن تكون جميع المبالغ المالية أرقاماً موجبة صحيحة.');
     }
 
-    const closingId = generateDeterministicClosingId(
+    const canonicalClosingId = generateDeterministicClosingId(
       currentOrg.id,
       data.branchId,
       cleanDate,
       data.period
     );
+
+    // Authoritative server-only check for ALL closings matching (orgId, branchId, date, period).
+    // Fails closed on network/offline errors or permission-denied (never uses cache alone to allow creation).
+    const serverSlotClosings = await fetchSlotClosingsFromServer({
+      db,
+      orgId: currentOrg.id,
+      branchId: data.branchId,
+      date: cleanDate,
+      period: data.period,
+    });
+
+    // Enforce strict Single-Closing-Per-Slot policy BEFORE constructing any batch or write:
+    // Blocks approved, pending_review, and any other employee's draft OR rejected closing.
+    const slotEval = evaluateShiftClosingSlotPolicy({
+      slotClosings: serverSlotClosings,
+      canonicalClosingId,
+      actorUid: currentUser.uid,
+      branchName: data.branchName,
+      date: cleanDate,
+      period: data.period,
+    });
+
+    if (!slotEval.allowed) {
+      throw new ShiftClosingBusinessError(
+        slotEval.conflictCode,
+        slotEval.errorMessage,
+        slotEval.conflictingClosing.id
+      );
+    }
+
+    const closingId = slotEval.targetClosingId;
+    const existingData: ShiftClosing | null = slotEval.existingOwnClosing;
     const closingDocRef = doc(db, 'closings', closingId);
     const archiveDocRef = doc(db, 'closingArchives', closingId);
     const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const auditLogRef = doc(db, 'auditLogs', logId);
     const nowIso = new Date().toISOString();
-
-    // Check for existing closing for the same branch, date, and period:
-    // 1. Check in-memory closings first (instant)
-    const existingInState = closings.find((c) => c.id === closingId);
-
-    // 2. Query Firestore collection to confirm server state safely without null-get evaluation error
-    let existingData: ShiftClosing | null = existingInState || null;
-    if (!existingData) {
-      try {
-        const q = query(
-          collection(db, 'closings'),
-          where('orgId', '==', currentOrg.id),
-          where('branchId', '==', data.branchId),
-          where('date', '==', cleanDate),
-          where('period', '==', data.period)
-        );
-        const snap = await getDocs(q);
-        if (!snap.empty) {
-          existingData = snap.docs[0].data() as ShiftClosing;
-        }
-      } catch (checkErr) {
-        console.warn('Notice checking existing closings via query:', checkErr);
-      }
-    }
-
-    // Enforce strict duplicate closing and approval immutability guards:
-    if (existingData) {
-      if (existingData.status === 'approved') {
-        throw new Error(
-          `يوجد إقفال معتمد مسبقاً لهذا الفرع (${data.branchName}) للفترة ${
-            data.period === 'morning' ? 'الصباحية' : 'المسائية'
-          } بتاريخ ${cleanDate}. لا يُسمح بتعديل الإقفال بعد اعتماده.`
-        );
-      }
-      if (existingData.status === 'pending_review') {
-        if (existingData.employeeId !== currentUser.uid) {
-          throw new Error('يوجد إقفال قيد المراجعة بالفعل لنفس الفرع والفترة بواسطة موظف آخر.');
-        } else {
-          throw new Error('تم إرسال إقفال لهذه الفترة وهو قيد مراجعة الإدارة حالياً.');
-        }
-      }
-    }
 
     // Ensure safeActorName strictly complies with firestore.rules:
     // incoming().actorName is string && incoming().actorName.size() >= 2 && incoming().actorName.size() <= 100
@@ -2689,7 +2691,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     let existingArchive: ClosingArchiveRecord | null =
       closingArchives.find((a) => a.closingId === closingId) || null;
-    if (!existingArchive) {
+    if (!existingArchive && existingData) {
       try {
         const archiveSnap = await getDoc(archiveDocRef);
         if (archiveSnap.exists()) {
@@ -2729,7 +2731,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (data.status === 'pending_review') {
       const submitNotifs = buildClosingSubmittedNotifications({
         closing: newClosing,
-        isResubmission: existingData?.status === 'rejected',
+        isResubmission: slotEval.isResubmission,
         actorUid: currentUser.uid,
         actorName: safeActorName,
         actorRole: userProfile.role,
@@ -2744,6 +2746,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await batch.commit();
     } catch (err: any) {
+      // If a concurrent write occupied the slot right before commit, query server to surface the real conflict message
+      if (isPermissionDeniedError(err)) {
+        try {
+          const freshSlotClosings = await fetchSlotClosingsFromServer({
+            db,
+            orgId: currentOrg.id,
+            branchId: data.branchId,
+            date: cleanDate,
+            period: data.period,
+          });
+          const postRaceEval = evaluateShiftClosingSlotPolicy({
+            slotClosings: freshSlotClosings,
+            canonicalClosingId,
+            actorUid: currentUser.uid,
+            branchName: data.branchName,
+            date: cleanDate,
+            period: data.period,
+          });
+          if (!postRaceEval.allowed) {
+            throw new ShiftClosingBusinessError(
+              postRaceEval.conflictCode,
+              postRaceEval.errorMessage,
+              postRaceEval.conflictingClosing.id
+            );
+          }
+        } catch (recheckErr) {
+          if (
+            recheckErr instanceof ShiftClosingBusinessError &&
+            recheckErr.code !== 'SLOT_SERVER_UNAVAILABLE' &&
+            recheckErr.code !== 'SLOT_VERIFICATION_PERMISSION_DENIED'
+          ) {
+            throw recheckErr;
+          }
+        }
+      }
       console.error('Error committing shift closing batch:', {
         closingId,
         orgId: currentOrg.id,
@@ -2778,99 +2815,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('يجب كتابة سبب الإرجاع للموظف حتى يتمكن من تصحيح الإقفال.');
     }
 
-    const closingDocRef = doc(db, 'closings', closingId);
-    const closingSnap = await getDoc(closingDocRef);
-    if (!closingSnap.exists()) {
-      throw new Error('سجل الإقفال غير موجود');
-    }
-
-    const existing = closingSnap.data() as ShiftClosing;
-    if (existing.status === 'approved') {
-      throw new Error('الإقفال معتمد بالفعل ومقفل ضد التعديلات المباشرة.');
-    }
-
-    const { yearMonth } = assertValidIsoCalendarDate(existing.date);
-    const archiveDocRef = doc(db, 'closingArchives', closingId);
-    let existingArchive: ClosingArchiveRecord | null =
-      closingArchives.find((a) => a.closingId === closingId) || null;
-    if (!existingArchive) {
-      try {
-        const archiveSnap = await getDoc(archiveDocRef);
-        if (archiveSnap.exists()) {
-          existingArchive = archiveSnap.data() as ClosingArchiveRecord;
-        }
-      } catch (archErr) {
-        console.warn('Notice checking archive doc during review:', archErr);
-      }
-    }
-
-    const nowIso = new Date().toISOString();
-    const updateData: Partial<ShiftClosing> = {
-      status: action === 'approve' ? 'approved' : 'rejected',
-      reviewedBy: currentUser.uid,
-      reviewedByName: userProfile.displayName || 'المدير العام',
-      reviewedAt: nowIso,
-      updatedAt: nowIso,
-    };
-
-    if (action === 'reject') {
-      updateData.rejectionReason = rejectionReason?.trim();
-    } else {
-      updateData.rejectionReason = '';
-    }
+    const cachedArchiveExists = closingArchives.some((a) => a.closingId === closingId);
 
     try {
-      const batch = writeBatch(db);
-      batch.update(closingDocRef, updateData);
-
-      const logRef = doc(db, 'auditLogs', `log_${Date.now()}`);
-      batch.set(logRef, {
-        id: logRef.id,
+      await executeAtomicReviewShiftClosing({
+        db,
         orgId: currentOrg.id,
-        actorId: currentUser.uid,
-        actorName: userProfile.displayName,
-        actorRole: userProfile.role,
-        action: action === 'approve' ? 'CLOSING_APPROVED' : 'CLOSING_REJECTED_FOR_REVISION',
-        targetType: 'closing',
-        targetId: closingId,
-        details:
-          action === 'approve'
-            ? `اعتماد إقفال ${existing.branchName} (${existing.period}) بتاريخ ${existing.date} - إجمالي ${existing.totalSales}`
-            : `إعادة إقفال ${existing.branchName} (${existing.period}) للتعديل. السبب: ${rejectionReason}`,
-        timestamp: nowIso,
-      });
-
-      if (action === 'approve') {
-        if (!existingArchive) {
-          batch.set(archiveDocRef, {
-            closingId,
-            orgId: currentOrg.id,
-            branchId: existing.branchId,
-            yearMonth,
-            archiveStatus: 'pending_drive_sync',
-            updatedAt: nowIso,
-          });
-        } else if (existingArchive.archiveStatus === 'pending_drive_sync') {
-          batch.update(archiveDocRef, {
-            archiveStatus: 'pending_drive_sync',
-            updatedAt: nowIso,
-          });
-        }
-      }
-
-      const reviewNotifs = buildClosingReviewedNotifications({
-        closing: existing,
+        closingId,
         action,
-        rejectionReason: rejectionReason?.trim(),
-        actorUid: currentUser.uid,
-        actorName: userProfile.displayName || currentUser.email || 'الإدارة',
-        actorRole: userProfile.role,
-        createdAt: nowIso,
+        rejectionReason,
+        reviewerUid: currentUser.uid,
+        reviewerName: userProfile.displayName,
+        reviewerEmail: currentUser.email,
+        reviewerRole: userProfile.role,
+        cachedArchiveExists,
       });
-      reviewNotifs.forEach((n) => batch.set(doc(db, 'notifications', n.id), n));
-
-      await batch.commit();
     } catch (error) {
+      if (error instanceof ShiftClosingBusinessError) {
+        throw error;
+      }
       console.error('Error reviewing closing:', error);
       handleFirestoreError(error, OperationType.UPDATE, `closings/${closingId}`);
     }
@@ -3068,7 +3031,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('تم تبديل المؤسسة أو الجلسة أثناء الربط؛ تم إيقاف الحفظ لحماية عزل المؤسسات.');
     }
 
-    const orgBranchIds = new Set(branches.filter((b) => b.orgId === targetOrgId).map((b) => b.id));
+    const orgBranchesById = new Map(
+      branches.filter((b) => b.orgId === targetOrgId).map((b) => [b.id, b])
+    );
     const nowIso = new Date().toISOString();
     const orgRef = doc(db, 'organizations', targetOrgId);
     const batch = writeBatch(db);
@@ -3098,8 +3063,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const branchMap = new Map<string, { folderId: string; folderName: string; webViewLink: string }>();
     if (data.branchFolders && data.branchFolders.length > 0) {
       for (const bf of data.branchFolders) {
-        if (!orgBranchIds.has(bf.branchId)) {
+        const targetBranch = orgBranchesById.get(bf.branchId);
+        if (!targetBranch) {
           throw new Error(`تعارض عزل الفروع: الفرع (${bf.branchId}) لا يتبع للمؤسسة (${targetOrgId}).`);
+        }
+        // Suspended/inactive branches must never receive new or updated Drive folder links
+        if (!isBranchActiveForDriveLink(targetBranch)) {
+          continue;
         }
         branchMap.set(bf.branchId, bf);
         const branchRef = doc(db, 'branches', bf.branchId);
@@ -3265,45 +3235,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const targetOrgId = currentOrg.id;
     const targetUserUid = currentUser.uid;
-    clearDriveSession(targetOrgId);
-
     const nowIso = new Date().toISOString();
     const orgRef = doc(db, 'organizations', targetOrgId);
     const batch = writeBatch(db);
 
-    batch.update(orgRef, {
-      driveConnected: false,
-      driveWriteVerified: false,
-      driveLastHealthStatus: 'disconnected' as DriveHealthStatus,
-      driveWriteVerifiedAt: deleteField(),
-      driveHealthError: deleteField(),
-      driveFolderId: deleteField(),
-      driveFolderName: deleteField(),
-      driveFolderLink: deleteField(),
-      driveAccountEmail: deleteField(),
-      driveAccountName: deleteField(),
-      driveGoogleSub: deleteField(),
-      driveLinkedAt: deleteField(),
-      driveMonthFolderIds: deleteField(),
-      updatedAt: nowIso,
-    });
+    batch.update(orgRef, buildOrgDriveDisconnectPayload(nowIso, deleteField));
 
-    for (const branch of branches) {
-      if (
-        branch.orgId === targetOrgId &&
-        (branch.driveFolderId || branch.driveFolderName || branch.driveFolderLink)
-      ) {
-        const branchRef = doc(db, 'branches', branch.id);
-        batch.update(branchRef, {
-          driveFolderId: deleteField(),
-          driveFolderName: deleteField(),
-          driveFolderLink: deleteField(),
-        });
-      }
+    const branchesToClear = selectBranchesForDriveDisconnect(branches, targetOrgId);
+    for (const branch of branchesToClear) {
+      const branchRef = doc(db, 'branches', branch.id);
+      batch.update(branchRef, buildBranchDriveDisconnectPayload(deleteField));
     }
 
     try {
-      await batch.commit();
+      await executeOrgDriveDisconnect({
+        orgId: targetOrgId,
+        commitDisconnectBatch: () => batch.commit(),
+        clearSession: clearDriveSession,
+        clearFolderCache: clearUnifiedDriveFolderCache,
+      });
+
       const driveDisconnectNotif = buildSecurityAdminNotification({
         dedupKey: `drive_disconnected:${targetOrgId}:${nowIso}`,
         type: 'SECURITY_DRIVE_DISCONNECTED',
@@ -3508,7 +3459,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         revision: targetRevision,
       });
 
-      // 2. Upload to Drive ({org}/{branch}/{YYYY-MM}) and strictly verify metadata + binary + exceljs content
+      // 2. Upload to Unified Daily Drive Hierarchy (<Org Root>/الفروع/<Branch>/<YYYY>/<MM>/<DD>)
+      //    and strictly verify metadata + binary + exceljs content
       const uploadResult = await uploadAndVerifyClosingExcelToDrive({
         token: session.accessToken,
         org: targetOrg,
@@ -3517,6 +3469,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         revision: targetRevision,
         excelPayload,
         forbiddenPreviousFileId,
+        folderStrategy: 'unified_daily',
+        actor: {
+          uid: targetUserUid,
+          orgId: targetOrgId,
+          role: userProfile?.role || 'manager',
+          isActive: Boolean(userProfile?.isActive),
+          displayName: userProfile?.displayName || currentUser.displayName || targetOrg.ownerName,
+          email: eligibility.ownerEmail,
+          googleUid: eligibility.googleUid,
+        },
       });
 
       if (activeOrgIdRef.current !== targetOrgId || activeUserUidRef.current !== targetUserUid) {

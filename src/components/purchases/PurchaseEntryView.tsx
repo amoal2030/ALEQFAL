@@ -29,6 +29,8 @@ import {
   isAllowedPurchaseAttachmentFile,
   savePurchaseInvoice,
 } from '../../services/purchaseService';
+import { getActiveDriveSession } from '../../services/driveService';
+import { uploadUnifiedDriveFile } from '../../services/unifiedDriveService';
 import {
   AlertCircle,
   Building2,
@@ -116,7 +118,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
   onOpenSuppliers,
   initialBranchId,
 }) => {
-  const { userProfile, currentOrg, branches, currentBranch } = useAuth();
+  const { currentUser, userProfile, currentOrg, branches, currentBranch } = useAuth();
   const { language, tr } = useLanguage();
 
   const currency = currentOrg?.currency || 'SAR';
@@ -567,7 +569,63 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
     setIsSubmitting(true);
 
     try {
+      const preparedPurchaseId = `pur_${Date.now().toString(36)}_${Math.random()
+        .toString(36)
+        .slice(2, 10)}`;
+
+      // Organization Owner ONLY: when an active RAM Drive session exists, upload invoice
+      // attachment files directly to the unified daily folder (<Org>/الفروع/<Branch>/<YYYY>/<MM>/<DD>).
+      // Branch Managers & Supervisors NEVER link personal Google accounts or access Drive directly.
+      const isOrgOwnerWithDrive = Boolean(
+        userProfile.role === 'manager' &&
+          currentUser?.uid === currentOrg.ownerId &&
+          currentOrg.driveConnected
+      );
+      const activeDriveSession = isOrgOwnerWithDrive
+        ? getActiveDriveSession(currentOrg.id)
+        : null;
+
+      const resolvedAttachments = [];
+      for (const att of attachments) {
+        if (activeDriveSession && att.file) {
+          const bytes = new Uint8Array(await att.file.arrayBuffer());
+          const uploaded = await uploadUnifiedDriveFile({
+            token: activeDriveSession.accessToken,
+            actor: {
+              uid: userProfile.uid,
+              orgId: currentOrg.id,
+              role: userProfile.role,
+              isActive: userProfile.isActive,
+              displayName: userProfile.displayName,
+              email: userProfile.email,
+            },
+            org: currentOrg,
+            branch: effectiveBranch,
+            documentType: 'purchase',
+            documentDate: date,
+            recordId: preparedPurchaseId,
+            fileName: att.fileName,
+            mimeType: att.mimeType,
+            bytes,
+          });
+          resolvedAttachments.push({
+            fileName: att.fileName,
+            fileSize: att.fileSize,
+            mimeType: att.mimeType,
+            driveFileId: uploaded.record.fileId,
+            driveWebViewLink: uploaded.record.webViewLink,
+          });
+        } else {
+          resolvedAttachments.push({
+            fileName: att.fileName,
+            fileSize: att.fileSize,
+            mimeType: att.mimeType,
+          });
+        }
+      }
+
       const result = await savePurchaseInvoice({
+        purchaseId: preparedPurchaseId,
         userProfile,
         orgId: currentOrg.id,
         currency,
@@ -585,11 +643,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
         discountAmount: discountAmount.trim() === '' ? '0' : discountAmount,
         vatRate: effectiveVatRateInput.trim() === '' ? '0' : effectiveVatRateInput,
         notes,
-        attachments: attachments.map((a) => ({
-          fileName: a.fileName,
-          fileSize: a.fileSize,
-          mimeType: a.mimeType,
-        })),
+        attachments: resolvedAttachments,
       });
 
       setSavedBanner({

@@ -12,6 +12,7 @@ import ExcelJS from 'exceljs';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db, OperationType } from '../lib/firebase';
 import type {
+  AttachmentItem,
   Branch,
   Organization,
   Purchase,
@@ -606,6 +607,29 @@ export async function fetchPurchaseItemsForInvoice(
   }
 
   return Array.isArray(purchase.items) ? [...purchase.items] : [];
+}
+
+/**
+ * Fetches `/attachments` records linked to a specific purchase invoice (scoped to `orgId`).
+ */
+export async function fetchPurchaseAttachmentsForInvoice(
+  purchase: Purchase
+): Promise<AttachmentItem[]> {
+  try {
+    const q = query(
+      collection(db, 'attachments'),
+      where('orgId', '==', purchase.orgId),
+      where('purchaseId', '==', purchase.id)
+    );
+    const snap = await getDocs(q);
+    return snap.docs
+      .map((d) => ({ ...(d.data() as AttachmentItem), id: d.id }))
+      .filter((att) => att.orgId === purchase.orgId && att.purchaseId === purchase.id)
+      .sort((a, b) => String(a.uploadedAt || '').localeCompare(String(b.uploadedAt || '')));
+  } catch (err) {
+    console.warn(`Unable to load attachments for purchase ${purchase.id}:`, err);
+    return [];
+  }
 }
 
 /**

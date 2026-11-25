@@ -4,6 +4,7 @@ import { useLanguage } from '../../context/LanguageContext';
 import { ShiftClosing, ClosingArchiveRecord } from '../../types';
 import { formatCurrency, formatDate, calculateShiftTotals } from '../../utils/accounting';
 import { resolveEffectivePermissions } from '../../utils/permissions';
+import { runPostApprovalArchiveWorkflow } from '../../utils/shiftClosingGuards';
 import {
   FileSpreadsheet,
   CheckCircle2,
@@ -242,21 +243,17 @@ export const ClosingsReview: React.FC = () => {
     const targetId = activeClosing.id;
     try {
       await reviewShiftClosing(targetId, 'approve');
-      // Try automatic Drive archival silently if an active verified RAM Drive session exists
-      try {
-        const saved = await archiveClosingToDrive(targetId, { interactiveAuthIfNeeded: false });
-        setArchiveFeedback({
-          type: 'success',
-          message: `تم اعتماد الإقفال وأرشفة ملف Excel (${saved.driveExcelFileName}) والتحقق منه في Google Drive.`,
-        });
-      } catch (archErr: any) {
-        setArchiveFeedback({
-          type: 'warning',
-          message:
-            archErr?.message ||
-            'تم اعتماد الإقفال رسمياً. يرجى الضغط على «أرشفة في Google Drive» لرفع ملف Excel.',
-        });
-      }
+      // Only organization managers trigger silent Google Drive archival; supervisors receive a clean success message
+      const feedback = await runPostApprovalArchiveWorkflow({
+        isManager,
+        archiveClosing: () => archiveClosingToDrive(targetId, { interactiveAuthIfNeeded: false }),
+        supervisorSuccessMessage: tr(
+          'تم اعتماد الإقفال بنجاح. تنتظر أرشفته في Google Drive إجراء مالك المؤسسة.',
+          'Shift closing approved successfully. Google Drive archival awaits the organization owner.',
+          'شفٹ کلوزنگ کامیابی سے منظور ہو گئی۔ Google Drive آرکائیو کے لیے ادارے کے مالک کا اقدام درکار ہے۔'
+        ),
+      });
+      setArchiveFeedback(feedback);
       setActiveClosing(null);
     } catch (err: any) {
       setActionError(err?.message || 'فشل اعتماد الإقفال.');

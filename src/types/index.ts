@@ -599,6 +599,8 @@ export interface NotificationNavTarget {
     | 'purchase_reports'
     | 'suppliers'
     | 'reports'
+    | 'workers_payroll'
+    | 'worker_advances'
     | 'branches'
     | 'employees'
     | 'audit'
@@ -650,4 +652,7 @@ export interface BrowserNotificationCapability {
   backgroundPushAvailable: false;
   backgroundPushReason: string;
 }
+
+export * from './workersPayroll';
+
 

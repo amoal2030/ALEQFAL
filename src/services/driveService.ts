@@ -30,6 +30,8 @@ import {
   verifyDownloadedClosingExcel,
   verifyOriginalArchivedExcelFromDrive,
 } from './excelReportService';
+import type { UnifiedDriveActorContext } from '../types/unifiedDrive';
+import { ensureUnifiedDailyFolderPath } from './unifiedDriveService';
 
 export interface DriveTokenSession {
   orgId: string;
@@ -517,6 +519,87 @@ export const clearDriveSession = (orgId?: string | null): void => {
   } else {
     activeSessionsByOrg.clear();
   }
+};
+
+/**
+ * Returns true strictly when a branch is active and eligible to link/update a Google Drive folder.
+ * Suspended/inactive/purged branches MUST NOT receive new or updated Drive folder links.
+ */
+export const isBranchActiveForDriveLink = (
+  branch: Pick<Branch, 'isActive' | 'lifecycleStatus'>
+): boolean => {
+  return (
+    branch.isActive === true &&
+    (!branch.lifecycleStatus || branch.lifecycleStatus === 'active')
+  );
+};
+
+/**
+ * Selects all organization branches (both active and inactive/suspended) that still carry
+ * legacy Google Drive folder metadata so disconnect clears them cleanly without failing.
+ */
+export const selectBranchesForDriveDisconnect = (
+  branches: Branch[],
+  orgId: string
+): Branch[] => {
+  return branches.filter(
+    (branch) =>
+      branch.orgId === orgId &&
+      Boolean(branch.driveFolderId || branch.driveFolderName || branch.driveFolderLink)
+  );
+};
+
+/**
+ * Builds the strict 14-field organization Drive disconnect update payload matching
+ * `canOrgOwnerUpdateDriveMetadata` in `firestore.rules`.
+ */
+export const buildOrgDriveDisconnectPayload = <TDeleteSentinel>(
+  nowIso: string,
+  createDeleteField: () => TDeleteSentinel
+): Record<string, unknown> => ({
+  driveConnected: false,
+  driveWriteVerified: false,
+  driveLastHealthStatus: 'disconnected',
+  driveWriteVerifiedAt: createDeleteField(),
+  driveHealthError: createDeleteField(),
+  driveFolderId: createDeleteField(),
+  driveFolderName: createDeleteField(),
+  driveFolderLink: createDeleteField(),
+  driveAccountEmail: createDeleteField(),
+  driveAccountName: createDeleteField(),
+  driveGoogleSub: createDeleteField(),
+  driveLinkedAt: createDeleteField(),
+  driveMonthFolderIds: createDeleteField(),
+  updatedAt: nowIso,
+});
+
+/**
+ * Builds the strict 3-field branch Drive disconnect update payload matching
+ * `canOrgOwnerSyncBranchDriveFolder` in `firestore.rules`.
+ */
+export const buildBranchDriveDisconnectPayload = <TDeleteSentinel>(
+  createDeleteField: () => TDeleteSentinel
+): Record<string, unknown> => ({
+  driveFolderId: createDeleteField(),
+  driveFolderName: createDeleteField(),
+  driveFolderLink: createDeleteField(),
+});
+
+/**
+ * Executes the Google Drive disconnect commit sequence safely:
+ * - Commits Firestore updates FIRST (`commitDisconnectBatch`).
+ * - Clears in-memory Drive OAuth session AND unified Drive folder cache ONLY AFTER commit succeeds.
+ * - On any commit error, preserves existing OAuth session and folder cache untouched and rethrows.
+ */
+export const executeOrgDriveDisconnect = async (params: {
+  orgId: string;
+  commitDisconnectBatch: () => Promise<void>;
+  clearFolderCache: (orgId: string) => void;
+  clearSession?: (orgId: string) => void;
+}): Promise<void> => {
+  await params.commitDisconnectBatch();
+  (params.clearSession ?? clearDriveSession)(params.orgId);
+  params.clearFolderCache(params.orgId);
 };
 
 /**
@@ -1388,21 +1471,25 @@ export async function verifyDriveWriteReadCapability(params: {
 
   let createdFileId: string | null = null;
 
-  const bestEffortDelete = async (fileId: string): Promise<{ deleted: boolean; note: string }> => {
+  const bestEffortTrashCleanup = async (fileId: string): Promise<{ deleted: boolean; note: string }> => {
     try {
-      const delRes = await fetch(
-        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`,
+      const trashRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,trashed`,
         {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` },
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ trashed: true }),
         }
       );
-      if (delRes.ok || delRes.status === 204 || delRes.status === 404) {
-        return { deleted: true, note: 'تم التحقق وحذف ملف الاختبار المؤقت بنجاح.' };
+      if (trashRes.ok || trashRes.status === 404) {
+        return { deleted: true, note: 'تم التحقق ونقل ملف الاختبار المؤقت إلى سلة المهملات بأمان.' };
       }
       return {
         deleted: false,
-        note: `تم التحقق بنجاح والاحتفاظ بملف التحقق (${testFileName}) لعدم إمكانية حذفه (رمز: ${delRes.status}).`,
+        note: `تم التحقق بنجاح والاحتفاظ بملف التحقق (${testFileName}) لعدم إمكانية نقله لسلة المهملات (رمز: ${trashRes.status}).`,
       };
     } catch {
       return {
@@ -1609,8 +1696,8 @@ export async function verifyDriveWriteReadCapability(params: {
       );
     }
 
-    // 4. Delete temporary test file (or retain gracefully as verification file if delete is blocked)
-    const cleanup = await bestEffortDelete(fileId);
+    // 4. Safely move temporary test file to Google Drive Trash (never HTTP DELETE)
+    const cleanup = await bestEffortTrashCleanup(fileId);
 
     return {
       verified: true,
@@ -1622,7 +1709,7 @@ export async function verifyDriveWriteReadCapability(params: {
     };
   } catch (err) {
     if (createdFileId) {
-      await bestEffortDelete(createdFileId);
+      await bestEffortTrashCleanup(createdFileId);
     }
     throw err;
   }
@@ -1635,6 +1722,8 @@ export interface ClosingExcelDriveUploadResult {
   monthFolder: DriveMonthFolderRef;
   orgFolder: DriveFolderRef;
   branchFolder: DriveFolderRef;
+  dayFolderId?: string;
+  unifiedDisplayPath?: string;
   payloadHash: string;
   revision: number;
   updatedExisting: boolean;
@@ -1743,6 +1832,8 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
   revision: number;
   excelPayload: GeneratedClosingExcel;
   forbiddenPreviousFileId?: string;
+  folderStrategy?: 'legacy_month' | 'unified_daily';
+  actor?: UnifiedDriveActorContext;
 }): Promise<ClosingExcelDriveUploadResult> {
   const {
     token,
@@ -1752,6 +1843,8 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
     revision,
     excelPayload,
     forbiddenPreviousFileId,
+    folderStrategy = 'legacy_month',
+    actor,
   } = params;
 
   if (!token || !token.trim()) {
@@ -1772,15 +1865,74 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
     throw new Error('رقم إصدار الأرشفة غير صالح.');
   }
 
-  // 1. Ensure & verify full folder hierarchy (Org -> Branch -> YYYY-MM)
-  const { orgFolder, branchFolder, monthFolder } = await ensureBranchMonthDriveFolder({
-    token,
-    org,
-    branch,
-    yearMonth: excelPayload.yearMonth,
-  });
+  // 1. Resolve target folder hierarchy:
+  //    - 'unified_daily': <Org Root> / الفروع / <Branch> / <YYYY> / <MM> / <DD> (direct inside Day folder)
+  //    - 'legacy_month':  <Org Root> / <Branch> / <YYYY-MM> (backward-compatible default)
+  let orgFolder: DriveFolderRef;
+  let branchFolder: DriveFolderRef;
+  let monthFolder: DriveMonthFolderRef;
+  let targetParentFolderId: string;
+  let dayFolderId: string | undefined;
+  let unifiedDisplayPath: string | undefined;
 
-  // 2. Search inside monthFolder for existing file matching (closingId, revision) to prevent duplicates on retry
+  if (folderStrategy === 'unified_daily') {
+    const effectiveActor: UnifiedDriveActorContext = actor || {
+      uid: org.ownerId,
+      orgId: org.id,
+      role: 'manager',
+      isActive: true,
+      displayName: org.ownerName,
+      email: org.ownerEmail,
+    };
+    const unified = await ensureUnifiedDailyFolderPath({
+      token,
+      actor: effectiveActor,
+      org,
+      branch,
+      date: closing.date,
+    });
+    orgFolder = {
+      folderId: unified.orgFolder.folderId,
+      folderName: unified.orgFolder.folderName,
+      webViewLink: unified.orgFolder.webViewLink,
+      parents: unified.orgFolder.parents,
+      reused: unified.orgFolder.reused,
+      verifiedViaGet: unified.orgFolder.verifiedViaGet,
+    };
+    branchFolder = {
+      folderId: unified.branchFolder.folderId,
+      folderName: unified.branchFolder.folderName,
+      webViewLink: unified.branchFolder.webViewLink,
+      parents: unified.branchFolder.parents,
+      reused: unified.branchFolder.reused,
+      verifiedViaGet: unified.branchFolder.verifiedViaGet,
+    };
+    monthFolder = {
+      folderId: unified.monthFolder.folderId,
+      folderName: unified.monthFolder.folderName,
+      webViewLink: unified.monthFolder.webViewLink,
+      branchId: branch.id,
+      yearMonth: unified.yearMonth,
+      updatedAt: new Date().toISOString(),
+    };
+    targetParentFolderId = unified.dayFolder.folderId;
+    dayFolderId = unified.dayFolder.folderId;
+    unifiedDisplayPath = unified.displayPath;
+  } else {
+    const legacy = await ensureBranchMonthDriveFolder({
+      token,
+      org,
+      branch,
+      yearMonth: excelPayload.yearMonth,
+    });
+    orgFolder = legacy.orgFolder;
+    branchFolder = legacy.branchFolder;
+    monthFolder = legacy.monthFolder;
+    targetParentFolderId = legacy.monthFolder.folderId;
+  }
+
+  // 2. Search inside target folder for existing file matching (closingId, revision) to prevent duplicates on retry
+  const documentType = closing.period === 'morning' ? 'closing_morning' : 'closing_evening';
   const searchAppProperties: Record<string, string> = {
     systemId: 'al_eqfal',
     role: 'closing_excel',
@@ -1792,13 +1944,16 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
 
   const fullAppProperties: Record<string, string> = {
     ...searchAppProperties,
+    recordId: closing.id,
+    documentType,
+    documentDate: closing.date,
     yearMonth: excelPayload.yearMonth,
     payloadHash: excelPayload.payloadHash,
   };
 
   const existingMatches = await listMatchingClosingExcelFiles({
     token,
-    monthFolderId: monthFolder.folderId,
+    monthFolderId: targetParentFolderId,
     expectedAppProperties: searchAppProperties,
     fileNameForErrors: excelPayload.fileName,
   });
@@ -1827,7 +1982,7 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
     appProperties: fullAppProperties,
   };
   if (!targetFileIdToPatch) {
-    metadataPayload.parents = [monthFolder.folderId];
+    metadataPayload.parents = [targetParentFolderId];
   }
 
   const encoder = new TextEncoder();
@@ -1985,9 +2140,9 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
       `اسم ملف Excel المقروء (${verifiedMeta.name}) لا يطابق الاسم المتوقع (${excelPayload.fileName}).`
     );
   }
-  if (!Array.isArray(verifiedMeta.parents) || !verifiedMeta.parents.includes(monthFolder.folderId)) {
+  if (!Array.isArray(verifiedMeta.parents) || !verifiedMeta.parents.includes(targetParentFolderId)) {
     throw new Error(
-      `ملف Excel المرفوع لا يقع داخل مجلد الشهر الصحيح (${monthFolder.folderId}).`
+      `ملف Excel المرفوع لا يقع داخل المجلد المستهدف الصحيح (${targetParentFolderId}).`
     );
   }
   const propsErr = findAppPropertiesMismatch(verifiedMeta.appProperties, fullAppProperties);
@@ -2026,7 +2181,7 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
       folderName: excelPayload.fileName,
       operation: 'get',
       folderId: fileId,
-      parentId: monthFolder.folderId,
+      parentId: targetParentFolderId,
       orgId: org.id,
     });
   }
@@ -2056,6 +2211,8 @@ export async function uploadAndVerifyClosingExcelToDrive(params: {
     monthFolder,
     orgFolder,
     branchFolder,
+    ...(dayFolderId ? { dayFolderId } : {}),
+    ...(unifiedDisplayPath ? { unifiedDisplayPath } : {}),
     payloadHash: excelPayload.payloadHash,
     revision,
     updatedExisting: Boolean(targetFileIdToPatch),
@@ -2137,14 +2294,9 @@ export async function downloadOriginalClosingExcelFromDrive(params: {
       `نوع الملف المسترجع من Google Drive (${meta.mimeType || 'غير معروف'}) ليس ملف Excel (.xlsx) صالحاً.`
     );
   }
-  if (
-    archiveRecord.driveMonthFolderId &&
-    (!Array.isArray(meta.parents) || !meta.parents.includes(archiveRecord.driveMonthFolderId))
-  ) {
-    throw new Error(
-      `ملف Excel (${fileId}) لم يعد داخل مجلد الشهر المسجل (${archiveRecord.driveMonthFolderId}).`
-    );
-  }
+  // Canonical `fileId` resolution: do NOT break access if the file was safely moved
+  // into the unified daily folder (`الفروع / <Branch> / YYYY / MM / DD`) or renamed.
+  // Ownership & integrity are strictly enforced via `appProperties` + SHA-256 + exceljs below.
 
   const expectedProps: Record<string, string> = {
     systemId: 'al_eqfal',

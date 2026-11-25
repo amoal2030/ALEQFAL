@@ -4,17 +4,13 @@
  * against the real `firestore.rules`.
  */
 import assert from 'node:assert/strict';
-import * as fs from 'node:fs';
 import {
-  initializeTestEnvironment,
   assertFails,
   assertSucceeds,
-  RulesTestEnvironment,
-} from '@firebase/rules-unit-testing';
-import firebase from 'firebase/compat/app';
-import 'firebase/compat/firestore';
-
-const Timestamp = firebase.firestore.Timestamp;
+  initializeNamedDbTestEnvironment,
+  NamedDbRulesTestEnvironment,
+  Timestamp,
+} from './namedDbEmulatorHarness';
 
 interface TestOutcome {
   name: string;
@@ -22,34 +18,12 @@ interface TestOutcome {
   error?: string;
 }
 
-function parseEmulatorConfig(): { host: string; port: number } {
-  const envHost = process.env.FIRESTORE_EMULATOR_HOST;
-  if (envHost) {
-    const [rawHost, rawPort] = envHost.split(':');
-    const parsedPort = Number(rawPort);
-    if (rawHost && !Number.isNaN(parsedPort) && parsedPort > 0) {
-      return { host: rawHost, port: parsedPort };
-    }
-  }
-  return { host: '127.0.0.1', port: 8080 };
-}
-
 async function runPhase4SecurityTests() {
   console.log('========================================================================');
   console.log('   PHASE 4.1: RBAC, BRANCH ISOLATION & PRICING RULES (EMULATOR)         ');
   console.log('========================================================================\n');
 
-  const rulesContent = fs.readFileSync('firestore.rules', 'utf8');
-  const { host, port } = parseEmulatorConfig();
-
-  const testEnv: RulesTestEnvironment = await initializeTestEnvironment({
-    projectId: 'aleqfal-phase4-rbac-tests',
-    firestore: {
-      rules: rulesContent,
-      host,
-      port,
-    },
-  });
+  const testEnv: NamedDbRulesTestEnvironment = await initializeNamedDbTestEnvironment();
 
   await testEnv.clearFirestore();
 

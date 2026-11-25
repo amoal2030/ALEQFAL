@@ -930,6 +930,56 @@ service cloud.firestore {
         );
     }
 
+    // Dedicated, independent Organization Owner Google Drive metadata update gate.
+    // Strictly requires the caller to be BOTH an active `manager` of `orgId` AND the verified
+    // `ownerId` of `organizations/{orgId}`. Independent of `isSuperAdmin()` so a dual-role
+    // Super Admin who personally owns an organization can link/disconnect Drive ONLY on their
+    // own organization, without adding Drive fields to `canSuperAdminUpdateOrg` or allowing
+    // Super Admin to modify Drive settings of any other customer's organization.
+    function canOrgOwnerUpdateDriveMetadata(orgId, next, prev) {
+      let driveOrgKeys = [
+        'driveConnected',
+        'driveFolderId',
+        'driveFolderName',
+        'driveFolderLink',
+        'driveAccountEmail',
+        'driveAccountName',
+        'driveGoogleSub',
+        'driveLinkedAt',
+        'driveMonthFolderIds',
+        'driveWriteVerified',
+        'driveWriteVerifiedAt',
+        'driveLastHealthStatus',
+        'driveHealthError',
+        'updatedAt'
+      ];
+      let changed = next.diff(prev).affectedKeys();
+      return 'ownerId' in prev &&
+        prev.ownerId is string &&
+        prev.ownerId.size() > 0 &&
+        prev.ownerId == request.auth.uid &&
+        next.ownerId == prev.ownerId &&
+        next.id == prev.id &&
+        changed.hasOnly(driveOrgKeys) &&
+        isOrgSubscriptionAllowed(prev) &&
+        next.driveConnected is bool &&
+        (!('driveFolderId' in next) || (next.driveFolderId is string && next.driveFolderId.size() <= 256)) &&
+        (!('driveFolderName' in next) || (next.driveFolderName is string && next.driveFolderName.size() <= 256)) &&
+        (!('driveFolderLink' in next) || (next.driveFolderLink is string && next.driveFolderLink.size() <= 1024)) &&
+        (!('driveAccountEmail' in next) || (next.driveAccountEmail is string && next.driveAccountEmail.size() <= 254)) &&
+        (!('driveAccountName' in next) || (next.driveAccountName is string && next.driveAccountName.size() <= 200)) &&
+        (!('driveGoogleSub' in next) || (next.driveGoogleSub is string && next.driveGoogleSub.size() <= 128)) &&
+        (!('driveLinkedAt' in next) || (next.driveLinkedAt is string && next.driveLinkedAt.size() <= 64)) &&
+        (!('driveMonthFolderIds' in next) || next.driveMonthFolderIds is map) &&
+        (!('driveWriteVerified' in next) || next.driveWriteVerified is bool) &&
+        (!('driveWriteVerifiedAt' in next) || (next.driveWriteVerifiedAt is string && next.driveWriteVerifiedAt.size() <= 64)) &&
+        (!('driveLastHealthStatus' in next) || next.driveLastHealthStatus in ['untested', 'verified', 'failed', 'disconnected']) &&
+        (!('driveHealthError' in next) || (next.driveHealthError is string && next.driveHealthError.size() <= 600)) &&
+        (!('updatedAt' in next) || (next.updatedAt is string && next.updatedAt.size() <= 64) || next.updatedAt is timestamp) &&
+        hasValidUserDoc() &&
+        isOrgManager(orgId);
+    }
+
     // Organizations Collection
     match /organizations/{orgId} {
       // Allow members to read their own organization doc (even if expired) so UI can show expiry/renewal info
@@ -992,33 +1042,20 @@ service cloud.firestore {
         hasValidBranchPricingPayload(incoming());
 
       allow update: if isSignedIn() && isValidId(orgId) && (
-        isSuperAdmin() ? (
-          // 1. Super Admin managing organization profile, status, owner binding, fees, exemption, and subscription fields
-          canSuperAdminUpdateOrg(orgId, request.resource.data, resource.data)
-        ) : hasValidUserDoc() ? (
-          // 2. Active Manager updating ONLY non-sensitive Google Drive link/cache metadata (strict allowlist; protects name, taxNumber, CR, fees, subscription & ownership)
-          isOrgManager(orgId) &&
-          hasActiveOrgSubscription(orgId) &&
-          request.resource.data.ownerId == resource.data.ownerId &&
-          request.resource.data.id == resource.data.id &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'driveConnected',
-            'driveFolderId',
-            'driveFolderName',
-            'driveFolderLink',
-            'driveAccountEmail',
-            'driveAccountName',
-            'driveGoogleSub',
-            'driveLinkedAt',
-            'driveMonthFolderIds',
-            'driveWriteVerified',
-            'driveWriteVerifiedAt',
-            'driveLastHealthStatus',
-            'driveHealthError',
-            'updatedAt'
-          ])
-        ) : (
+        // 1. Super Admin managing organization profile, status, owner binding, fees, exemption, and subscription fields (strictly excludes all drive* fields)
+        (isSuperAdmin() && canSuperAdminUpdateOrg(orgId, request.resource.data, resource.data)) ||
+        // 2. Active Organization Owner updating ONLY non-sensitive Google Drive link/cache metadata for their own organization (strict allowlist; independent of Super Admin role; fast ternary ownerId guard prevents CEL budget exhaustion on non-owner fallback)
+        (
+          'ownerId' in resource.data &&
+          resource.data.ownerId is string &&
+          resource.data.ownerId == request.auth.uid
+            ? canOrgOwnerUpdateDriveMetadata(orgId, request.resource.data, resource.data)
+            : false
+        ) ||
+        (
           // 3. Atomic invite claim binding ownerId on first verified Google login of invited manager
+          !isSuperAdmin() &&
+          !hasValidUserDoc() &&
           isVerifiedEmailUser() &&
           hasActiveOrgSubscription(orgId) &&
           'ownerEmail' in resource.data &&
@@ -2087,6 +2124,52 @@ service cloud.firestore {
       return isOrgPermanentlyBillingExempt(org) || !hasAnySubscriptionField(org);
     }
 
+    function isParentOrgDriveOwnerActiveData(orgId) {
+      let org = get(/databases/$(database)/documents/organizations/$(orgId)).data;
+      return 'ownerId' in org &&
+        org.ownerId is string &&
+        org.ownerId.size() > 0 &&
+        org.ownerId == request.auth.uid &&
+        isOrgSubscriptionAllowed(org);
+    }
+
+    function isParentOrgDriveOwnerActive(orgId) {
+      return isValidId(orgId) &&
+        exists(/databases/$(database)/documents/organizations/$(orgId)) &&
+        isParentOrgDriveOwnerActiveData(orgId);
+    }
+
+    // Dedicated, independent Organization Owner branch Drive folder metadata gate.
+    // - Active branches (`isActive == true && lifecycleStatus == 'active'`): owner may link/sync/clear
+    //   ONLY `driveFolderId`, `driveFolderName`, `driveFolderLink`.
+    // - Inactive/suspended branches: owner may ONLY CLEAR (remove) existing Drive folder fields during
+    //   disconnect (`!('driveFolderId' in next) && !('driveFolderName' in next) && !('driveFolderLink' in next)`),
+    //   and is strictly FORBIDDEN from setting, adding, or changing Drive folder metadata on an inactive branch.
+    function canOrgOwnerSyncBranchDriveFolder(branchId, next, prev) {
+      let driveKeys = ['driveFolderId', 'driveFolderName', 'driveFolderLink'];
+      let changed = next.diff(prev).affectedKeys();
+      let isActiveBranch = prev.get('isActive', false) == true &&
+        prev.get('lifecycleStatus', 'active') == 'active';
+      let isClearingAllDriveFields = !('driveFolderId' in next) &&
+        !('driveFolderName' in next) &&
+        !('driveFolderLink' in next);
+      let hasValidDriveFieldValues =
+        (!('driveFolderId' in next) || (next.driveFolderId is string && next.driveFolderId.size() <= 256)) &&
+        (!('driveFolderName' in next) || (next.driveFolderName is string && next.driveFolderName.size() <= 256)) &&
+        (!('driveFolderLink' in next) || (next.driveFolderLink is string && next.driveFolderLink.size() <= 1024));
+      return 'orgId' in prev &&
+        isValidId(prev.orgId) &&
+        next.orgId == prev.orgId &&
+        prev.get('id', branchId) == branchId &&
+        next.get('id', branchId) == prev.get('id', branchId) &&
+        changed.hasOnly(driveKeys) &&
+        hasValidDriveFieldValues &&
+        (isActiveBranch || (isClearingAllDriveFields && changed.size() > 0)) &&
+        hasValidUserDoc() &&
+        isOrgManager(prev.orgId) &&
+        isParentOrgDriveOwnerActive(prev.orgId);
+    }
+
     // Branches Collection
     // Branch creation, billing, exemptions, suspension, and verified DB purge are strictly restricted to verified Super Admin (amoal2030@gmail.com).
     match /branches/{branchId} {
@@ -2126,19 +2209,11 @@ service cloud.firestore {
         );
 
       allow update: if isSignedIn() && isValidId(branchId) && (
-        isSuperAdmin() ? (
-          // 1. Verified Super Admin managing branch lifecycle, billing/payment dates, independent/bulk exemptions, 30-day suspension grace, and verified Drive backup attestation
-          canSuperAdminUpdateBranch(branchId, request.resource.data, resource.data)
-        ) : (
-          // 2. Active org managers may sync ONLY Google Drive folder metadata for existing active org branches.
-          isOrgManager(resource.data.orgId) &&
-          hasActiveOrgSubscription(resource.data.orgId) &&
-          resource.data.isActive == true &&
-          request.resource.data.orgId == resource.data.orgId &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'driveFolderId', 'driveFolderName', 'driveFolderLink'
-          ])
-        )
+        // 1. Verified Super Admin managing branch lifecycle, billing/payment dates, independent/bulk exemptions, 30-day suspension grace, and verified Drive backup attestation (strictly excludes branch Drive folder link fields)
+        (isSuperAdmin() && canSuperAdminUpdateBranch(branchId, request.resource.data, resource.data)) ||
+        // 2. Active Organization Owner managing ONLY Google Drive folder metadata for their own organization's branches
+        //    (active branches: sync/clear; inactive/suspended branches: clear legacy Drive fields ONLY during disconnect)
+        canOrgOwnerSyncBranchDriveFolder(branchId, request.resource.data, resource.data)
       );
 
       allow delete: if isSuperAdmin() &&
